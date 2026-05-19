@@ -1,0 +1,15 @@
+#!/bin/sh -e
+#
+# CAUTION: automake 1.12 or later is required (previous versions
+#          generate src/parser.h instead of src/parser.hh).
+
+v=`automake --version | perl -ne '/^automake .*? (\d+)\.(\d+)/ and print $1*1000+$2, "\n"'`
+
+if test "$v" -lt 1012; then
+    echo "$0: Compiling CMOC requires GNU Automake 1.12 or later."
+    exit 1
+fi
+
+aclocal -I macros $ACLOCAL_FLAGS
+automake --add-missing --copy
+autoconf
