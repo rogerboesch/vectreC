@@ -57,9 +57,6 @@ The default location is `~/retro-tools/vectrec/`.
 │   ├── vectrex/            # Vectrex-specific headers (bios.h, etc.)
 │   ├── libcmoc-crt-vec.a   # Vectrex C runtime
 │   └── libcmoc-std-vec.a   # Vectrex standard library
-└── roms/                   # Vectrex ROM files (not built, supplied manually)
-    ├── romfast.bin
-    └── empty.png
 ```
 
 
@@ -82,13 +79,6 @@ STDLIB  = $(VECTREC)/stdlib
 all:
 	$(CMOC) -I$(STDLIB) -L$(STDLIB) --vectrex -o game.bin game.c
 ```
-
-
-## ROM Files
-
-The Vectrex ROM (`romfast.bin`) and overlay image (`empty.png`) are not
-included in this repository for legal reasons. You need to supply them
-manually in the `roms/` directory of your install location.
 
 
 ## C-Wrapper for Vectrex

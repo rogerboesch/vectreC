@@ -104,8 +104,6 @@ info "Installing to $INSTALL_DIR ..."
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/stdlib"
 mkdir -p "$INSTALL_DIR/stdlib/vectrex"
-mkdir -p "$INSTALL_DIR/roms"
-
 # CMOC compiler binary
 cp -f src/cmoc "$INSTALL_DIR/cmoc"
 
@@ -152,14 +150,6 @@ done
 for inc in src/stdlib/*.inc; do
     [ -f "$inc" ] && cp -f "$inc" "$INSTALL_DIR/stdlib/"
 done
-
-# ROMs (preserve existing if present)
-if [ ! -f "$INSTALL_DIR/roms/romfast.bin" ]; then
-    warn "No romfast.bin found in $INSTALL_DIR/roms/ — you need to supply this manually"
-fi
-if [ ! -f "$INSTALL_DIR/roms/empty.png" ]; then
-    warn "No empty.png found in $INSTALL_DIR/roms/ — you need to supply this manually"
-fi
 
 ok "Installation complete!"
 
