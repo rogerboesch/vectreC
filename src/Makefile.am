@@ -3,7 +3,14 @@
 # The dot forces CMOC to be compiled before processing the stdlib and float
 # subdirectories, whose processing requires CMOC itself.
 #
+# The usim 6809 simulator is only used by the self-tests and does not build
+# on Windows (it requires termios), so it is excluded there.
+#
+if WINDOWS_BUILD
+SUBDIRS = . stdlib float
+else
 SUBDIRS = usim-0.91-cmoc . stdlib float
+endif
 
 bin_SCRIPTS = install-coco-boot-loader
 
@@ -228,13 +235,13 @@ check-deps:
 	rm -f ,check-prog.d
 
 check-vectrex:
-	$(PERLEXEC) 'print "#include <vectrex/bios.h>\n#include <vectrex/stdlib.h>\nint main() { move(0, 0); wait_retrace(); return 0; }\n"' >,check-prog.c
+	$(PERLEXEC) 'print "#include <vectrex/bios.h>\n#include <vectrex/stdlib.h>\nint main() { moveto_d(0, 0); wait_recal(); return 0; }\n"' >,check-prog.c
 	rm -f ,check-prog.bin
 	$(LOCAL_CMOC) --vectrex --intermediate ,check-prog.c
 	test -f ,check-prog.bin
 	$(STRINGS) ,check-prog.bin | $(GREP) -q 'g GCE 2015'
-	$(GREP) -q -w '^_move' ,check-prog.s
-	$(GREP) -q -w '^_wait_retrace' ,check-prog.s
+	$(GREP) -q -w '^_moveto_d' ,check-prog.s
+	$(GREP) -q -w '^_wait_recal' ,check-prog.s
 
 check-intdir:
 	rm -f ,check-prog.{s,lst,o,map,link,bin} ,check-prog-out.{map,link,bin}

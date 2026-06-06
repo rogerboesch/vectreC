@@ -89,6 +89,8 @@ POST_INSTALL = :
 NORMAL_UNINSTALL = :
 PRE_UNINSTALL = :
 POST_UNINSTALL = :
+build_triplet = @build@
+host_triplet = @host@
 bin_PROGRAMS = cmoc$(EXEEXT) $(am__EXEEXT_1)
 @BUILD_WRITECOCOFILE_TRUE@am__append_1 = writecocofile
 subdir = src
@@ -266,7 +268,7 @@ am__define_uniq_tagged_files = \
   done | $(am__uniquify_input)`
 ETAGS = etags
 CTAGS = ctags
-DIST_SUBDIRS = $(SUBDIRS)
+DIST_SUBDIRS = usim-0.91-cmoc . stdlib float
 am__DIST_COMMON = $(srcdir)/Makefile.in $(top_srcdir)/depcomp \
 	$(top_srcdir)/mkinstalldirs $(top_srcdir)/ylwrap lexer.cc \
 	parser.cc parser.hh
@@ -369,14 +371,22 @@ am__quote = @am__quote@
 am__tar = @am__tar@
 am__untar = @am__untar@
 bindir = @bindir@
+build = @build@
 build_alias = @build_alias@
+build_cpu = @build_cpu@
+build_os = @build_os@
+build_vendor = @build_vendor@
 builddir = @builddir@
 datadir = @datadir@
 datarootdir = @datarootdir@
 docdir = @docdir@
 dvidir = @dvidir@
 exec_prefix = @exec_prefix@
+host = @host@
 host_alias = @host_alias@
+host_cpu = @host_cpu@
+host_os = @host_os@
+host_vendor = @host_vendor@
 htmldir = @htmldir@
 includedir = @includedir@
 infodir = @infodir@
@@ -392,7 +402,6 @@ pdfdir = @pdfdir@
 prefix = @prefix@
 program_transform_name = @program_transform_name@
 psdir = @psdir@
-runstatedir = @runstatedir@
 sbindir = @sbindir@
 sharedstatedir = @sharedstatedir@
 srcdir = @srcdir@
@@ -401,11 +410,15 @@ target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
+@WINDOWS_BUILD_FALSE@SUBDIRS = usim-0.91-cmoc . stdlib float
 
 # The dot forces CMOC to be compiled before processing the stdlib and float
 # subdirectories, whose processing requires CMOC itself.
 #
-SUBDIRS = usim-0.91-cmoc . stdlib float
+# The usim 6809 simulator is only used by the self-tests and does not build
+# on Windows (it requires termios), so it is excluded there.
+#
+@WINDOWS_BUILD_TRUE@SUBDIRS = . stdlib float
 bin_SCRIPTS = install-coco-boot-loader
 cmoc_SOURCES = \
 	TypeDesc.cpp \
@@ -1725,13 +1738,13 @@ check-deps:
 	rm -f ,check-prog.d
 
 check-vectrex:
-	$(PERLEXEC) 'print "#include <vectrex/bios.h>\n#include <vectrex/stdlib.h>\nint main() { move(0, 0); wait_retrace(); return 0; }\n"' >,check-prog.c
+	$(PERLEXEC) 'print "#include <vectrex/bios.h>\n#include <vectrex/stdlib.h>\nint main() { moveto_d(0, 0); wait_recal(); return 0; }\n"' >,check-prog.c
 	rm -f ,check-prog.bin
 	$(LOCAL_CMOC) --vectrex --intermediate ,check-prog.c
 	test -f ,check-prog.bin
 	$(STRINGS) ,check-prog.bin | $(GREP) -q 'g GCE 2015'
-	$(GREP) -q -w '^_move' ,check-prog.s
-	$(GREP) -q -w '^_wait_retrace' ,check-prog.s
+	$(GREP) -q -w '^_moveto_d' ,check-prog.s
+	$(GREP) -q -w '^_wait_recal' ,check-prog.s
 
 check-intdir:
 	rm -f ,check-prog.{s,lst,o,map,link,bin} ,check-prog-out.{map,link,bin}

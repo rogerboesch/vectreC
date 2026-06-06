@@ -4,7 +4,18 @@ AC_PREREQ(2.54)
 
 AC_INIT(cmoc, 0.1.67)
 AC_CONFIG_SRCDIR(src/lexer.ll)
+AC_CANONICAL_HOST
 AM_INIT_AUTOMAKE
+
+# Detect a Windows (MinGW/MSYS2) build. Used to exclude the usim 6809
+# simulator, which requires termios and is only needed for self-tests.
+#
+case $host_os in
+    mingw*|msys*) windows_build=yes ;;
+    *)            windows_build=no ;;
+esac
+AC_MSG_NOTICE([Windows (MinGW/MSYS) build: $windows_build])
+AM_CONDITIONAL([WINDOWS_BUILD], [test "$windows_build" = yes])
 
 PACKAGE_FULL_NAME="CMOC"
 PACKAGE_SUMMARY_EN="6809-generating cross-compiler for a subset of the C language"

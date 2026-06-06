@@ -376,7 +376,7 @@ getDefaultOutputExtension(TargetPlatform p, bool generateSREC)
 static string
 useIntDir(const string &s)
 {
-    if (params.intermediateDir.empty() || s.find('/') != string::npos)
+    if (params.intermediateDir.empty() || containsDirSep(s))
         return s;
     string res = replaceDir(s, params.intermediateDir);
     return res;
@@ -395,9 +395,9 @@ invokeAssembler(const string &inputFilename,
     string lwasmCmdLine = params.lwasmPath
                           + " -fobj --pragma=forwardrefmax"
                           + " -D" + targetPreprocId
-                          + " --output='" + objectFilename + "'"
-                          + (params.intermediateFilesKept ? " --list='" + lstFilename + "'" : "")
-                          + " '" + inputFilename + "'";
+                          + " --output=" + quoteArg(objectFilename)
+                          + (params.intermediateFilesKept ? " --list=" + quoteArg(lstFilename) : "")
+                          + " " + quoteArg(inputFilename);
     if (verbose)
         cout << "Assembler command: " << lwasmCmdLine << endl;
 
@@ -698,11 +698,11 @@ invokeLinker(const vector<string> &objectFilenames,
 
     string lwlinkCmdLine = params.lwlinkPath
                            + " --format=" + lwlinkFormat
-                           + " --output='" + outputFilename
-                           + "' --script='" + linkScriptFilename
-                           + "' --map='" + mapFilename + "'";
+                           + " --output=" + quoteArg(outputFilename)
+                           + " --script=" + quoteArg(linkScriptFilename)
+                           + " --map=" + quoteArg(mapFilename);
     for (vector<string>::const_iterator it = libDirs.begin(); it != libDirs.end(); ++it)
-        lwlinkCmdLine += " -L'" + *it + "'";
+        lwlinkCmdLine += " -L" + quoteArg(*it);
 
     lwlinkCmdLine += " -L" + params.pkgdatadir + "/lib";
     lwlinkCmdLine += " -lcmoc-crt-" + string(targetKW);
@@ -715,11 +715,11 @@ invokeLinker(const vector<string> &objectFilenames,
 
     for (vector<string>::const_iterator it = objectFilenames.begin();
                                        it != objectFilenames.end(); ++it)
-        lwlinkCmdLine += " '" + useIntDir(*it) + ".o'";
+        lwlinkCmdLine += " " + quoteArg(useIntDir(*it) + ".o");
 
     for (vector<string>::const_iterator it = libraryFilenames.begin();
                                        it != libraryFilenames.end(); ++it)
-        lwlinkCmdLine += " '" + *it + "'";
+        lwlinkCmdLine += " " + quoteArg(*it);
 
     if (verbose)
         cout << "Linker command: " << lwlinkCmdLine << endl;
@@ -1017,23 +1017,40 @@ Parameters::compileCFile(const string &inputFilename,
 
     // Call the C preprocessor on the source file and prepare to read its output:
     //
+    // The CMOC_CPP environment variable can name an alternative preprocessor
+    // executable (useful on Windows, where GNU cpp may not be in the PATH).
+    //
+    const char *cppPath = getenv("CMOC_CPP");
+    string cppExe = (cppPath != NULL && cppPath[0] != '\0' ? string(cppPath) : string("cpp"));
+    if (cppExe.find(' ') != string::npos)
+        cppExe = quoteArg(cppExe);
     stringstream cppCommand;
-    cppCommand << "cpp -xc++ -U__cplusplus";  // -xc++ makes sure cpp accepts C++-style comments
+    cppCommand << cppExe
+               << " -xc++ -U__cplusplus";  // -xc++ makes sure cpp accepts C++-style comments
     for (list<string>::const_iterator it = includeDirList.begin(); it != includeDirList.end(); ++it)
-        cppCommand << " -I'" << *it << "'";
+        cppCommand << " -I" << quoteArg(*it);
     cppCommand << " -D_CMOC_VERSION_=" << getVersionInteger();
     cppCommand << " -D" << targetPreprocId << "=1";
     cppCommand << " -U__GNUC__ -nostdinc -undef";
 
     for (list<string>::const_iterator it = defines.begin(); it != defines.end(); ++it)
-        cppCommand << " -D'" << *it << "'";
+        cppCommand << " -D" << quoteArg(*it);
 
-    cppCommand << " " << inputFilename;  // must be last argument, for portability
+    cppCommand << " " << quoteArg(inputFilename);  // must be last argument, for portability
+
+    string cppCommandStr = cppCommand.str();
+#ifdef _WIN32
+    // cmd.exe strips the first and the last quote characters of a command
+    // that starts with a quote. Wrapping the whole command in an extra pair
+    // of quotes compensates for that.
+    if (!cppCommandStr.empty() && cppCommandStr[0] == '"')
+        cppCommandStr = "\"" + cppCommandStr + "\"";
+#endif
 
     if (verbose)
-        cout << "Preprocessor command: " << cppCommand.str() << endl;
+        cout << "Preprocessor command: " << cppCommandStr << endl;
 
-    yyin = popen(cppCommand.str().c_str(), "r");
+    yyin = popen(cppCommandStr.c_str(), "r");
     if (yyin == NULL)
     {
         int e = errno;

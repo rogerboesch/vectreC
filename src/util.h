@@ -298,6 +298,27 @@ std::string replaceDir(const std::string &s, const std::string &newDir);
 
 std::string getBasename(const std::string &filename);
 
+// Returns true if 'c' is a directory separator ('/' on all platforms;
+// also '\' under Windows).
+//
+bool isDirSep(char c);
+
+// Returns the position of the last directory separator in 'path',
+// or string::npos if none is found.
+//
+std::string::size_type findLastDirSep(const std::string &path);
+
+// Returns true if 'path' contains at least one directory separator.
+//
+bool containsDirSep(const std::string &path);
+
+// Surrounds 'arg' with quotes for use in a command line passed to system()
+// or popen(). Double quotes are used because they are understood both by
+// POSIX shells and by the Windows command interpreter (cmd.exe), unlike
+// single quotes.
+//
+std::string quoteArg(const std::string &arg);
+
 
 template <typename ForwardIterator>
 inline uint16_t
