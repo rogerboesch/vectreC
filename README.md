@@ -1,12 +1,13 @@
 # VectreC
 
-A ready-to-build CMOC 6809 cross-compiler toolchain for Vectrex game development on macOS.
+A ready-to-build CMOC 6809 cross-compiler toolchain for Vectrex game development
+on macOS and Windows.
 
 Based on [CMOC](http://sarrazip.com/dev/cmoc.html) by Pierre Sarrazin (v0.1.67) with an
 enhanced C-wrapper library for Vectrex BIOS functions.
 
 
-## Quick Start
+## Quick Start (macOS)
 
 ```bash
 git clone https://github.com/rogerboesch/vectreC.git
@@ -22,25 +23,70 @@ This will:
 5. Verify the installation
 
 
+## Quick Start (Windows)
+
+1. Install [MSYS2](https://www.msys2.org) (or `winget install MSYS2.MSYS2`).
+2. Open the **MSYS2 MINGW64** shell from the Start menu.
+3. Build and install:
+
+```bash
+git clone https://github.com/rogerboesch/vectreC.git
+cd vectreC
+./build-windows.sh
+```
+
+This will:
+1. Install missing build tools via pacman (gcc, bison, flex, autotools, ...)
+2. Download and build lwtools from source
+3. Configure and compile CMOC as a native, statically linked `cmoc.exe`
+4. Install everything to `%USERPROFILE%\retro-tools\vectrec\`
+5. Verify the installation by compiling a test Vectrex program
+
+The installed toolchain runs from **PowerShell or cmd** (MSYS2 is only needed
+to build it). One caveat: `cmoc.exe` invokes the GNU C preprocessor (`cpp`) at
+compile time. Either keep `C:\msys64\mingw64\bin` on your `PATH`, or set the
+`CMOC_CPP` environment variable to the full path of `cpp.exe`. The generated
+`vectrec-env.ps1` does this for you:
+
+```powershell
+. $env:USERPROFILE\retro-tools\vectrec\vectrec-env.ps1
+cmoc --vectrex -I $env:VECTREC\stdlib -L $env:VECTREC\stdlib -o game.bin game.c
+```
+
+### Redistributable package
+
+To create a self-contained `vectrec-win64.zip` (cmoc + lwtools + stdlib + a
+bundled preprocessor) that runs on any 64-bit Windows machine **without**
+MSYS2, run:
+
+```bash
+./package-windows.sh   # after ./build-windows.sh, in the MINGW64 shell
+```
+
+Users just unzip, dot-source `vectrec-env.ps1`, and compile.
+
+
 ## Prerequisites
 
-Installed automatically by `build.sh` if missing:
+Installed automatically by `build.sh` / `build-windows.sh` if missing:
 
-| Tool         | Purpose                        | Source                 |
-|--------------|--------------------------------|------------------------|
-| lwtools      | 6809 assembler/linker (lwasm)  | `brew install lwtools` |
-| bison        | Parser generator               | Xcode CLT / Homebrew   |
-| flex         | Lexer generator                | Xcode CLT / Homebrew   |
-| C++ compiler | Builds the CMOC compiler       | Xcode CLT              |
+| Tool         | Purpose                        | macOS                  | Windows (MSYS2)              |
+|--------------|--------------------------------|------------------------|------------------------------|
+| lwtools      | 6809 assembler/linker (lwasm)  | `brew install lwtools` | built from source            |
+| bison        | Parser generator               | Xcode CLT / Homebrew   | `pacman -S bison`            |
+| flex         | Lexer generator                | Xcode CLT / Homebrew   | `pacman -S flex`             |
+| C++ compiler | Builds the CMOC compiler       | Xcode CLT              | `pacman -S mingw-w64-x86_64-gcc` |
 
 
 ## Custom Install Location
 
 ```bash
-./build.sh /path/to/your/toolchain
+./build.sh /path/to/your/toolchain            # macOS
+./build-windows.sh /c/path/to/your/toolchain  # Windows (MSYS2 path syntax)
 ```
 
-The default location is `~/retro-tools/vectrec/`.
+The default location is `~/retro-tools/vectrec/` (macOS) or
+`%USERPROFILE%\retro-tools\vectrec\` (Windows).
 
 
 ## What Gets Installed

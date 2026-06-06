@@ -83,6 +83,15 @@ autom4te.cache/
 src/.deps/
 src/usim-0.91-cmoc/.deps/
 
+### Windows build artifacts ###
+.lwtools-build/
+.claude/
+src/cmoc.exe
+src/writecocofile.exe
+src/,check-prog.*
+vectrec-win64/
+vectrec-win64.zip
+
 ### Compiled binaries and objects ###
 src/cmoc
 src/writecocofile
