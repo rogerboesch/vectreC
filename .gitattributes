@@ -1,0 +1,20 @@
+# Autotools inputs and shell scripts must keep LF endings, even on Windows
+# checkouts with core.autocrlf=true. If configure.ac is checked out with CRLF,
+# a regenerated configure script embeds literal \r characters in its file
+# lists and breaks the build on macOS/Linux
+# ("config.status: error: cannot find input file").
+configure    text eol=lf
+configure.ac text eol=lf
+*.sh         text eol=lf
+*.m4         text eol=lf
+*.am         text eol=lf
+*.in         text eol=lf
+bootstrap    text eol=lf
+ylwrap       text eol=lf
+depcomp      text eol=lf
+missing      text eol=lf
+install-sh   text eol=lf
+config.guess text eol=lf
+config.sub   text eol=lf
+config.rpath text eol=lf
+mkinstalldirs text eol=lf
