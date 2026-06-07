@@ -4096,7 +4096,7 @@ fi
 
 
 
-ac_config_files="$ac_config_files  Makefile src/Makefile src/stdlib/Makefile src/float/Makefile src/usim-0.91-cmoc/Makefile macros/Makefile doc/Makefile doc/cmoc.1"
+ac_config_files="$ac_config_files  Makefile src/Makefile src/stdlib/Makefile src/float/Makefile src/usim-0.91-cmoc/Makefile macros/Makefile doc/Makefile doc/cmoc.1"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -4848,15 +4848,15 @@ for ac_config_target in $ac_config_targets
 do
   case $ac_config_target in
     "depfiles") CONFIG_COMMANDS="$CONFIG_COMMANDS depfiles" ;;
-    "") CONFIG_FILES="$CONFIG_FILES " ;;
-    "Makefile") CONFIG_FILES="$CONFIG_FILES Makefile" ;;
-    "src/Makefile") CONFIG_FILES="$CONFIG_FILES src/Makefile" ;;
-    "src/stdlib/Makefile") CONFIG_FILES="$CONFIG_FILES src/stdlib/Makefile" ;;
-    "src/float/Makefile") CONFIG_FILES="$CONFIG_FILES src/float/Makefile" ;;
-    "src/usim-0.91-cmoc/Makefile") CONFIG_FILES="$CONFIG_FILES src/usim-0.91-cmoc/Makefile" ;;
-    "macros/Makefile") CONFIG_FILES="$CONFIG_FILES macros/Makefile" ;;
-    "doc/Makefile") CONFIG_FILES="$CONFIG_FILES doc/Makefile" ;;
-    "doc/cmoc.1") CONFIG_FILES="$CONFIG_FILES doc/cmoc.1" ;;
+    "") CONFIG_FILES="$CONFIG_FILES " ;;
+    "Makefile") CONFIG_FILES="$CONFIG_FILES Makefile" ;;
+    "src/Makefile") CONFIG_FILES="$CONFIG_FILES src/Makefile" ;;
+    "src/stdlib/Makefile") CONFIG_FILES="$CONFIG_FILES src/stdlib/Makefile" ;;
+    "src/float/Makefile") CONFIG_FILES="$CONFIG_FILES src/float/Makefile" ;;
+    "src/usim-0.91-cmoc/Makefile") CONFIG_FILES="$CONFIG_FILES src/usim-0.91-cmoc/Makefile" ;;
+    "macros/Makefile") CONFIG_FILES="$CONFIG_FILES macros/Makefile" ;;
+    "doc/Makefile") CONFIG_FILES="$CONFIG_FILES doc/Makefile" ;;
+    "doc/cmoc.1") CONFIG_FILES="$CONFIG_FILES doc/cmoc.1" ;;
 
   *) as_fn_error $? "invalid argument: \`$ac_config_target'" "$LINENO" 5;;
   esac
