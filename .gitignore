@@ -69,41 +69,41 @@ DerivedData/
 
 # End of https://www.toptal.com/developers/gitignore/api/cpp,xcode,macos
 
-### Autotools build artifacts ###
-config.status
-config.log
-Makefile
-src/Makefile
-src/stdlib/Makefile
-src/float/Makefile
-src/usim-0.91-cmoc/Makefile
-doc/Makefile
-macros/Makefile
-autom4te.cache/
-src/.deps/
-src/usim-0.91-cmoc/.deps/
+### Autotools build artifacts (CMOC source tree lives in cmoc/) ###
+cmoc/config.status
+cmoc/config.log
+cmoc/Makefile
+cmoc/src/Makefile
+cmoc/src/stdlib/Makefile
+cmoc/src/float/Makefile
+cmoc/src/usim-0.91-cmoc/Makefile
+cmoc/doc/Makefile
+cmoc/macros/Makefile
+cmoc/autom4te.cache/
+cmoc/src/.deps/
+cmoc/src/usim-0.91-cmoc/.deps/
 
 ### Windows build artifacts ###
 .lwtools-build/
 .claude/
-src/cmoc.exe
-src/writecocofile.exe
-src/,check-prog.*
+cmoc/src/cmoc.exe
+cmoc/src/writecocofile.exe
+cmoc/src/,check-prog.*
 vectrec-win64/
 vectrec-win64.zip
 
 ### Compiled binaries and objects ###
-src/cmoc
-src/writecocofile
-src/usim-0.91-cmoc/usim
-src/*.o
-src/usim-0.91-cmoc/*.o
-src/stdlib/*.a
-src/stdlib/*.*_o
-src/float/*.a
-src/float/*.*_o
-src/parser.cc
-src/parser.hh
-src/parser.h
-src/lexer.cc
-doc/cmoc.1
+cmoc/src/cmoc
+cmoc/src/writecocofile
+cmoc/src/usim-0.91-cmoc/usim
+cmoc/src/*.o
+cmoc/src/usim-0.91-cmoc/*.o
+cmoc/src/stdlib/*.a
+cmoc/src/stdlib/*.*_o
+cmoc/src/float/*.a
+cmoc/src/float/*.*_o
+cmoc/src/parser.cc
+cmoc/src/parser.hh
+cmoc/src/parser.h
+cmoc/src/lexer.cc
+cmoc/doc/cmoc.1

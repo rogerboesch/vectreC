@@ -22,6 +22,8 @@ set -e
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# The CMOC source tree (vendored upstream + Vectrex overlay) lives in cmoc/.
+BUILD_DIR="$SCRIPT_DIR/cmoc"
 INSTALL_DIR="${1:-$HOME/retro-tools/vectrec}"
 JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
@@ -63,11 +65,19 @@ fi
 LWASM_VER="$(lwasm --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
 info "lwtools version: $LWASM_VER"
 
-# bison / flex (macOS ships ancient bison 2.3 but it works for CMOC)
-if ! check_cmd bison; then
-    info "Installing bison via Homebrew..."
-    brew install bison
+# bison: CMOC's grammar uses Bison 3 options (-Wno-conflicts-sr), so the
+# bison 2.3 that macOS ships with the Command Line Tools is too old to
+# regenerate the parser. Ensure a modern Homebrew bison and put it ahead of
+# the system one on PATH (it is keg-only, so not symlinked into /opt/homebrew/bin).
+BISON_MAJOR="$(bison --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)"
+if [ "${BISON_MAJOR:-0}" -lt 3 ]; then
+    if ! brew list bison >/dev/null 2>&1; then
+        info "Installing GNU Bison 3 via Homebrew..."
+        brew install bison
+    fi
+    export PATH="$(brew --prefix bison)/bin:$PATH"
 fi
+info "bison version: $(bison --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
 
 if ! check_cmd flex; then
     info "Installing flex via Homebrew..."
@@ -80,7 +90,7 @@ ok "All prerequisites satisfied"
 # Step 2: Build CMOC compiler
 # ---------------------------------------------------------------------------
 
-cd "$SCRIPT_DIR"
+cd "$BUILD_DIR"
 
 # Clean previous build if any
 if [ -f Makefile ]; then

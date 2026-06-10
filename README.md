@@ -58,7 +58,7 @@ Progress: [Tracking spreadsheet](https://docs.google.com/spreadsheets/d/1cExHWU5
 
 ## License
 
-See the file [COPYING](COPYING). Note that it does not apply to the files
-under `src/usim-0.91-cmoc`.
+See the file [COPYING](cmoc/COPYING). Note that it does not apply to the files
+under `cmoc/src/usim-0.91-cmoc`.
 All changes and additions by Roger Boesch are free to use, change and distribute
 without any limitations.
