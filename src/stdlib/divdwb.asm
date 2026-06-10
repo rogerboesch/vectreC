@@ -11,7 +11,7 @@ _divdwb	EXPORT
 _divdwb
 _div328
 	pshs	u
-	tfr	s,u
+	leau	,s
 
 	tst	7,u		load divisor
 	beq	div328_900	division by zero: do nothing
@@ -62,7 +62,7 @@ div328_rolq
 	std	2,x
 
 div328_900
-	tfr	u,s
+	leas	,u
 	puls	u,pc
 
 

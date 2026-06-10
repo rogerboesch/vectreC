@@ -1,7 +1,5 @@
-/*  $Id: Declarator.h,v 1.20 2018/05/23 03:34:12 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2016 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2026 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -34,21 +32,24 @@ class Declarator
 {
 public:
 
-    enum Type { SINGLETON, ARRAY, FUNCPTR };
+    enum Type { SINGLETON, ARRAY };
 
-    // _id: Allow to be empyt, but only to call createFormalParameter().
-    // _subscripts: If not null, addArraySizeExpr() called with each element,
-    //              and makes this declarator an array.
-    //              If not null, MUST come from new. This constructor destroys it.
+    // _id: Allowed to be empty, but only to call createFormalParameter().
+    // _functionPointerLevel: Relevant for function pointers only.
+    //                        Use 1 for T (*)(...), 2 for T (**)(...), etc.
     //
     Declarator(const std::string &_id,
+               size_t _functionPointerLevel,
                const std::string &_srcFilename, int _lineno);
 
-    // Does NOT call delete on formalParamList.
+    // Calls delete on formalParamList, but that pointer will be null if
+    // detachFormalParamList() was called.
     //
     ~Declarator();
 
     void setInitExpr(Tree *_initExpr);
+
+    const Tree *getInitExpr() const;
 
     void checkForFunctionReturningArray() const;
 
@@ -62,6 +63,9 @@ public:
     //
     void addArraySizeExpr(Tree *_arraySizeExpr);
 
+    // This object becomes owner of the FormalParamList.
+    // See also detachFormalParamList().
+    //
     void setFormalParamList(FormalParamList *_formalParamList);
 
     const FormalParamList *getFormalParamList() const;
@@ -75,16 +79,25 @@ public:
 
     const std::string &getId() const;
 
-    bool isFunctionPointer() const { return type == FUNCPTR; }
+    bool isFunctionPrototype() const;
 
-    bool isArrayOfFunctionPointers() const { return type == ARRAY && formalParamList != NULL; }
+    bool isFunctionPointer() const;
+
+    bool isArrayOfFunctionPointers() const;
+
+    size_t getFunctionPointerLevel() const;
 
     bool isArray() const { return type == ARRAY; }  // may be multi-dimensional
 
     bool getNumDimensions(size_t &numDimensions) const;
 
-    // Returns the number of elements, not the number of bytes.
-    uint16_t getNumArrayElements() const;
+    // Returns the number of elements (over all the dimensions), not the number of bytes.
+    // Returns size_t(-1) if the number is invalid.
+    //
+    // errorLocation: Tree on which to call errormsg() or warnmsg(), if needed, so that
+    //                the right line number appears in the message. Allowed to be null.
+    //
+    size_t getTotalNumArrayElements(const Tree *errorLocation = NULL) const;
 
     // v: Must come from new. This Declarator takes ownership of the vector object and will delete it in its destructor.
     //
@@ -98,6 +111,13 @@ public:
     //
     void setAsFunctionPointer(FormalParamList *params);
 
+    // Takes ownership of the FormalParamList, which must come from new,
+    // but the ownership MUST be transferred to another object before this
+    // Declarator is destroyed.
+    // _subscripts: If not null, addArraySizeExpr() called with each element,
+    //              and makes this declarator an array.
+    //              MUST not be null and MUST come from new. This constructor destroys it.
+    //
     void setAsArrayOfFunctionPointers(FormalParamList *params, TreeSequence *_subscripts);
 
     const TypeDesc *processPointerLevel(const TypeDesc *td) const;
@@ -112,22 +132,33 @@ public:
     int getLineNo() const { return lineno; }
 
     // Only call this version for arrays.
+    // Upon success, returns the size of each dimension of the array.
+    // Does not return any dimension for a non-array declaration.
+    //
+    // Displays an error message upon failure.
+    //
+    // arrayDimensions: NOT cleared before elements are appended, if any.
+    // allowUnknownFirstDimension: if true, this unknown 1st dimension is assumed to be 1.
+    //
+    // errorLocation: Tree on which to call errormsg() or warnmsg(), if needed, so that
+    //                the right line number appears in the message. Allowed to be null.
+    //
     static bool computeArrayDimensions(std::vector<uint16_t> &arrayDimensions,
                                        bool allowUnknownFirstDimension,
                                        const std::vector<Tree *> &arraySizeExprList,
                                        const std::string &id,
                                        const Tree *initExpr,
-                                       const Tree *declarationTree);
+                                       const Tree *errorLocation);
 
     // May also be called for non-arrays (does nothing and succeeds).
     bool computeArrayDimensions(std::vector<uint16_t> &arrayDimensions,
                                 bool allowUnknownFirstDimension,
-                                const Tree *declarationTree) const
+                                const Tree *errorLocation) const
     {
         if (type != ARRAY)
             return true;
         return computeArrayDimensions(arrayDimensions, allowUnknownFirstDimension,
-                                      arraySizeExprList, id, initExpr, declarationTree);
+                                      arraySizeExprList, id, initExpr, errorLocation);
     }
 
     std::string toString() const;
@@ -143,7 +174,28 @@ public:
 
     int getBitFieldWidth() const { return bitFieldWidth; }
 
-    void checkBitField(const TypeDesc &typeDesc) const;
+    // Issues an error if the bit field is invalid.
+    // typeDesc is allowed to be null.
+    //
+    void checkBitField(const TypeDesc *typeDesc) const;
+
+    // Calls setFormalParamList() on this object after building a new FormalParamList
+    // from the given parameters.
+    // Must only be called on a declarator for a K&R-defined function.
+    // paramNameList: The function's parameter names in the order they appear in the parenthesis.
+    //                This order will be used by the new FormalParamList.
+    // krFormalParamList: The type declarations of the K&R-defined function.
+    //                    The order is not significant.
+    //                    Must not be null.
+    //                    If this list contains a declaration for a parameter that
+    //                    is not named in paramNameList, an error message is issued.
+    //                    If this list does not contain a declaration for a parameter
+    //                    that is named in paramNameList, that parameter is assumed
+    //                    to be of type 'int'.
+    //                    Operator delete gets called on krFormalParamList.
+    //
+    void processKAndRFunctionParameters(const std::vector<std::string> &paramNameList,
+                                        FormalParamList *krFormalParamList);
 
 private:
 
@@ -160,6 +212,7 @@ private:
     FormalParamList *formalParamList;  // when not null, must come from new
     Type type;
     TypeQualifierBitFieldVector *typeQualifierBitFieldVector;  // defines pointer level; comes from new; owned by this Declarator; deleted by destructor
+    size_t functionPointerLevel;
     int bitFieldWidth;  // if >= 0, bit field width in bits, otherwise, BitFieldCode value
 };
 

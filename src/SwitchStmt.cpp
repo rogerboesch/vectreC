@@ -1,7 +1,5 @@
-/*  $Id: SwitchStmt.cpp,v 1.16 2020/05/07 01:04:08 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2017 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -23,6 +21,7 @@
 #include "BinaryOpExpr.h"
 #include "CompoundStmt.h"
 #include "LabeledStmt.h"
+#include "DWordConstantExpr.h"
 
 using namespace std;
 
@@ -63,15 +62,15 @@ SwitchStmt::~SwitchStmt()
 void
 SwitchStmt::checkSemantics(Functor & /*f*/)
 {
-    CompoundStmt *compoundStmt = dynamic_cast<CompoundStmt *>(statement);
+    const CompoundStmt *compoundStmt = dynamic_cast<CompoundStmt *>(statement);
     if (compoundStmt)
     {
-        if (! compileLabeledStatements(*compoundStmt))
+        if (! compileLabeledStatements())
             return;  // error message already given
     }
-    if (expression->isRealOrLong())
+    if (expression->isReal())
     {
-        statement->errormsg("switch() expression of type `%s' is not supported",
+        expression->errormsg("switch() expression of type `%s' is not supported",
                             expression->getTypeDesc()->toString().c_str());
         return;
     }
@@ -81,9 +80,9 @@ SwitchStmt::checkSemantics(Functor & /*f*/)
 // originalCaseValueLineNumber: Defined only if method returns true.
 //
 bool
-SwitchStmt::isDuplicateCaseValue(uint16_t caseValue, string &originalCaseValueLineNumber) const
+SwitchStmt::isDuplicateCaseValue(uint32_t caseValue, string &originalCaseValueLineNumber) const
 {
-    originalCaseValueLineNumber = -1;
+    originalCaseValueLineNumber.clear();
 
     for (SwitchCaseList::const_iterator it = cases.begin(); it != cases.end(); ++it)
         if (!it->isDefault && it->caseValue == caseValue)
@@ -95,101 +94,142 @@ SwitchStmt::isDuplicateCaseValue(uint16_t caseValue, string &originalCaseValueLi
 }
 
 
+std::pair<bool, uint32_t>
+SwitchStmt::checkCaseExprAndGetValue(const Tree *caseExpr) const
+{
+    bool success = true;
+    uint32_t caseValue = 0;
+    uint16_t wordValue = 0;
+    if (auto dwce = dynamic_cast<const DWordConstantExpr *>(caseExpr))
+    {
+        caseValue = dwce->getDWordValue();
+        string originalCaseValueLineNumber;
+        if (isDuplicateCaseValue(caseValue, originalCaseValueLineNumber))
+            caseExpr->errormsg("duplicate case value (first used at %s)", originalCaseValueLineNumber.c_str());
+    }
+    else if (!caseExpr->evaluateConstantExpr(wordValue))
+    {
+        caseExpr->errormsg("case statement has a variable expression");
+        success = false;
+    }
+    else
+    {
+        if (caseExpr->isSigned())
+            caseValue = uint32_t(int32_t(int16_t(wordValue)));
+        else
+            caseValue = uint32_t(wordValue);
+
+        string originalCaseValueLineNumber;
+
+        if (expression->getType() == BYTE_TYPE && ! expression->isSigned() && caseValue > 0xFF)
+            caseExpr->warnmsg("switch expression is unsigned char but case value is not in range 0..255");
+        else if (expression->getType() == BYTE_TYPE && expression->isSigned()
+                        && (int32_t(caseValue) < -128 || int32_t(caseValue) > 127))
+            caseExpr->warnmsg("switch expression is signed char but case value is not in range -128..127");
+        else if (isDuplicateCaseValue(caseValue, originalCaseValueLineNumber))
+        {
+            caseExpr->errormsg("duplicate case value (first used at %s)", originalCaseValueLineNumber.c_str());
+            success = false;
+        }
+    }
+    return make_pair(success, caseValue);
+}
+
+
+class SwitchStmt::SwitchCaseCollector : public Tree::Functor
+{
+public:
+    SwitchCaseCollector(SwitchStmt *_switchStmt, SwitchCaseList &_cases)
+        : switchStmt(_switchStmt), cases(_cases) {}
+
+    bool open(Tree *tree) override
+    {
+        if (dynamic_cast<SwitchStmt *>(tree))
+            ++innerSwitchLevel;
+
+        if (innerSwitchLevel > 0)
+            return true;  // ignore inner switch statements
+
+        const LabeledStmt *labeledStmt = dynamic_cast<LabeledStmt *>(tree);
+        if (labeledStmt && !labeledStmt->isId())
+        {
+            firstCaseOrDefaultSeen = true;
+
+            // Add a case to the list.
+            // The 'default' case will disregard caseValue.
+            //
+            const Tree *caseExpr = labeledStmt->getExpression();
+            std::pair<bool, uint32_t> result(true, 0);
+            if (caseExpr)
+            {
+                result = switchStmt->checkCaseExprAndGetValue(caseExpr);
+                if (!result.first)  // if failure
+                {
+                    success = false;
+                    return false;
+                }
+            }
+            else
+            {
+                if (defaultSeen)
+                {
+                    labeledStmt->errormsg("more than one default statement in switch");
+                    success = false;
+                }
+                else
+                    defaultSeen = true;
+            }
+            uint32_t caseValue = (result.first ? result.second : 0);
+            string caseLineNo = caseExpr ? caseExpr->getLineNo() : labeledStmt->getLineNo();
+            cases.push_back(SwitchCase(caseExpr == NULL, caseValue, caseLineNo, *labeledStmt));
+        }
+        else if (tree != switchStmt->statement)  // neither case nor default nor the switch's compound stmt
+        {
+            if (!firstCaseOrDefaultSeen)
+            {
+                tree->warnmsg("statement in switch precedes first `case' or `default' statement");
+                success = false;
+            }
+        }
+        return true;
+    }
+
+    bool close(Tree *tree) override
+    {
+        if (innerSwitchLevel > 0 && dynamic_cast<SwitchStmt *>(tree))
+            --innerSwitchLevel;
+        return true;
+    }
+
+    bool success = true;
+
+private:
+    SwitchCaseCollector(const SwitchCaseCollector &) = delete;
+    SwitchCaseCollector &operator = (const SwitchCaseCollector &) = delete;
+
+    SwitchStmt *switchStmt;
+    SwitchCaseList &cases;
+    size_t innerSwitchLevel = 0;
+    bool defaultSeen = false;
+    bool firstCaseOrDefaultSeen = false;  // even if invalid one
+};
+
+
 // Fills cases[].
 //
 bool
-SwitchStmt::compileLabeledStatements(TreeSequence &statements)
+SwitchStmt::compileLabeledStatements()
 {
-    bool success = true, defaultSeen = false;
-    for (std::vector<Tree *>::iterator it = statements.begin(); it != statements.end(); ++it)
-    {
-        const Tree *tree = *it;
-        if (tree == NULL)
-            continue;
-
-        const LabeledStmt *labeledStmt = dynamic_cast<const LabeledStmt *>(tree);
-        if (labeledStmt && !labeledStmt->isId())
-        {
-            while (labeledStmt && !labeledStmt->isId())
-            {
-                uint16_t caseValue = 0;
-                const Tree *caseExpr = labeledStmt->getExpression();
-                if (labeledStmt->isCase())  // if 'case':
-                {
-                    assert(caseExpr);
-                    if (!caseExpr->evaluateConstantExpr(caseValue))
-                    {
-                        labeledStmt->errormsg("case statement has a variable expression");
-                        success = false;
-                    }
-                    else
-                    {
-                        string originalCaseValueLineNumber;
-
-                        if (expression->getType() == BYTE_TYPE && ! expression->isSigned() && caseValue > 0xFF)
-                            caseExpr->warnmsg("switch expression is unsigned char but case value is not in range 0..255");
-                        else if (expression->getType() == BYTE_TYPE && expression->isSigned() && caseValue >= 0x80 && caseValue < 0xFF80)
-                            caseExpr->warnmsg("switch expression is signed char but case value is not in range -128..127");
-                        else if (isDuplicateCaseValue(caseValue, originalCaseValueLineNumber))
-                            caseExpr->errormsg("duplicate case value (first used at %s)", originalCaseValueLineNumber.c_str());
-                    }
-                }
-                else
-                {
-                    assert(labeledStmt->isDefault());
-                    assert(!caseExpr);
-                    if (defaultSeen)
-                    {
-                        labeledStmt->errormsg("more than one default statement in switch");
-                        success = false;
-                    }
-                    else
-                        defaultSeen = true;
-                }
-
-                // Add a case to the list.
-                // The 'default' case will disregard caseValue.
-                //
-                string caseLineNo = caseExpr ? caseExpr->getLineNo() : labeledStmt->getLineNo();
-                cases.push_back(SwitchCase(caseExpr == NULL, caseValue, caseLineNo));
-
-                const Tree *subStmt = labeledStmt->getStatement();
-                const LabeledStmt *subLabeledStmt = dynamic_cast<const LabeledStmt *>(subStmt);
-
-                // Support case A: case B: foobar;
-                // This is a LabeledStmt containing a LabeledStmt containing statement foobar.
-                // Push the sub-statement in the list of statements for the current case
-                // EXCEPT if the sub-statement is itself a labeled statement (case B: foobar;
-                // in this example). In this case, we want case A to have no statements and
-                // case B to have foobar as its first statement.
-                //
-                if (!subLabeledStmt || subLabeledStmt->isId())
-                    cases.back().statements.push_back(subStmt);
-
-                // If the sub-statement is a LabeledStmt, loop to process it.
-                //
-                labeledStmt = subLabeledStmt;
-            }
-        }
-        else  // neither case nor default:
-        {
-            if (cases.size() == 0)
-            {
-                tree->errormsg("statement in switch precedes first `case' or `default' statement");
-                success = false;
-            }
-            else
-                cases.back().statements.push_back(tree);
-        }
-    }
-    return success;
+    SwitchCaseCollector collector(this, cases);
+    statement->iterate(collector);
+    return collector.success;
 }
 
 
 bool
 SwitchStmt::signedCaseValueComparator(const CaseValueAndIndexPair &a, const CaseValueAndIndexPair &b)
 {
-    return int16_t(a.first) < int16_t(b.first);
+    return int32_t(a.first) < int32_t(b.first);
 }
 
 
@@ -200,7 +240,7 @@ SwitchStmt::unsignedCaseValueComparator(const CaseValueAndIndexPair &a, const Ca
 }
 
 
-// CaseValueType: int16_t or uint16_t.
+// CaseValueType: int32_t or uint32_t.
 // caseValues: Must not be empty.
 //
 template <typename CaseValueType>
@@ -225,7 +265,8 @@ emitJumpTableEntries(ASMText &out,
             out.ins("FDB", defaultLabel + "-" + tableLabel);
         else
         {
-            out.ins("FDB", caseLabels[caseValues[vectorIndex].second] + "-" + tableLabel);
+            out.ins("FDB", caseLabels[caseValues[vectorIndex].second] + "-" + tableLabel,
+                                        "case " + dwordToString(currentCaseValue));
             ++vectorIndex;
         }
 
@@ -241,7 +282,10 @@ CodeStatus
 SwitchStmt::emitCode(ASMText &out, bool lValue) const
 {
     if (lValue)
+    {
+        errormsg("compiler error: cannot emit a switch() as an l-value");
         return false;
+    }
 
     expression->writeLineNoComment(out, "switch");
 
@@ -249,11 +293,17 @@ SwitchStmt::emitCode(ASMText &out, bool lValue) const
 
     string endSwitchLabel = tu.generateLabel('L');
 
-    if (! expression->emitCode(out, lValue))
+    const bool isLongSwitch = expression->isLong();
+    if (! expression->emitCode(out, isLongSwitch))  // as l-value iff 32 bits
         return false;
+    if (isLongSwitch)
+        out.ins("TFR", "X,D", "use D to pass address of switch expr dword to utility routine");
 
-    bool exprIsByte = (expression->getType() == BYTE_TYPE);
-    const char *cmpInstr = (exprIsByte ? "CMPB" : "CMPD");
+    // Here, B or D is the expression value if it is a byte or word;
+    // X points to the expression value if it is a dword.
+
+    const bool exprIsByte = (expression->getType() == BYTE_TYPE);
+    const char *cmpInstr = (isLongSwitch ? NULL : (exprIsByte ? "CMPB" : "CMPD"));
 
     // Generate a label for each case and for the default case.
     vector<string> caseLabels;
@@ -262,7 +312,7 @@ SwitchStmt::emitCode(ASMText &out, bool lValue) const
     {
         const SwitchCase &c = *it;
 
-        string caseLabel = TranslationUnit::instance().generateLabel('L');
+        const string &caseLabel = c.labeledStmt.getAssemblyLabel();
         caseLabels.push_back(caseLabel);
         if (c.isDefault)
             defaultLabel = caseLabel;
@@ -275,9 +325,17 @@ SwitchStmt::emitCode(ASMText &out, bool lValue) const
 
     // Get an ordered list of non-default case values, each with the corresponding index in caseLabels[].
     vector<CaseValueAndIndexPair> caseValues;
-    for (SwitchCaseList::const_iterator it = cases.begin(); it != cases.end(); ++it)
-        if (!it->isDefault)
-            caseValues.push_back(make_pair(it->caseValue, it - cases.begin()));
+    for (const SwitchCase &c : cases)
+        if (!c.isDefault)
+        {
+            if (exprIsByte && expression->isSigned() && (int32_t(c.caseValue) < -128 || int32_t(c.caseValue) > 127))
+                out.emitComment("Switch case at " + c.lineNo + " ignored.");  // no match possible
+            else if (exprIsByte && ! expression->isSigned() && c.caseValue > 255)
+                out.emitComment("Switch case at " + c.lineNo + " ignored.");  // no match possible
+            else
+                caseValues.push_back(make_pair(c.caseValue, &c - &cases[0]));
+        }
+    out.emitComment("Switch at " + expression->getLineNo() + " has " + dwordToString(caseValues.size()) + " non-ignored case values.");
     sort(caseValues.begin(), caseValues.end(),
          expression->isSigned() ? signedCaseValueComparator : unsignedCaseValueComparator);
 
@@ -287,103 +345,121 @@ SwitchStmt::emitCode(ASMText &out, bool lValue) const
     JumpMode jumpMode = (isJumpModeForced ? forcedJumpMode : (ifElseCost <= jumpTableCost ? IF_ELSE : JUMP_TABLE));
 
     // Override isJumpModeForced if jump table cost is way higher.
-    if (jumpTableCost > ifElseCost && jumpTableCost - ifElseCost >= 256)
+    // Also override if long switch, b/c dword jump table routine not implemented.
+    bool overrideJumpMode = (jumpTableCost > ifElseCost && jumpTableCost - ifElseCost >= 256);
+    if (overrideJumpMode)
         jumpMode = IF_ELSE;
 
-    out.emitComment("Switch at " + expression->getLineNo() + ": IF_ELSE=" + dwordToString(uint32_t(ifElseCost)) + ", JUMP_TABLE=" + dwordToString(uint32_t(jumpTableCost)));
+    stringstream comment;
+    comment << "Switch at " << expression->getLineNo()
+                            << " uses " << (jumpMode ? "jump table" : "if-else sequence")
+                            << ": IF_ELSE=" << ifElseCost
+                            << ", JUMP_TABLE=" << jumpTableCost;
+    if (forcedJumpMode)
+        comment << " (forced jump mode)";
+    if (overrideJumpMode)
+        comment << " (overridden)";
+    out.emitComment(comment.str());
 
     // Emit the switching code.
     //
-    switch (jumpMode)
+    if (caseValues.size() == 0)
     {
-    case IF_ELSE:
-        // Emit a series of comparisons and conditional branches:
-        //      CMPr #caseValue1
-        //      LBEQ label1
-        //      etc.
-        //
-        for (SwitchCaseList::const_iterator it = cases.begin(); it != cases.end(); ++it)
+        out.ins("LBRA", defaultLabel, "switch default (no case statements)");
+    }
+    else
+    {
+        switch (jumpMode)
         {
-            const SwitchCase &c = *it;
-
-            if (!c.isDefault)
+        case IF_ELSE:
+            // Emit a series of comparisons and conditional branches:
+            //      CMPr #caseValue1
+            //      LBEQ label1
+            //      etc.
+            //
+            for (SwitchCaseList::const_iterator it = cases.begin(); it != cases.end(); ++it)
             {
-                if (exprIsByte && int16_t(c.caseValue) > 0xFF)
-                    ;  // no match possible: don't generate CMP+LBEQ
-                else
+                const SwitchCase &c = *it;
+
+                if (!c.isDefault)
                 {
-                    uint16_t caseValue = c.caseValue;
+                    out.emitComment("Switch case at " + c.lineNo);
+                    const string &caseLabel = caseLabels[it - cases.begin()];
+                    uint32_t caseValue = c.caseValue;
                     if (exprIsByte)
                         caseValue &= 0xFF;
-                    out.ins(cmpInstr, "#" + wordToString(caseValue, true), "case " + wordToString(caseValue, false));
-                    out.ins("LBEQ", caseLabels[it - cases.begin()]);
+
+                    if (isLongSwitch)
+                    {
+                        // X is assumed to point to the 32-bit switch expression.
+
+                        DWordConstantExpr dwordCE(expression->isSigned() ? int32_t(caseValue) : caseValue,
+                                                  expression->isSigned());
+                        string dwordLabel = TranslationUnit::instance().registerDWordConstant(dwordCE);
+                        dwordCE.setLabel(dwordLabel);
+                        out.ins("LDD", "#" + dwordLabel + "-(*+3+3)", "address of case value, relative to return address pushed by upcoming LBSR");
+                        callUtility(out, "cmpDWordSwitchExpr", "compare switch expression at X to case value designated by D");
+                    }
+                    else
+                    {
+                        out.ins(cmpInstr, "#" + wordToString(caseValue, true), "case " + wordToString(caseValue, false));
+                    }
+                    out.ins("LBEQ", caseLabel, c.labeledStmt.getLineNo());
                 }
             }
-        }
 
-        out.ins("LBRA", defaultLabel, "switch default");
-        break;
-    case JUMP_TABLE:
-        if (caseValues.size() == 0)
-        {
-            out.ins("LBRA", defaultLabel, "switch default (no case statements)");
-        }
-        else
-        {
+            out.ins("LBRA", defaultLabel, "switch default");
+            break;
+
+        case JUMP_TABLE:
+            assert(!(isLongSwitch && exprIsByte));  // either long or byte, not both
             if (exprIsByte)
                 out.ins(expression->getConvToWordIns());  // always use a word expression
             string tableLabel = TranslationUnit::instance().generateLabel('L');
             out.ins("LEAX", tableLabel + ",PCR", "jump table for switch at " + expression->getLineNo());
-            const char *routine = expression->isSigned() ? "signedJumpTableSwitch" : "unsignedJumpTableSwitch";
+            const string routine = string(expression->isSigned() ? "signed" : "unsigned") + (isLongSwitch ? "DWord" : "") + "JumpTableSwitch";
             out.emitImport(routine);
             TranslationUnit::instance().registerNeededUtility(routine);
             out.ins("LBRA", routine);
 
-            // Pre-table data: minimum and maximum case value, default label offset.
+            // Pre-table data: minimum and maximum case values, default label offset.
             // Offsets are used instead of directly using the label, to preserve
             // the relocatability of the program.
-            uint16_t minValue = 0, maxValue = 0;
+            uint32_t minValue = 0, maxValue = 0;
             if (expression->isSigned())
                 getSignedMinAndMaxCaseValues(minValue, maxValue);
             else
                 getUnsignedMinAndMaxCaseValues(minValue, maxValue);
-            out.ins("FDB", expression->isSigned() ? intToString(minValue) : wordToString(minValue), "minimum case value");
-            out.ins("FDB", expression->isSigned() ? intToString(maxValue) : wordToString(maxValue), "maximum case value");
-            out.ins("FDB", defaultLabel + "-" + tableLabel, "default label");
+            if (isLongSwitch)
+            {
+                DWordConstantExpr::emitDWordConstantDefinition(out, minValue);
+                DWordConstantExpr::emitDWordConstantDefinition(out, maxValue);
+            }
+            else
+            {
+                out.ins("FDB", expression->isSigned() ? intToString(int16_t(minValue)) : wordToString(uint16_t(minValue)), "minimum case value");
+                out.ins("FDB", expression->isSigned() ? intToString(int16_t(maxValue)) : wordToString(uint16_t(maxValue)), "maximum case value");
+            }
+            out.ins("FDB", defaultLabel + "-" + tableLabel, "offset of default label");
 
             out.emitLabel(tableLabel);
 
             // Emit an offset for each case in the interval going from minValue to maxValue.
             if (expression->isSigned())
-                emitJumpTableEntries(out, caseValues, caseLabels, int16_t(minValue), int16_t(maxValue), tableLabel, defaultLabel);
+                emitJumpTableEntries(out, caseValues, caseLabels, int32_t(minValue), int32_t(maxValue), tableLabel, defaultLabel);
             else
                 emitJumpTableEntries(out, caseValues, caseLabels, minValue, maxValue, tableLabel, defaultLabel);
+            break;
         }
-        break;
     }
 
     pushScopeIfExists();
     tu.pushBreakableLabels(endSwitchLabel, "");  // continue statement is not supported in a switch
 
-    // Emit the code for the switch() body.
+    // Emit the code for the switch() body, which will emit the labels.
     //
-    for (SwitchCaseList::const_iterator it = cases.begin(); it != cases.end(); ++it)
-    {
-        const SwitchCase &c = *it;
-
-        const string &caseLabel = caseLabels[it - cases.begin()];
-        string comment;
-        if (c.isDefault)
-            comment = "default";
-        else
-            comment = "case " + wordToString(c.caseValue, false);
-
-        out.emitLabel(caseLabel, comment);
-
-        for (std::vector<const Tree *>::const_iterator jt = c.statements.begin(); jt != c.statements.end(); ++jt)
-            if (! (*jt)->emitCode(out, lValue))
-                return false;
-    }
+    if (statement && ! statement->emitCode(out, false))
+        return false;
 
     tu.popBreakableLabels();
     popScopeIfExists();
@@ -394,30 +470,30 @@ SwitchStmt::emitCode(ASMText &out, bool lValue) const
 
 
 void
-SwitchStmt::getSignedMinAndMaxCaseValues(uint16_t &minValue, uint16_t &maxValue) const
+SwitchStmt::getSignedMinAndMaxCaseValues(uint32_t &minValue, uint32_t &maxValue) const
 {
-    int16_t m = 32767, M = -32768;
-    for (SwitchCaseList::const_iterator it = cases.begin(); it != cases.end(); ++it)
-    {
-        const SwitchCase &c = *it;
-        m = std::min(m, int16_t(c.caseValue));
-        M = std::max(M, int16_t(c.caseValue));
-    }
-    minValue = uint16_t(m);
-    maxValue = uint16_t(M);
+    int32_t m = 0x7FFFFFFFl, M = 0x80000000l;
+    for (const SwitchCase &c : cases)
+        if (!c.isDefault)
+        {
+            m = std::min(m, int32_t(c.caseValue));
+            M = std::max(M, int32_t(c.caseValue));
+        }
+    minValue = uint32_t(m);
+    maxValue = uint32_t(M);
 }
 
 
 void
-SwitchStmt::getUnsignedMinAndMaxCaseValues(uint16_t &minValue, uint16_t &maxValue) const
+SwitchStmt::getUnsignedMinAndMaxCaseValues(uint32_t &minValue, uint32_t &maxValue) const
 {
-    minValue = 0xFFFF, maxValue = 0;
-    for (SwitchCaseList::const_iterator it = cases.begin(); it != cases.end(); ++it)
-    {
-        const SwitchCase &c = *it;
-        minValue = std::min(minValue, c.caseValue);
-        maxValue = std::max(maxValue, c.caseValue);
-    }
+    minValue = 0xFFFFFFFFul, maxValue = 0;
+    for (const SwitchCase &c : cases)
+        if (!c.isDefault)
+        {
+            minValue = std::min(minValue, c.caseValue);
+            maxValue = std::max(maxValue, c.caseValue);
+        }
 }
 
 
@@ -442,11 +518,11 @@ SwitchStmt::computeJumpModeCost(JumpMode jumpMode,
         }
     case JUMP_TABLE:
         {
-            uint16_t minValue = caseValues.front().first;
-            uint16_t maxValue = caseValues.back().first;
-            uint16_t numTableEntries = 1;
+            uint32_t minValue = caseValues.front().first;
+            uint32_t maxValue = caseValues.back().first;
+            size_t numTableEntries = 1;
             if (expression->isSigned())
-                numTableEntries += uint16_t(int16_t(maxValue) - int16_t(minValue));
+                numTableEntries += uint32_t(int32_t(maxValue) - int32_t(minValue));
             else
                 numTableEntries += maxValue - minValue;
 

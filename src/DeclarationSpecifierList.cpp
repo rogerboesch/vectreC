@@ -1,7 +1,5 @@
-/*  $Id: DeclarationSpecifierList.cpp,v 1.15 2019/06/22 03:35:44 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2016 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -28,7 +26,7 @@ DeclarationSpecifierList::DeclarationSpecifierList()
   : typeDesc(NULL),
     isTypeDef(false),
     isISR(false),
-    receivesFirstParamInReg(false),
+    callConvention(DEFAULT_CMOC_CALL_CONV),
     asmOnly(false),
     noReturnInstruction(false),
     isExtern(false),
@@ -51,20 +49,28 @@ DeclarationSpecifierList::~DeclarationSpecifierList()
 }
 
 
-// Does not keep a reference to 'tsToAdd', but keeps a pointer to 'tsToAdd.typeDesc'.
+// Does not keep a reference to 'tsToAdd', but may keep a pointer to 'tsToAdd.typeDesc'.
 //
 void
 DeclarationSpecifierList::add(const TypeSpecifier &tsToAdd)
 {
+    if (tsToAdd.enumeratorList && typeDesc)
+    {
+        // This reports a case like: enum { A } enum { B };
+        // where a semi-colon is missing before the 2nd 'enum'.
+        errormsg("unexpected type combination");
+    }
+
     if (!typeDesc)
     {
+        assert(tsToAdd.typeDesc);
         typeDesc = tsToAdd.typeDesc;
 
         // See similar case in add(Specifier).
         if (isISR && !typeDesc->isInterruptServiceRoutine())
             typeDesc = TranslationUnit::getTypeManager().getInterruptType(typeDesc);
-        if (receivesFirstParamInReg && !typeDesc->isFunctionReceivingFirstParamInReg())
-            typeDesc = TranslationUnit::getTypeManager().getFPIRType(typeDesc);
+        if (callConvention != DEFAULT_CMOC_CALL_CONV && typeDesc->getCallConvention() != callConvention)
+            typeDesc = TranslationUnit::getTypeManager().getTypeWithCallConvention(typeDesc, callConvention);
 
         enumTypeName = tsToAdd.enumTypeName;
         assert(!enumeratorList);
@@ -93,6 +99,18 @@ DeclarationSpecifierList::add(const TypeSpecifier &tsToAdd)
         return;
     }
 
+    if (tsToAdd.typeDesc->isLong())
+    {
+        if (!typeDesc->isIntegral() && typeDesc->type != SIZELESS_TYPE)
+        {
+            errormsg("long modifier can only be applied to integral type");
+            return;
+        }
+        // Adding long to int, signed or unsigned.
+        typeDesc = TranslationUnit::getTypeManager().getIntType(tsToAdd.typeDesc, typeDesc->isSigned);
+        return;
+    }
+
     if (typeDesc != tsToAdd.typeDesc)
         errormsg("combining type specifiers is not supported");
 }
@@ -117,11 +135,13 @@ DeclarationSpecifierList::add(Specifier specifier)
         if (typeDesc)
             typeDesc = TranslationUnit::getTypeManager().getInterruptType(typeDesc);
         break;
+    case GCCCALL_SPEC:
     case FUNC_RECEIVES_FIRST_PARAM_IN_REG_SPEC:
-        receivesFirstParamInReg = true;
-
+        if (callConvention != DEFAULT_CMOC_CALL_CONV)
+            errormsg("mixing more than one calling convention keywords");
+        callConvention = (specifier == GCCCALL_SPEC ? GCC6809_CALL_CONV : FIRST_PARAM_IN_REG_CALL_CONV);
         if (typeDesc)
-            typeDesc = TranslationUnit::getTypeManager().getFPIRType(typeDesc);
+            typeDesc = TranslationUnit::getTypeManager().getTypeWithCallConvention(typeDesc, callConvention);
         break;
     case ASSEMBLY_ONLY_SPEC:
         asmOnly = true;
@@ -174,10 +194,10 @@ DeclarationSpecifierList::isInterruptServiceFunction() const
 }
 
 
-bool
-DeclarationSpecifierList::isFunctionReceivingFirstParamInReg() const
+CallConvention
+DeclarationSpecifierList::getCallConvention() const
 {
-    return receivesFirstParamInReg;
+    return callConvention;
 }
 
 
@@ -249,5 +269,5 @@ DeclarationSpecifierList::detachEnumeratorList()
 bool
 DeclarationSpecifierList::isModifierLegalOnVariable() const
 {
-    return !isISR && !receivesFirstParamInReg && !asmOnly && !noReturnInstruction;
+    return !isISR && callConvention == DEFAULT_CMOC_CALL_CONV && !asmOnly && !noReturnInstruction;
 }

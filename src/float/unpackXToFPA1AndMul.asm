@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 unpackXToFPA1AndMul	EXPORT
@@ -12,9 +14,8 @@ unpackXtoFPA1AndPrep    IMPORT
 ;
 unpackXToFPA1AndMul
 	lbsr	unpackXtoFPA1AndPrep
-        jmp     $BACC           ; starts with BEQ instruction
-
-
+	flt_mulFPA0ByFPA1
+	rts
 
 
 	ENDSECTION

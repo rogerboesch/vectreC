@@ -1,7 +1,5 @@
-/*  $Id: ForStmt.cpp,v 1.12 2018/02/02 02:55:59 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -48,6 +46,54 @@ ForStmt::~ForStmt()
 }
 
 
+// Example: unsigned max = 256; for (unsigned char i = 0; i < max; ++i) {...}
+// Variable i can never reach 256, so the loop will be infinite, which is probably not intended.
+//
+void
+ForStmt::warnIfForConditionComparesDifferentSizes() const
+{
+    auto &tu = TranslationUnit::instance();
+    if (!tu.warnIfForConditionComparesDifferentSizes())
+        return;
+
+    if (!condition)
+        return;
+    auto binExpr = dynamic_cast<BinaryOpExpr *>(condition);
+    if (!binExpr || !binExpr->isRelationalOperator())
+        return;
+    
+    // Get the sizes of the two sides of the comparison.
+    //
+    auto leftTS  = binExpr->getLeft()->getTypeDesc();
+    auto rightTS = binExpr->getRight()->getTypeDesc();
+    int16_t leftSize  = tu.getTypeSize(*leftTS);
+    int16_t rightSize = tu.getTypeSize(*rightTS);
+    if (leftSize == rightSize)
+        return;
+
+    // Tolerate for (byte i = 0; i < 42; ++i) because 42 fits in a byte.
+    //
+    const Tree *largerTypeTree = NULL;
+    int16_t smallerSize = 0;
+    if (leftSize < rightSize)
+    {
+        smallerSize = leftSize;
+        largerTypeTree = binExpr->getRight();
+    }
+    else
+    {
+        smallerSize = rightSize;
+        largerTypeTree = binExpr->getLeft();
+    }
+    if (smallerSize == 1 && largerTypeTree->fits8Bits())
+        return;
+
+    condition->warnmsg("for loop condition compares expressions of different sizes (`%s' vs `%s')",
+                            leftTS->toString().c_str(),
+                            rightTS->toString().c_str());
+}
+
+
 /*virtual*/
 void
 ForStmt::checkSemantics(Functor &)
@@ -55,6 +101,8 @@ ForStmt::checkSemantics(Functor &)
     if (condition && condition->getType() == CLASS_TYPE && !condition->isRealOrLong())
         condition->errormsg("invalid use of %s as condition of for statement",
                             condition->getTypeDesc()->isUnion ? "union" : "struct");
+
+    warnIfForConditionComparesDifferentSizes();
 }
 
 

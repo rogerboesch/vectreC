@@ -3,24 +3,22 @@
 _strlwr	EXPORT
 
 
-* byte *strlwr(byte *)
-_strlwr	pshs	x
-	ldx	4,s		string address
-	bra	_strlwr_020
-_strlwr_010
+* char *strlwr(char *str)
+_strlwr
+	ldx	2,s		str
+	bra	@loopCond
+@loop
 	cmpa	#65		'A'
-	blo	_strlwr_020
+	blo	@loopCond
 	cmpa	#90		'Z'
-	bhi	_strlwr_020
+	bhi	@loopCond
 	adda	#32		make lowercase
 	sta	-1,x
-_strlwr_020
+@loopCond
 	lda	,x+
-	bne	_strlwr_010
-	ldd	4,s		return string address
-	puls	x,pc
-
-
+	bne	@loop
+	ldd	2,s		return str
+	rts
 
 
 	ENDSECTION

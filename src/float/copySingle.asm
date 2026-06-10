@@ -15,11 +15,11 @@ copySingle
 	std	,x
 	ldd	2,u
 	std	2,x
+        IFNDEF _CMOC_MC6839_
 	ldb	4,u
 	stb	4,x
+        ENDC
 	puls	u,pc
-
-
 
 
 	ENDSECTION

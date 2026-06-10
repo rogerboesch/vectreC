@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 addSingleUnsignedInt	EXPORT
@@ -11,7 +13,7 @@ addSingleUnsignedInt
 	ldd	10,s		; right (unsigned int)
 	lbsr	loadUnsignedDInFPA0
 	ldx	8,s		; left (single)
-	jsr	$BB2F		; unpack from X to FPA1
+	flt_unpackFromXToFPA1
 	lbra	addFPA0FPA1
 
 

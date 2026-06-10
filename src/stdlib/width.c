@@ -4,7 +4,7 @@
 byte width(byte columns)
 {
     #ifdef _COCO_BASIC_
-    if (!isCoCo3)
+    if (* (word *) 0xFFF8 != 0xFEF7)  // if not CoCo 3
         return FALSE;
 
     if (columns != 32 && columns != 40 && columns != 80)

@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 unpackXToFPA0AndDiv	EXPORT
@@ -14,12 +16,13 @@ unpackXtoFPA1AndPrep    IMPORT
 ;
 unpackXToFPA0AndDiv
 	lbsr	unpackXtoFPA0AndPrep
-        jmp     $BB91           ; starts with BEQ instruction
+	flt_divFPA1ByFPA0
+	rts
 
 unpackXToFPA1AndDiv
 	lbsr	unpackXtoFPA1AndPrep
-        jmp     $BB91           ; starts with BEQ instruction
-
+	flt_divFPA1ByFPA0
+	rts
 
 
 

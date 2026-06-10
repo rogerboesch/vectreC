@@ -1,8 +1,7 @@
-# $Id: Makefile.am,v 1.4 2016/04/08 23:04:04 sarrazip Exp $
+# $Id: Makefile.am,v 1.5 2022/01/02 22:18:43 sarrazip Exp $
 
 SUBDIRS = src macros doc
 
-docdir = $(datadir)/doc/$(PACKAGE)
 doc_DATA = \
 	AUTHORS \
 	COPYING \

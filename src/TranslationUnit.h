@@ -1,7 +1,5 @@
-/*  $Id: TranslationUnit.h,v 1.63 2020/05/07 01:04:08 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2018 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -31,37 +29,38 @@ class ClassDef;
 class DeclarationSequence;
 class DeclarationSpecifierList;
 class Declarator;
+class Parameters;
 
 
 class TranslationUnit
 {
 public:
 
+    // The constructor must have been called before calling this method.
+    //
     static TranslationUnit &instance()
     {
         assert(theInstance);
         return *theInstance;
     }
 
+    static bool hasInstance() { return theInstance != NULL; }
+
     static TypeManager &getTypeManager() { return instance().typeManager; }
 
-    static void createInstance(TargetPlatform targetPlatform,
-                               bool callToUndefinedFunctionAllowed,
-                               bool warnSignCompare,
-                               bool warnPassingConstForFuncPtr,
-                               bool isConstIncorrectWarningEnabled,
-                               bool isBinaryOpGivingByteWarningEnabled,
-                               bool isLocalVariableHidingAnotherWarningEnabled,
-                               bool relocatabilitySupported);
-
-    static void destroyInstance();
+    // After calling this, instance() returns the lone instance of this class.
+    // Must not be called again before destroying the instance.
+    //
+    // The TranslationUnit instance keeps a reference to 'params'.
+    //
+    TranslationUnit(const Parameters &params);
 
     // Resets the instance pointer. Do not call instance() after this.
     ~TranslationUnit();
 
-    // defList: Must come from 'new' (or be null). Ownership transfered to TranslationUnit.
+    // defList: Must come from 'new' (or be null). Ownership transferred to TranslationUnit.
     void setDefinitionList(TreeSequence *defList);
-    
+
     // Stores 'fd' in a table (indexed by function identifiers) used by getFunctionDef().
     void addFunctionDef(FunctionDef *fd);
 
@@ -82,14 +81,35 @@ public:
     // See detectCalledFunctions().
     void registerFunctionCall(const std::string &callerId, const std::string &calleeId);
 
-    void checkSemantics();
+    // Returns the register used to pass the first parameter of a function,
+    // WHEN the first parameter is passed this way.
+    // CMOC's default calling convention is to pass all function parameters on the stack.
+    //
+    Register getFirstParameterRegister(bool isParam8Bits) const;
 
-    void setTargetPlatform(TargetPlatform platform);
+    void pushCurrentDefaultCallConvention(CallConvention callConv);
+
+    CallConvention popCurrentDefaultCallConvention();
+
+    CallConvention getCurrentDefaultCallConvention() const;
+
+    void checkSemantics();
 
     TargetPlatform getTargetPlatform() const;
 
-    // Get the register (i.e., Y or PCR, i.e., data segment or code segment) that is used
-    // to refer to global data.
+    FloatingPointLibrary getFloatingPointLibrary() const;
+
+    bool isCharSignedByDefault() const;
+
+    // Indicates if the platform the compiler is generating code for uses the Y register,
+    // typically as a data segment pointer. On platforms that do not do this, Y may be
+    // used in generated code.
+    // See getDataIndexRegister().
+    //
+    bool targetPlatformUsesY() const;
+
+    // Get the name of the register (i.e., Y or PCR, i.e., data segment or code segment)
+    // that is used to refer to global data.
     //
     const char *getDataIndexRegister(bool prefixWithComma, bool readOnly) const;
 
@@ -101,8 +121,30 @@ public:
 
     void allocateLocalVariables();
 
+    // Calls methods on the ASMText to emit instructions and directives in an in-memory format
+    // contained in the ASMText.
+    // Does not actually write an assembly language file.
     // allocateLocalVariables() must have been called.
-    void emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stackSpace, bool emitBootLoaderMarker);
+    //
+    // N.B.: finishEmittingAssembler() MUST be called soon after this to emit imports for
+    //       the utility routines and to emit the END directive.
+    //
+    // Stops short if an error is detected.
+    // dataAddress: 0xFFFF is the data section is NOT separate from the code/read-only section.
+    // initialStackRegValue: See Parameters::initialStackRegValue.
+    // stackSpace: Ignored when targetting OS-9.
+    // extraStackSpace: Only used when targetting OS-9.
+    // emitBootLoaderMarker: Only used when targetting COCO_BASIC.
+    //
+    void emitAssembler(ASMText &out, uint16_t dataAddress,
+                       int32_t initialStackRegValue,
+                       uint16_t stackSpace, uint16_t extraStackSpace,
+                       bool emitBootLoaderMarker);
+
+    // Emits IMPORT directives for each utility routine registered with registerNeededUtility().
+    // Emits the END directive.
+    //
+    void finishEmittingAssembler(ASMText &out);
 
     void pushScope(Scope *scope);
     Scope *getCurrentScope();
@@ -128,6 +170,8 @@ public:
 
     std::string getEscapedStringLiteral(const std::string &stringLabel);
 
+    // Returns an empty string if the real constant cannot be represented
+    // on the targeted platform.
     // A given real constant is not registered twice, so as to save memory.
     //
     std::string registerRealConstant(const class RealConstantExpr &rce);
@@ -149,23 +193,36 @@ public:
 
     bool isRelocatabilitySupported() const;
 
+    FramePointerOption getFramePointerOption() const;
+
+    // Called during parsing, right after the parser recognized the #pragma directive.
+    // May change some fields of this TranslationUnit object.
+    // Issues errors or warnings as needed.
+    //
+    void processParseTimePragma(class Pragma &pragma);
+
+    // Processes #pragma directives that need to be processed AFTER parsing.
+    //
+    // Changes 'codeAddress' iff a '#pragma org' directive is seen.
+    // codeAddressSetBySwitch: Indicates if the code address was set by a command-line argument.
+    //
+    // Changes 'codeLimitAddress' iff a '#pragma limit' directive is seen.
+    // codeLimitAddressSetBySwitch: Indicates if the code limit address was set by a command-line argument.
+    //
+    // Changes 'dataAddress' iff a '#pragma data' directive is seen.
+    //
+    // May change some fields of this TranslationUnit object.
+    // Issues errors or warnings as needed.
+    //
     void processPragmas(uint16_t &codeAddress, bool codeAddressSetBySwitch,
                         uint16_t &codeLimitAddress, bool codeLimitAddressSetBySwitch,
                         uint16_t &dataAddress, bool dataAddressSetBySwitch,
                         uint16_t &stackSpace,
                         bool compileOnly);
 
-    /** Determines if accesses to pointers will include a run-time null pointer check.
-    */
-    void enableNullPointerChecking(bool enable);
-
     /** Indicates if accesses to pointers must include a run-time null pointer check.
     */
     bool isNullPointerCheckingEnabled() const;
-
-    /** Determines if stack overflows are checked for at the beginning of a function.
-    */
-    void enableStackOverflowChecking(bool enable);
 
     /** Indicates if stack overflows are checked for at the beginning of a function.
     */
@@ -176,11 +233,15 @@ public:
 
     static void checkForEllipsisWithoutNamedArgument(const FormalParamList *formalParamList);
 
-    bool isCallToUndefinedFunctionAllowed() const;
+    bool areAllWarningMessagesInhibited() const;
 
     bool isWarningOnSignCompareEnabled() const;
 
     bool isWarningOnPassingConstForFuncPtr() const;
+
+    bool isFloatingPointSupported() const;
+
+    bool isProgramMultiThreaded() const;
 
     void warnIfFloatUnsupported();
 
@@ -190,7 +251,35 @@ public:
 
     bool warnOnLocalVariableHidingAnother() const;
 
-    void warnAboutVolatile();
+    bool warnOnNonLiteralPrintfFormat() const;
+
+    bool warnOnUncalledStaticFunction() const;
+
+    bool warnOnMissingFieldInitializers() const;
+
+    bool warnAboutInlineAsmArrayIndexes() const;
+
+    void enableVolatileWarning();
+
+    bool warnIfForConditionComparesDifferentSizes() const;
+
+    bool warnArrayWithUnknownFirstDimension() const;
+
+    bool warnArraySizeZero() const;
+
+    bool warnTooManyElementsInInitializer() const;
+
+    bool warnShiftAlwaysZero() const;
+
+    bool warnLabelOnDeclaration() const;
+
+    bool warnAssignmentInCondition() const;
+
+    // If true, a type mismatch on a return statement, where the two types are words, pointers or arrays,
+    // only gives a warning instead of an error.
+    // Example: int foo() { return "bar"; }
+    //
+    bool onlyWarningOnWordSizedReturnTypeMismatch() const;
 
     // Adds the given filename to the list of filenames that the current
     // translation unit depends on.
@@ -199,10 +288,14 @@ public:
 
     // Writes a makefile prerequisite rule.
     // Files whose path begins with the string in pkgdatadir (case sensitive) are not listed.
+    // dependenciesFilename: If not empty, is written as the second target of the rule.
+    // outputFilename: The path of the file that is the target of the rule.
+    // pkgdatadir: Files whose path begins with this string (case sensitive) are not listed,
+    //             as they are considered system header files.
     //
     void writePrerequisites(std::ostream &out,
                             const std::string &dependenciesFilename,
-                            const std::string &objectFilename,
+                            const std::string &outputFilename,
                             const std::string &pkgdatadir) const;
 
     // Adds decl to globalVariables if not extern.
@@ -210,27 +303,29 @@ public:
     //
     void declareGlobal(Declaration *decl);
 
+    bool emitInternalRepresentation(std::ostream &irFile);
+
 private:
 
-    TranslationUnit(TargetPlatform targetPlatform,
-                    bool _callToUndefinedFunctionAllowed,
-                    bool _warnSignCompare,
-                    bool _warnPassingConstForFuncPtr,
-                    bool _isConstIncorrectWarningEnabled,
-                    bool _isBinaryOpGivingByteWarningEnabled,
-                    bool _isLocalVariableHidingAnotherWarningEnabled,
-                    bool _relocatabilitySupported);
-
     void detectCalledFunctions();
+    CodeStatus emitPrecedingVerbatimAssemblyBlocks(ASMText &out, std::vector<Tree *>::const_iterator it);
+    CodeStatus emitAssemblerStmts(ASMText &out,
+                                  std::vector<Tree *>::const_iterator begin,
+                                  std::vector<Tree *>::const_iterator end);
     static std::string resolveVectrexMusicAddress(const std::string &symbol);
     void emitProgramEnd(ASMText &out) const;
     CodeStatus emitWritableGlobals(ASMText &out) const;
     CodeStatus emitGlobalVariables(ASMText &out, bool readOnlySection, bool withStaticInitializer) const;
+    CodeStatus emitLocalStaticVariables(ASMText &out, bool readOnlySection, bool withStaticInitializer) const;
+    void determineIfGlobalIsReadOnly(Declaration &decl) const;
     void checkConstDataDeclarationInitializer(const Declaration &decl) const;
     void markGlobalDeclarations();
     void setTypeDescOfGlobalDeclarationClasses();
     void setGlobalDeclarationLabels();
     void declareFunctions();
+    void declareFunctionLocalStaticVariables();
+    bool adjustFunctionDefReturnTypeFromPrototype(FunctionDef &fd,
+                                                  FunctionDef &preexisting);
 
     struct StandardFunctionDeclaration
     {
@@ -246,6 +341,7 @@ private:
 
     static TranslationUnit *theInstance;
 
+    const Parameters &params;
     TypeManager typeManager;
     Scope *globalScope;  // Scope tree must be destroyed after the TreeSequences in definitionList
     TreeSequence *definitionList;  // owns the object, which must have been allocated with 'new'
@@ -256,6 +352,7 @@ private:
     std::vector<BreakableLabels> breakableStack;
     std::string functionEndLabel;  // assembly label of the function currently being emitted
     size_t labelGeneratorIndex;
+    std::vector<CallConvention> callConventionStack;
 
     typedef std::map<std::string, const StringLiteralExpr *> StringLiteralToExprMap;  // key = asm label
     StringLiteralToExprMap stringLiteralLabelToValue;
@@ -273,20 +370,9 @@ private:
                         // key = dword representation, value = asm label
 
     std::map<std::string, std::string> builtInFunctionDescs;
-    bool relocatabilitySupported;
-    bool isProgramExecutableOnlyOnce;
-    bool nullPointerCheckingEnabled;
-    bool stackOverflowCheckingEnabled;
-    bool callToUndefinedFunctionAllowed;
-    bool warnSignCompare;  // warn if <, <=, >, >= used on operands of differing signedness
-    bool warnPassingConstForFuncPtr;
     bool warnedAboutUnsupportedFloats;
-    bool isConstIncorrectWarningEnabled;
-    bool isBinaryOpGivingByteWarningEnabled;
-    bool isLocalVariableHidingAnotherWarningEnabled;
     bool warnedAboutVolatile;
     std::set<std::string> neededUtilitySubRoutines;
-    TargetPlatform targetPlatform;
 
     // Vectrex fields:
     std::string vxTitle;    
@@ -297,24 +383,12 @@ private:
     int8_t vxTitlePosY;
     std::string vxCopyright;
 
-    std::vector<std::string> sourceFilenamesSeen;  // as listed by cpp output
+    std::vector<std::string> prerequisiteFilenamesSeen;  // as listed by cpp output
 
     // Forbidden operations:
     TranslationUnit(const TranslationUnit &);
     TranslationUnit & operator = (const TranslationUnit &);
 };
-
-
-// inline because called often by parser.yy
-inline void
-TranslationUnit::warnIfFloatUnsupported()
-{
-    if (warnedAboutUnsupportedFloats)
-        return;
-    if (targetPlatform != COCO_BASIC && targetPlatform != OS9)
-        warnmsg("floating-point arithmetic is not supported on this platform");
-    warnedAboutUnsupportedFloats = true;
-}
 
 
 #endif  /* _H_TranslationUnit */

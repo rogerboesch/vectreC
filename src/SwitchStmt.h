@@ -1,7 +1,5 @@
-/*  $Id: SwitchStmt.h,v 1.11 2019/01/18 02:42:20 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2017 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2024 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,8 +18,8 @@
 #ifndef _H_SwitchStmt
 #define _H_SwitchStmt
 
-#include "Tree.h"
 #include "TreeSequence.h"
+#include "LabeledStmt.h"
 
 
 class SwitchStmt : public Tree
@@ -37,12 +35,14 @@ public:
     struct SwitchCase
     {
         bool isDefault;  // false means 'case'
-        uint16_t caseValue;
+        uint32_t caseValue;  // may be interpreted as a signed value
         std::string lineNo;  // source filename and line number where 'case' or 'default' keyword appears
-        std::vector<const Tree *> statements;
+        const LabeledStmt &labeledStmt;  // 'case' or 'default' statement
 
-        SwitchCase(bool _isDefault, uint16_t _caseValue, const std::string _lineNo)
-            : isDefault(_isDefault), caseValue(_caseValue), lineNo(_lineNo), statements() {}
+        SwitchCase(bool _isDefault, uint32_t _caseValue, const std::string _lineNo,
+                   const LabeledStmt &_labeledStmt)
+            : isDefault(_isDefault), caseValue(_caseValue), lineNo(_lineNo),
+              labeledStmt(_labeledStmt) {}
     };
 
     typedef std::vector<SwitchCase> SwitchCaseList;
@@ -51,15 +51,13 @@ public:
 
     virtual ~SwitchStmt();
 
-    const SwitchCaseList &getCases() const { return cases; }
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual bool iterate(Functor &f) override;
 
-    virtual bool iterate(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual void checkSemantics(Functor &f);
-
-    virtual void replaceChild(Tree *existingChild, Tree *newChild)
+    virtual void replaceChild(Tree *existingChild, Tree *newChild) override
     {
         if (deleteAndAssign(expression, existingChild, newChild))
             return;
@@ -68,29 +66,33 @@ public:
         assert(!"child not found");
     }
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
     // first = case value; second = index in cases[].
-    typedef std::pair<uint16_t, uint32_t> CaseValueAndIndexPair;
+    typedef std::pair<uint32_t, uint32_t> CaseValueAndIndexPair;
 
 private:
 
-    bool isDuplicateCaseValue(uint16_t caseValue, std::string &originalCaseValueLineNumber) const;
-    bool compileLabeledStatements(TreeSequence &statements);
-    void getSignedMinAndMaxCaseValues(uint16_t &minValue, uint16_t &maxValue) const;
-    void getUnsignedMinAndMaxCaseValues(uint16_t &minValue, uint16_t &maxValue) const;
+    bool isDuplicateCaseValue(uint32_t caseValue, std::string &originalCaseValueLineNumber) const;
+    bool compileLabeledStatements();
+    void getSignedMinAndMaxCaseValues(uint32_t &minValue, uint32_t &maxValue) const;
+    void getUnsignedMinAndMaxCaseValues(uint32_t &minValue, uint32_t &maxValue) const;
 
     static bool signedCaseValueComparator(const CaseValueAndIndexPair &a, const CaseValueAndIndexPair &b);
     static bool unsignedCaseValueComparator(const CaseValueAndIndexPair &a, const CaseValueAndIndexPair &b);
     size_t computeJumpModeCost(JumpMode jumpMode, const std::vector<CaseValueAndIndexPair> &caseValues) const;
 
+    std::pair<bool, uint32_t> checkCaseExprAndGetValue(const Tree *caseExpr) const;
+
+    class SwitchCaseCollector;
+
     // Forbidden:
     SwitchStmt(const SwitchStmt &);
     SwitchStmt &operator = (const SwitchStmt &);
 
-public:
+private:
 
-    Tree *expression;  // owns the pointed object
+    Tree *expression;  // may be signed or unsigned; owns the pointed object
     Tree *statement;   // owns the pointed object
     SwitchCaseList cases;  // includes the 'default' clause, if any
 

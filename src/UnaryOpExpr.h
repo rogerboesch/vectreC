@@ -1,4 +1,4 @@
-/*  $Id: UnaryOpExpr.h,v 1.12 2017/07/25 01:21:53 sarrazip Exp $
+/*  $Id: UnaryOpExpr.h,v 1.13 2023/08/27 01:41:05 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -53,9 +53,9 @@ public:
     // Returns null in the case of the SIZE_OF operator.
     Tree *getSubExpr();
 
-    virtual void checkSemantics(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
     // Determines the type of the sizeof argument if it has not already been determined.
     // Can be called more than once.
@@ -74,13 +74,13 @@ public:
 
     CodeStatus emitSimplerIfIncrement(ASMText &out);
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual void replaceChild(Tree *existingChild, Tree *newChild);
+    virtual void replaceChild(Tree *existingChild, Tree *newChild) override;
 
     void allowDereferencingVoid() { dereferencingVoidAllowed = true; }
 
-    virtual bool isLValue() const { return oper == INDIRECTION || oper == PREINC || oper == POSTINC || oper == POSTINC || oper == POSTDEC; }
+    virtual bool isLValue() const override { return oper == INDIRECTION || oper == PREINC || oper == POSTINC || oper == POSTINC || oper == POSTDEC; }
 
 private:
 

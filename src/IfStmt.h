@@ -1,4 +1,4 @@
-/*  $Id: IfStmt.h,v 1.8 2017/07/22 15:36:11 sarrazip Exp $
+/*  $Id: IfStmt.h,v 1.11 2023/08/27 01:41:04 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -37,13 +37,13 @@ public:
 
     const Tree *getAlternative() const { return alternative; }
 
-    virtual void checkSemantics(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual void replaceChild(Tree *existingChild, Tree *newChild)
+    virtual void replaceChild(Tree *existingChild, Tree *newChild) override
     {
         if (deleteAndAssign(condition, existingChild, newChild))
             return;
@@ -54,7 +54,7 @@ public:
         assert(!"child not found");
     }
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
 private:
 

@@ -1,4 +1,4 @@
-/*  $Id: TreeSequence.cpp,v 1.14 2017/12/25 21:47:41 sarrazip Exp $
+/*  $Id: TreeSequence.cpp,v 1.20 2025/08/30 02:20:34 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -22,6 +22,7 @@
 #include "TranslationUnit.h"
 #include "CastExpr.h"
 #include "IdentifierExpr.h"
+#include "StringLiteralExpr.h"
 #include "CommaExpr.h"
 
 using namespace std;
@@ -29,7 +30,8 @@ using namespace std;
 
 TreeSequence::TreeSequence()
 :   Tree(),
-    sequence()
+    sequence(),
+    requiredNumArrayElements(0)
 {
 }
 
@@ -37,8 +39,7 @@ TreeSequence::TreeSequence()
 /*virtual*/
 TreeSequence::~TreeSequence()
 {
-    for (std::vector<Tree *>::iterator it = sequence.begin(); it != sequence.end(); ++it)
-        delete *it;
+    deleteVectorElements(sequence);
 }
 
 
@@ -109,6 +110,22 @@ vector<Tree *>::reverse_iterator
 TreeSequence::rend()
 {
     return sequence.rend();
+}
+
+
+const Tree *
+TreeSequence::getTree(size_t index) const
+{
+    if (index >= sequence.size())
+        return NULL;
+    return sequence[index];
+}
+
+
+Tree *
+TreeSequence::getTree(size_t index)
+{
+    return const_cast<Tree *>(static_cast<const TreeSequence *>(this)->getTree(index));
 }
 
 
@@ -197,6 +214,13 @@ TreeSequence::replaceChild(Tree *existingChild, Tree *newChild)
 }
 
 
+void
+TreeSequence::detachChild(const Tree *existingChild)
+{
+    sequence.erase(std::remove(sequence.begin(), sequence.end(), existingChild), sequence.end());
+}
+
+
 string
 TreeSequence::toString() const
 {
@@ -209,3 +233,70 @@ TreeSequence::toString() const
     }
     return ss.str();
 }
+
+
+// Recursive check.
+// Returns false if no string literal is found at any level.
+//
+bool
+TreeSequence::isTreeSequenceWithOnlyStringLiterals() const
+{
+    bool atLeastOne = false;
+
+    for (vector<Tree *>::const_iterator it = begin(); it != end(); ++it)
+    {
+        const Tree *tree = *it;
+
+        if (const TreeSequence *subSeq = dynamic_cast<const TreeSequence *>(tree))
+        {
+            if (!subSeq->isTreeSequenceWithOnlyStringLiterals())
+                return false;
+            atLeastOne = true;
+            continue;
+        }
+
+        if (dynamic_cast<const StringLiteralExpr *>(tree) == NULL)
+            return false;
+
+        atLeastOne = true;
+    }
+
+    return atLeastOne;
+}
+
+
+bool
+TreeSequence::isTreeSequenceWithOnlyNumericalLiterals() const
+{
+    for (vector<Tree *>::const_iterator it = begin(); it != end(); ++it)
+    {
+        const Tree *tree = *it;
+
+        if (const TreeSequence *subSeq = dynamic_cast<const TreeSequence *>(tree))
+        {
+            if (!subSeq->isTreeSequenceWithOnlyNumericalLiterals())
+                return false;
+            continue;
+        }
+
+        if (!tree->isNumericalLiteral())
+            return false;
+    }
+
+    return true;
+}
+
+
+void
+TreeSequence::setRequiredNumArrayElements(uint16_t _requiredNumArrayElements)
+{
+    requiredNumArrayElements = _requiredNumArrayElements;
+}
+
+
+uint16_t
+TreeSequence::getRequiredNumArrayElements() const
+{
+    return requiredNumArrayElements;
+}
+

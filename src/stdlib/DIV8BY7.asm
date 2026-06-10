@@ -21,18 +21,15 @@ DIV8BY7
 	LSRA
 	LSRA
 	TFR	A,B	high bits, divided by 8 (a)
-	ANDCC	#$FE	clear carry
-	ADCA	,S+	a + b. here we know carry is low.
-DIV8BY7_010:
+	ADDA	,S+	a + b
+@loop
 	INCB		the loop is executed between 1 and 6 times
-	SBCA	#7	since A is at most 38
-	BCC	DIV8BY7_010
+	SUBA	#7	since A is at most 38
+	BCC	@loop
 	ADDA	#7
 	DECB
 	RTS
 PAUL	EQU	12
-
-
 
 
 	ENDSECTION

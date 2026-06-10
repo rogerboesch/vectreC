@@ -5,33 +5,56 @@
 initSignedByteFromSingle	EXPORT
 
 
-; Based on Color Basic's routine at $B3ED.
+; Input: D => address of source number. X => address of destination number.
 ;
 initSignedByteFromSingle
+
+        IFDEF _CMOC_MC6839_
+
+initSignedWordFromSingle IMPORT
+        pshs    x,b,a           ; save X that points to destination, create temp short with D
+        leax    ,s              ; point X to temp short
+        lbsr    initSignedWordFromSingle
+        ldd     ,s++            ; pop resulting short
+        cmpd    #-128
+        blt     @tooLow
+        cmpd    #127
+        ble     @returnB        ; if not too high
+        ldb     #127
+        bra     @returnB
+@tooLow
+        ldb     #-128
+@returnB
+        stb     [,s]
+        puls    x,pc
+
+        ELSE
+
+; Based on Color Basic's routine at $B3ED.
 	pshs	u,y,x		; save X that points to destination
 	tfr	d,x		; point X to source real
-	jsr	$BC14		; load FPA0 from X
+	flt_unpackFromXToFPA0
 ;
-	lda	FP0EXP
-	cmpa	#$80+8		; is FPA0 >= 128?
+	flt_loadAFromFPA0BiasedExp
+        beq     @zero                   ; exponent is 0, so FPA0 is 0.0
+	cmpa	#EXPBIAS+8		; is FPA0 >= 128?
 	bhs	@tooHigh
 	leax	packedMinus128,pcr
-	jsr	$BC96		; compare FPA0 to -128
+	flt_compareFPA0ToX		; compare FPA0 to -128
 	blt	@tooLow
 ;
 ; Shift the mantissa right until the binary point is 8 bits from the left of the mantissa.
-; We do not use Color Basic's $BCC8 routine because it is off by one on negative values, for C.
-        lda     FP0EXP
-        suba    #$80            ; real exponent in A (0..7); we want to increase it to 16
+        flt_loadAFromFPA0BiasedExp
+        suba    #EXPBIAS        ; real exponent in A (0..7); we want to increase it to 16
         bls     @zero
-        ldb     FP0MAN
+        flt_loadBFromTopFPA0MantissaByte
 @shiftLoop
         lsrb
         inca
         cmpa    #8
         blo     @shiftLoop
 ; Absolute value of result is in FP0MAN. Apply the sign.
-        tst     FP0SGN
+        flt_testFPA0Sign
         bpl     @store
         negb
         bra     @store
@@ -39,7 +62,7 @@ initSignedByteFromSingle
         clrb
 	bra	@store
 @tooHigh
-        tst     FP0SGN
+        flt_testFPA0Sign
         bpl     @max
         ldb     #-128
         bra     @store
@@ -56,7 +79,7 @@ packedMinus128
 	fdb	$0000
 	fcb	$00
 
-
+        ENDC
 
 
 	ENDSECTION

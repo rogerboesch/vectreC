@@ -1,21 +1,23 @@
 #include "coco.h"
 
 
-void setHighSpeed(byte fast)
+void
+setHighSpeed(BOOL fast)
 {
     asm
     {
         ldx     #65494
-        tst     fast
-        beq     setHighSpeed_010
+        tst     :fast
+        beq     @slow
         leax    1,x
-setHighSpeed_010:
+@slow:
 #ifdef _COCO_BASIC_
-        tst     isCoCo3
-        beq     setHighSpeed_020
+        ldd     $FFF8       ; IRQ vector
+        cmpd    #$FEF7      ; CoCo 3?
+        bne     @notCoCo3   ; branch if not
         leax    2,x
+@notCoCo3:
 #endif
-setHighSpeed_020:
         clr     ,x
     }
 }

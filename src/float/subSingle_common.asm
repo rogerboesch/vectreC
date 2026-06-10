@@ -1,4 +1,4 @@
-        INCLUDE float.inc
+	INCLUDE float.inc
 
 	SECTION code
 
@@ -6,6 +6,7 @@ subSingle_common	EXPORT
 subSingle_common_add    EXPORT
 
 
+; Routine that finishes work started by other routines, e.g., subSignedDWordSingle.
 ; Input: FPA0 = left operand;
 ;        10,S (before call) => right operand (single-precision).
 ; Output: ,S (before call) => address where to pack the result.
@@ -13,24 +14,21 @@ subSingle_common_add    EXPORT
 ;
 subSingle_common
 	ldx	10,s		; right (single)
-	jsr	$BB2F		; unpack from X to FPA1
-	com	FP1SGN		; invert sign of FPA1
+	flt_unpackFromXToFPA1
+	flt_invertFPA1Sign
 
-        ; Compute sign of result.
-        ldb     FP0SGN
-        eorb    FP1SGN
-        stb     RESSGN
+        flt_computeResultSign
 
+;   FALLTHROUGH
+
+; Routine that finishes work started by other routines, e.g., subSingleSignedDWord.
+;
 subSingle_common_add
-	lda     FP1EXP		; load exponent of FPA1
-	ldb     FP0EXP		; load exponent of FPA0
-	jsr     $B9C5		; FPA0 += FPA1
+	flt_addFPA1ToFPA0
 
 	ldx	,s		; result
-	jsr	$BC35		; pack FPA0 into X
+	flt_packFPA0ToX
 	puls	x,y,u,pc
-
-
 
 
 	ENDSECTION

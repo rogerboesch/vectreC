@@ -1,7 +1,5 @@
-/*  $Id: WordConstantExpr.h,v 1.8 2016/12/29 02:12:48 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2023 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -40,20 +38,29 @@ public:
 
     uint16_t getWordValue() const;
 
-    virtual void checkSemantics(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    // Tell emitCode() to assume that the value to load fits a byte, so that
+    // the emitted code will only load a byte instead of a word.
+    //
+    void forceAsByte();
 
-    virtual bool isLValue() const { return false; }
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
+
+    CodeStatus emitCodeToLoadByte(ASMText &out) const;
+
+    virtual bool isLValue() const override { return false; }
 
 private:
 
     static bool hasUnsignedSuffix(const char *tokenText);
     static bool hasLongSuffix(const char *tokenText);
+    CodeStatus emitRValue(ASMText &out, bool emitByte) const;
 
 private:
 
     double wordValue;  // value (possibly out of range for uint16_t) as seen by the parser
+    bool forcedAsByte;  // if true, emitCode() will emit code that loads a byte in B, instead of a word in D
 
 };
 

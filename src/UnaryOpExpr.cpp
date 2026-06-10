@@ -1,7 +1,5 @@
-/*  $Id: UnaryOpExpr.cpp,v 1.51 2020/04/05 03:02:58 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2018 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2023 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -146,18 +144,12 @@ UnaryOpExpr::checkSemantics(Functor & /*f*/)
             const char *prefix = (oper == PREINC || oper == POSTINC ? "in" : "de");
             if (subExpr->getType() == ARRAY_TYPE)
                 errormsg("cannot %screment array name", prefix);
-            else if (subExpr->isConst())
-                warnmsg("%scrementing a constant expression (type is `%s')", prefix, subExpr->getTypeDesc()->toString().c_str());
-            else
-            {
-                const ObjectMemberExpr *ome = dynamic_cast<const ObjectMemberExpr *>(subExpr);
-                if (ome && (ome->getSubExpr()->isConst() || ome->getSubExpr()->isPtrToOrArrayOfConst()))
-                    errormsg("%scrementing member `%s' of `%s' is not const-correct",
-                             prefix, ome->getMemberName().c_str(),
-                             ome->getSubExpr()->isPtrToOrArrayOfConst()
-                                 ? ome->getSubExpr()->getTypeDesc()->getPointedTypeDesc()->toString().c_str()
-                                 : ome->getSubExpr()->getTypeDesc()->toString().c_str());
-            }
+            else if (subExpr->getTypeDesc()->isConstAtFirstLevel())
+                warnmsg("%scrementing expression of type `%s' is not const-correct",
+                        prefix, subExpr->getTypeDesc()->toString().c_str());
+
+            if (subExpr->getTypeDesc()->isPtrToFunction())
+                warnmsg("%scrementing a function pointer", prefix);
 
             if ((oper == POSTINC || oper == POSTDEC) && getTypeDesc()->isRealOrLong())
                 declareTemporary = true;
@@ -301,7 +293,7 @@ UnaryOpExpr::getSizeOfValue(uint16_t &size) const
         const ClassDef *cl = obj->getClass();
         if (cl == NULL)
         {
-            errormsg("taking size of undefined class %s", obj->getClassName().c_str());
+            errormsg("taking size of undefined struct %s", obj->getClassName().c_str());
             return false;
         }
         const ClassDef::ClassMember *member = cl->getDataMember(obj->getMemberName());
@@ -416,8 +408,24 @@ UnaryOpExpr::getSizeOfValue(uint16_t &size) const
         return true;
     }
 
-    if (sizeofArgTypeDesc && sizeofArgTypeDesc->type != ARRAY_TYPE)
+    if (sizeofArgTypeDesc)
     {
+        if (sizeofArgTypeDesc->type == ARRAY_TYPE)
+        {
+            vector<uint16_t> arrayDimensions;
+            sizeofArgTypeDesc->appendDimensions(arrayDimensions);
+            int16_t finalElemSizeInBytes = TranslationUnit::instance().getTypeSize(*sizeofArgTypeDesc->getFinalArrayType());
+            int16_t s = computeDimensionsProduct(arrayDimensions, 0, finalElemSizeInBytes);
+            if (s < 0)
+            {
+                errormsg("unsupported sizeof (on type `%s')", sizeofArgTypeDesc->toString().c_str());
+                return true;
+            }
+            size = uint16_t(s);
+            return true;
+        }
+
+        // Not an array type.
         if (sizeofArgTypeDesc->type == CLASS_TYPE && TranslationUnit::instance().getClassDef(sizeofArgTypeDesc->className) == NULL)
             return false;  // error msg already emitted by checkForSizeOfUnknownStruct()
 
@@ -434,6 +442,9 @@ UnaryOpExpr::getSizeOfValue(uint16_t &size) const
 CodeStatus
 UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
 {
+    if (!isYieldedValueNeeded())  // issue a line comment if this unary operation is a statement
+        writeLineNoComment(out, getOperatorName(oper));
+
     // Check if tree is a constant expression. Emit a single instruction if it is.
     //
     uint16_t value;
@@ -463,6 +474,7 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
             break;
 
         case NEG:
+        {
             if (lValue)
             {
                 if (! subExpr->isRealOrLong())
@@ -476,6 +488,21 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
                 callUtility(out, "negate" + string(variant), "preserves X");
                 return true;
             }
+
+            // Special case: -wordVariable. Do D=0, D-=wordVariable.
+            //
+            if (getType() != BYTE_TYPE)
+            {
+                const VariableExpr *ve = subExpr->asVariableExpr();
+                if (ve != NULL)
+                {
+                    out.ins("CLRA", "", "Negation of variable " + ve->getId());
+                    out.ins("CLRB");
+                    out.ins("SUBD", ve->getFrameDisplacementArg());
+                    return true;
+                }
+            }
+
             if (!subExpr->emitCode(out, false))
                 return false;
             if (getType() == BYTE_TYPE)
@@ -487,6 +514,7 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
                 out.ins("ADDD", "#1");
             }
             break;
+        }
 
         case BITWISE_NOT:
             if (lValue)
@@ -517,14 +545,14 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
         case POSTDEC:
         case PREDEC:
         {
-            if (!subExpr->emitCode(out, true))
-                return false;
-
             bool isInc = (oper == POSTINC || oper == PREINC);
             bool isPre = (oper == PREINC || oper == PREDEC);
             if (getTypeDesc()->isRealOrLong())
             {
-                //string variant = subExpr->isLong() ? "DWord" : (subExpr->isSingle() ? "Single" : "Double");
+                // Make X point to number to be modified.
+                if (!subExpr->emitCode(out, true))
+                    return false;
+
                 if (!isPre)
                 {
                     assert(resultDeclaration);
@@ -541,25 +569,65 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
                                     "result of inc/dec is preserved original number");
                 }
             }
-            else if (getType() == BYTE_TYPE)
-            {
-                string instr = (isInc ? "INC" : "DEC");
-                if (isPre)
-                    out.ins(instr, ",X");
-                out.ins("LDB", ",X");
-                if (!isPre)
-                    out.ins(instr, ",X");
-            }
             else
             {
-                out.ins("LDD", ",X");
-                uint16_t size = (subExpr->getType() == POINTER_TYPE ? subExpr->getPointedTypeSize() : 1);
-                assert(size != 0);
-                string imm = "#" + wordToString(size);
-                out.ins(isInc ? "ADDD" : "SUBD", imm);
-                out.ins("STD", ",X");
-                if (!isPre)
-                    out.ins(isInc ? "SUBD" : "ADDD", imm, "post increment yields initial value");
+                // If the expression to change is a variable, refer to it directly.
+                // Otherwise, make X refer to the l-value.
+                //
+                const VariableExpr *ve = subExpr->asVariableExpr();
+                string incrementedLocation, loadComment;
+                if (ve != NULL)
+                {
+                    incrementedLocation = ve->getFrameDisplacementArg();
+                    loadComment = "variable `" + ve->getId() + "', declared at " + subExpr->getLineNo();
+                }
+                else
+                {
+                    if (!subExpr->emitCode(out, true))
+                        return false;
+                    incrementedLocation = ",X";
+                }
+
+                if (getType() == BYTE_TYPE)
+                {
+                    const char *instr = (isInc ? "INC" : "DEC");
+                    if (isPre)
+                        out.ins(instr, incrementedLocation);
+                    if (isYieldedValueNeeded())
+                        out.ins("LDB", incrementedLocation);
+                    if (!isPre)
+                        out.ins(instr, incrementedLocation);
+                }
+                else
+                {
+                    int16_t increment = (int16_t) (subExpr->getType() == POINTER_TYPE ? subExpr->getPointedTypeSize() : 1);
+                    if (increment == 0)
+                    {
+                        if (isYieldedValueNeeded())
+                            out.ins("LDD", incrementedLocation, loadComment);
+                        break;
+                    }
+
+                    if (!isInc)
+                        increment = - increment;
+
+                    // Use LEAX offset,X instead of ADDD if the increment is small enough
+                    // for LEAX to be shorter than ADDD, and if the final value does not need
+                    // to be left in D.
+                    // LEAX is only used if the incrementedLocation refers to a C variable,
+                    // because then it does not involve X (it is "__,U" or "__,PCR").
+                    //
+                    bool useX = (ve != NULL && !isYieldedValueNeeded() && increment >= -16 && increment <= 15);
+                    out.ins(useX ? "LDX" : "LDD", incrementedLocation, loadComment);
+                    string incStr = intToString(increment, false);
+                    if (useX)
+                        out.ins("LEAX", incStr + ",X");
+                    else
+                        out.ins("ADDD", "#" + incStr);
+                    out.ins(useX ? "STX" : "STD", incrementedLocation);
+                    if (!isPre && isYieldedValueNeeded())
+                        out.ins("SUBD", "#" + incStr, "post increment yields initial value");
+                }
             }
             break;
         }
@@ -573,8 +641,6 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
             // because it has none (i.e., cannot do this: word a[5]; a = 0;).
             // So in such a case, we ask subExpr->emitCode() to put the array address in D,
             // so no TFR X,D is needed.
-            // Special case #2: if subExpr takes the address of a function, this '&' operator
-            // has nothing to do.
             //
             bool subIsLValue = (subExpr->getType() != ARRAY_TYPE);
             if (!subExpr->emitCode(out, subIsLValue))
@@ -583,7 +649,10 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
                 return false;
             }
             if (subIsLValue)
+            {
                 out.ins("TFR", "X,D", "address-of operator");
+                out.optimizeTFRXD();  // remove this TFR is previous instruction is LDX
+            }
             break;
         }
 
@@ -592,14 +661,14 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
                 // Indirection of struct pointer as r-value not supported.
                 if (!lValue && subExpr->getType() == POINTER_TYPE && subExpr->getTypeDesc()->getPointedTypeDesc()->type == CLASS_TYPE)
                 {
-                    errormsg("indirection of struct as an r-value not supported: use '->' operator instead");
+                    errormsg("indirection of pointer to struct as an r-value not supported: use '->' operator instead");
                     return true;  // continuing is harmless and allows compiler to report further errors if any
                 }
 
-                WordConstantExpr *wce = dynamic_cast<WordConstantExpr *>(subExpr);
-                CastExpr *castExpr = dynamic_cast<CastExpr *>(subExpr);
-                WordConstantExpr *castWCE = (castExpr != NULL
-                                    ? dynamic_cast<WordConstantExpr *>(castExpr->getSubExpr())
+                const WordConstantExpr *wce = dynamic_cast<WordConstantExpr *>(subExpr);
+                const CastExpr *castExpr = dynamic_cast<CastExpr *>(subExpr);
+                const WordConstantExpr *castWCE = (castExpr != NULL
+                                    ? dynamic_cast<const WordConstantExpr *>(castExpr->getSubExpr())
                                     : NULL);
                 const VariableExpr *ve = NULL;
                 bool checkNullPtr = TranslationUnit::instance().isNullPointerCheckingEnabled();
@@ -636,14 +705,37 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
                 }
                 else
                 {
+                    bool indirectionDone = false;
+                    bool pointerLoadedInX = true;
+                    string addressRef = ",X";
                     ve = subExpr->asVariableExpr();
-                    if (ve != NULL)
+
+                    if (subExpr->getTypeDesc()->isPtrToArray())
+                    {
+                        if (!subExpr->emitCode(out, false))  // get pointer value in D
+                            return false;
+                        if (lValue)
+                        {
+                            subExpr->errormsg("unsupported indirection");
+                            return true;
+                        }
+                        // r-value.
+                        indirectionDone = true;
+                        pointerLoadedInX = false;
+                    }
+                    else if (ve != NULL)
                     {
                         string comment = "get address for indirection of variable " + ve->getId();
                         if (subExpr->getType() == ARRAY_TYPE)
                             out.ins("LEAX", ve->getFrameDisplacementArg(), comment);
-                        else
+                        else if (lValue || checkNullPtr)
                             out.ins("LDX", ve->getFrameDisplacementArg(), comment);
+                        else  // emitting r-value, so result expected in D or B, not in X
+                        {
+                            assert(!lValue);
+                            addressRef = "[" + ve->getFrameDisplacementArg() + "]";
+                            pointerLoadedInX = false;
+                        }
                     }
                     else
                     {
@@ -654,11 +746,11 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
                         out.ins("TFR", "D,X");
                     }
 
-                    if (checkNullPtr)
+                    if (pointerLoadedInX && checkNullPtr)
                         callUtility(out, "check_null_ptr_x");
 
-                    if (!lValue)
-                        out.ins(getLoadInstruction(getType()), ",X", "indirection");
+                    if (!lValue && !indirectionDone)  // if emitting r-value
+                        out.ins(getLoadInstruction(getType()), addressRef, "indirection");
                 }
             }
             break;
@@ -667,6 +759,19 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
             assert(getType() == BYTE_TYPE);
             if (lValue)
                 return false;
+            
+            // Check if the subexpression is another BOOLEAN_NEG. If it is, optimize for that.
+            if (const UnaryOpExpr *subUE = dynamic_cast<const UnaryOpExpr *>(subExpr))
+            {
+                if (subUE->getOperator() == BOOLEAN_NEG)
+                {
+                    if (!subUE->emitCode(out, false))
+                        return false;
+                    out.ins("EORB", "#1", "double boolean negation");
+                    return true;
+                }
+            }
+
             if (subExpr->getTypeDesc()->isRealOrLong())
             {
                 if (!subExpr->emitCode(out, true))  // point to real/long with X
@@ -678,14 +783,11 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
                 if (!subExpr->emitCode(out, false))
                     return false;
                 if (subExpr->getType() == BYTE_TYPE)
-                    out.ins("TSTB", "", "boolean negation: get Z flag");
+                    out.ins("TSTB", "", "boolean negation: determine Z flag");
                 else
-                    out.emitCMPDImmediate(0, "boolean negation: get Z flag");
+                    out.emitCMPDImmediate(0, "boolean negation: determine Z flag");
             }
-            out.ins("TFR", "CC,B");
-            out.ins("ANDB", "#4", "keep Z flag");
-            out.ins("LSRB", "",   "shift Z flag to bit 0 of B");
-            out.ins("LSRB");
+            callUtility(out, "tfrZtoB");  // 3-byte LBSR instead of the 6-byte TFR+ANDB+LSRB+LSRB sequence
             break;
 
         case SIZE_OF:
@@ -696,7 +798,13 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
             uint16_t size = 0;
             if (!getSizeOfValue(size))
                 return true;
-            out.ins("LDD", "#" + wordToString(size), "sizeof");
+            if (size == 0)
+            {
+                out.ins("CLRA", "", "sizeof");
+                out.ins("CLRB", "", "sizeof");
+            }
+            else
+                out.ins("LDD", "#" + wordToString(size), "sizeof");
             break;
         }
 
@@ -708,6 +816,7 @@ UnaryOpExpr::emitCode(ASMText &out, bool lValue) const
 }
 
 
+// Does not necessarily yield the resulting value in B or D.
 // Useful to ForStmt.
 //
 CodeStatus
@@ -732,11 +841,14 @@ UnaryOpExpr::emitSimplerIfIncrement(ASMText &out)
     case WORD_TYPE:
     case POINTER_TYPE:
     {
-        out.ins("LDD", ve->getFrameDisplacementArg());
-        string instr = (oper == POSTINC || oper == PREINC ? "ADDD" : "SUBD");
         uint16_t inc = (getType() == POINTER_TYPE ? getPointedTypeSize() : 1);
-        out.ins(instr, "#" + wordToString(inc));
-        out.ins("STD", ve->getFrameDisplacementArg());
+        if (inc != 0)
+        {
+            out.ins("LDD", ve->getFrameDisplacementArg());
+            string instr = (oper == POSTINC || oper == PREINC ? "ADDD" : "SUBD");
+            out.ins(instr, "#" + wordToString(inc));
+            out.ins("STD", ve->getFrameDisplacementArg());
+        }
         return true;
     }
     default:

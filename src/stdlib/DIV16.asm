@@ -13,7 +13,7 @@ DIV16	PSHS	X,B,A
 * 0,S=16-bit quotient; 2,S=loop counter;
 * 3,S=16-bit divisor; 5,S=16-bit dividend
 
-D16010	LSL	6,S		shift MSB of dividend into carry
+D16010	LSL	6,S		shift LSB of dividend into carry
 	ROL	5,S		shift carry and MSB of dividend, into carry
 	ROLB			new bit of dividend now in bit 0 of B
 	ROLA

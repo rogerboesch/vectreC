@@ -1,4 +1,4 @@
-/*  $Id: IdentifierExpr.h,v 1.8 2017/08/06 02:06:00 sarrazip Exp $
+/*  $Id: IdentifierExpr.h,v 1.11 2023/08/27 01:41:04 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -48,7 +48,7 @@ public:
     //
     void setVariableExpr(VariableExpr *ve);
 
-    // May be null.
+    // May be null, in particular in the case of an enumerator name. See isEnumeratorName().
     //
     const VariableExpr *getVariableExpr() const;
 
@@ -69,11 +69,17 @@ public:
 
     bool isFuncAddrExpr() const;
 
-    virtual bool iterate(Functor &f);
+    bool isEnumeratorName() const;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    void makeNameInAFunctionCall(bool isNameInAFunctionCall);
 
-    virtual bool isLValue() const { return variableExpr != NULL; }
+    bool isNameInAFunctionCall() const;
+
+    virtual bool iterate(Functor &f) override;
+
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
+
+    virtual bool isLValue() const override { return variableExpr != NULL; }
 
 private:
 
@@ -87,6 +93,7 @@ private:
     VariableExpr *variableExpr;  // may be null; owned by this IdentifierExpr
     StringLiteralExpr *functionNameStringLiteral;  // only used when identifier is __FUNCTION__ or __func__
                                                    // owned by this IdentifierExpr
+    bool _isNameInAFunctionCall;  // true when this identifier is the name in a function call, e.g., foo(1, 2);
 
 };
 

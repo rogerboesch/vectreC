@@ -6,18 +6,48 @@
 #include <cmoc.h>
 
 
+// Invert characters from 'firstDigit' to before 'endOfString'.
+// Returns 'firstDigit' as is.
+//
 char *
-_FinishIntegerToASCII(char *firstDigit, char *endOfString, char *returnValue)
+_FinishIntegerToASCII(char *firstDigit, char *endOfString)
 {
-    *endOfString = '\0';
+    #if 0  /* Original C code. */
 
-    // Invert characters from 'firstDigit' to before 'endOfString'.
+    char *retval = firstDigit;
+    *endOfString = '\0';
     for (--endOfString; firstDigit < endOfString; ++firstDigit, --endOfString)
     {
         char tmp = *firstDigit;
         *firstDigit = *endOfString;
         *endOfString = tmp;
     }
+    return retval;
 
-    return returnValue;
+    #else
+
+    asm   // This routine must not change 'firstDigit'.
+    {
+        pshs    y                   ; preserve CMOC globals pointer
+        ldx     :firstDigit
+        ldy     :endOfString        ; cannot refer to globals now
+        clr     ,y
+        leay    -1,y
+        bra     @loopCond
+@loopBody
+; Swap ,x and ,y.
+        lda     ,x
+        ldb     ,y
+        sta     ,y
+        stb     ,x+
+        leay    -1,y                ; --endOfString
+@loopCond
+        sty     :endOfString        ; store for comparison
+        cmpx    :endOfString
+        blo     @loopBody
+        puls    y
+    }
+
+    return firstDigit;
+    #endif
 }

@@ -3,10 +3,17 @@
 strcmpimpl     EXPORT
 
 
-* Input: two string pointers on stack; X => char transform routine.
-* That routine may adjust registers A and B; it must preserve
-* other registers (but may change CC).
-*
+; Routine that compares two strings and returns -1, 0 or +1
+; (like strcmp()) in D depending on the result.
+; Preserves U and may trash X.
+;
+; Input: two string pointers on the stack;
+;        X => character transform routine.
+;             That routine may change registers A and B, which will contain
+;             characters from the two strings.
+;             The routine may change CC.
+;             It must preserve the other registers.
+;
 strcmpimpl
         pshs    u,x
 ; Stack map here:

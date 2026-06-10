@@ -1,7 +1,5 @@
-/*  $Id: DeclarationSequence.cpp,v 1.17 2019/06/22 03:35:44 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2016 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -76,9 +74,9 @@ void DeclarationSequence::processDeclarator(Declarator *declarator, const Declar
          << (declarator->isArray() ? " (array)" : "")
          << ", at " << getLineNo() << "\n";*/
 
-    if (!declarator->isFunctionPointer() && !declarator->isArray() && declarator->getFormalParamList() != NULL)  // if function prototype
+    if (declarator->isFunctionPrototype())  // if function prototype
     {
-        FunctionDef *fd = new FunctionDef(dsl, *declarator);  // takes ownership of declarator's FormalParamList
+        FunctionDef *fd = new FunctionDef(&dsl, *declarator);  // takes ownership of declarator's FormalParamList
         fd->setLineNo(declarator->getSourceFilename(), declarator->getLineNo());
         // Body of 'fd' is left null.
         addTree(fd);
@@ -91,13 +89,21 @@ void DeclarationSequence::processDeclarator(Declarator *declarator, const Declar
             errormsg("modifier `__norts__' cannot be used on declaration of variable `%s'", declarator->getId().c_str());
 
         const TypeDesc *td = NULL;
-        if (declarator->isFunctionPointer() || declarator->isArrayOfFunctionPointers())
+        if (declarator->isFunctionPointer() || declarator->isArrayOfFunctionPointers() || declarator->getFunctionPointerLevel() > 1)
         {
             assert(declarator->getFormalParamList());
             td = TranslationUnit::getTypeManager().getFunctionPointerType(specificTypeDesc,
                                                                           *declarator->getFormalParamList(),
                                                                           dsl.isInterruptServiceFunction(),
-                                                                          dsl.isFunctionReceivingFirstParamInReg());
+                                                                          dsl.getCallConvention());
+            assert(td && td->type == POINTER_TYPE);
+
+            // Support pointers to pointers to functions.
+            for (size_t fpl = declarator->getFunctionPointerLevel() - 1; fpl--; )
+            {
+                td = TranslationUnit::getTypeManager().getPointerTo(td);
+                assert(td && td->type == POINTER_TYPE && td->pointedTypeDesc->type == POINTER_TYPE);
+            }
         }
         else
         {

@@ -6,6 +6,7 @@ cmpDWordDWord	EXPORT
 ; Input: Stacked arguments: address of left dword, address of right dword.
 ; Output: Sets N, Z, V, C.
 ; Preserves X, Y, U. Trashes D.
+; Does not modify the stacked arguments.
 ;
 cmpDWordDWord
 	pshs	u,x

@@ -1,7 +1,5 @@
-/*  $Id: JumpStmt.cpp,v 1.24 2019/08/17 18:26:39 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -24,6 +22,7 @@
 #include "SemanticsChecker.h"
 #include "WordConstantExpr.h"
 #include "CastExpr.h"
+#include "CommaExpr.h"
 #include "Declaration.h"
 
 #include <assert.h>
@@ -72,6 +71,17 @@ JumpStmt::getArgument() const
 }
 
 
+static bool
+isCommaExprAndLastSubExprIs8BitConstant(const Tree &expr)
+{
+    const CommaExpr *commaExpr = dynamic_cast<const CommaExpr *>(&expr);
+    if (!commaExpr || commaExpr->size() == 0)
+        return false;
+    const Tree *lastSubExpr = *commaExpr->rbegin();
+    return lastSubExpr->is8BitConstant();
+}
+
+
 void
 JumpStmt::checkSemantics(Functor &f)
 {
@@ -99,10 +109,14 @@ JumpStmt::checkSemantics(Functor &f)
                 ;  // returning a byte from a word function: fine, regardless of signedness
             else if (funcRetType == BYTE_TYPE && argType == WORD_TYPE && argument->is8BitConstant())
                 ;  // returning a word constant that fits in a byte: fine
-            else if (funcRetType == WORD_TYPE &&argType == WORD_TYPE)
+            else if (funcRetType == BYTE_TYPE && argType == WORD_TYPE && isCommaExprAndLastSubExprIs8BitConstant(*argument))
+                ;  // returning a word constant that is the last expr in a comma expr and that fits in a byte: fine; e.g., return (f(), g(), 42);
+            else if (funcRetType == WORD_TYPE && argType == WORD_TYPE)
                 ;  // returning a word from a word function: fine, regardless of signedness
-            else if (funcRetType == BYTE_TYPE &&argType == BYTE_TYPE)
+            else if (funcRetType == BYTE_TYPE && argType == BYTE_TYPE)
                 ;  // returning a byte from a byte function: fine, regardless of signedness
+            else if (funcRetTypeDesc->isRealOrLong() && (argument->getTypeDesc()->isIntegral() || argument->getTypeDesc()->isReal()))
+                ;  // returning a number from a function that returns a real or long
             else if (funcRetType == POINTER_TYPE && (argType == BYTE_TYPE || argType == WORD_TYPE)
                     && argument->evaluateConstantExpr(value) && value == 0)
                 ;  // returning zero from a pointer function: fine
@@ -127,12 +141,20 @@ JumpStmt::checkSemantics(Functor &f)
                         && ! argument->getTypeDesc()->getPointedTypeDesc()->isConstant())
                 ;  // returning non-const T * from function returning (const or non-const) void *
             else if (*funcRetTypeDesc != *argument->getTypeDesc())
-                errormsg("returning expression of type `%s', which differs from function's return type (`%s')",
+            {
+                // Only give a warning if both types are word-sized.
+                // Helps tolerate K&R code, e.g., returning char[] from foo() {...}.
+                //
+                bool isWarning = (funcRetTypeDesc->isWordOrPointerOrArray()
+                                  && argument->getTypeDesc()->isWordOrPointerOrArray()
+                                  && TranslationUnit::instance().onlyWarningOnWordSizedReturnTypeMismatch());
+                diagnose(!isWarning, "returning expression of type `%s', which differs from function's return type (`%s')",
                             argument->getTypeDesc()->toString().c_str(),
                             funcRetTypeDesc->toString().c_str());
+            }
         }
         else if (funcRetType != VOID_TYPE)
-            errormsg("return without argument in a non-void function");
+            warnmsg("return without argument in a non-void function");
     }
 
     if (jumpType == GO_TO)
@@ -162,11 +184,11 @@ JumpStmt::emitCode(ASMText &out, bool lValue) const
                 const BreakableLabels *b = tu.getCurrentBreakableLabels();
                 if (b == NULL)
                 {
-                    errormsg("%s outside of a %sable statement", t, t);
-                    return false;
+                    // error message issued elsewhere
+                    return true;
                 }
                 if (jumpType == CONT && b->continueLabel.empty())
-                    errormsg("continue statement is not supported in a switch");
+                    ;  // error message issued elsewhere
                 else
                     out.ins("LBRA", (jumpType == BRK ? b->breakLabel : b->continueLabel), t);
             }
@@ -176,7 +198,15 @@ JumpStmt::emitCode(ASMText &out, bool lValue) const
             {
                 if (argument != NULL)  // if value to be returned
                 {
-                    if (currentFunctionDef->getTypeDesc()->isLong())
+                    uint16_t value = 0;
+                    if (currentFunctionDef->getType() == BYTE_TYPE && argument->is8BitConstant(&value))  // if returning byte from constant
+                    {
+                        if (value == 0)
+                            out.ins("CLRB");
+                        else
+                            out.ins("LDB", "#" + wordToString(value));
+                    }
+                    else if (currentFunctionDef->getTypeDesc()->isLong())
                     {
                         if (argument->getTypeDesc()->isLong())
                         {
@@ -188,6 +218,19 @@ JumpStmt::emitCode(ASMText &out, bool lValue) const
                             out.ins("LDD", currentFunctionDef->getAddressOfReturnValue(), "address of return value");
                             callUtility(out, "copyDWordFromXToD");
                         }
+                        else if (argument->getTypeDesc()->isSingle())
+                        {
+                            // Emit the float as an l-value, so we get its address in X.
+                            if (!argument->emitCode(out, true))
+                                return false;
+                            out.ins("TFR", "X,D", "source float");
+
+                            // Get the address where to write the long.
+                            // It has been passed to the current function as a hidden 1st parameter.
+                            out.ins("LDX", currentFunctionDef->getAddressOfReturnValue(), "address of return value");
+
+                            callUtility(out, currentFunctionDef->getTypeDesc()->isSigned ? "initSignedDWordFromSingle" : "initUnsignedDWordFromSingle", "preserves X");
+                        }
                         else
                         {
                             assert(argument->getTypeDesc()->isByteOrWord());
@@ -195,7 +238,7 @@ JumpStmt::emitCode(ASMText &out, bool lValue) const
                             if (!argument->emitCode(out, false))
                                 return false;
                             if (argument->getType() == BYTE_TYPE)
-                                out.ins(argument->isSigned() ? "SEX" : "CLRA");
+                                out.ins(argument->getConvToWordIns());
                             // Get the address where to write the long.
                             // It has been passed to the current function as a hidden 1st parameter.
                             out.ins("LDX", currentFunctionDef->getAddressOfReturnValue(), "address of return value");
@@ -204,16 +247,45 @@ JumpStmt::emitCode(ASMText &out, bool lValue) const
                     }
                     else if (currentFunctionDef->getTypeDesc()->isSingle())
                     {
-                        // Emit the struct/union as an l-value, so we get its address in X.
-                        if (!argument->emitCode(out, true))
-                            return false;
-                        out.ins("TFR", "X,D", "source float");
+                        if (argument->getTypeDesc()->isByteOrWord())
+                        {
+                            if (!argument->emitCode(out, false))  // get value in B or D
+                                return false;
+                            if (argument->getType() == BYTE_TYPE)
+                                out.ins(argument->getConvToWordIns());
 
-                        // Get the address where to write the struct/union.
-                        // It has been passed to the current function as a hidden 1st parameter.
-                        out.ins("LDX", currentFunctionDef->getAddressOfReturnValue(), "address of return value");
+                            // Get the address where to write the float.
+                            // It has been passed to the current function as a hidden 1st parameter.
+                            out.ins("LDX", currentFunctionDef->getAddressOfReturnValue(), "address of return value");
 
-                        callUtility(out, "copySingle");
+                            callUtility(out, argument->isSigned() ? "initSingleFromSignedWord" : "initSingleFromUnsignedWord", "preserves X");
+                        }
+                        else if (argument->getTypeDesc()->isLong())
+                        {
+                            // Emit the long as an l-value, so we get its address in X.
+                            if (!argument->emitCode(out, true))
+                                return false;
+                            out.ins("TFR", "X,D", "source dword");
+
+                            // Get the address where to write the float.
+                            // It has been passed to the current function as a hidden 1st parameter.
+                            out.ins("LDX", currentFunctionDef->getAddressOfReturnValue(), "address of return value");
+
+                            callUtility(out, argument->isSigned() ? "initSingleFromSignedDWord" : "initSingleFromUnsignedDWord", "preserves X");
+                        }
+                        else  // float to float:
+                        {
+                            // Emit the struct/union as an l-value, so we get its address in X.
+                            if (!argument->emitCode(out, true))
+                                return false;
+                            out.ins("TFR", "X,D", "source float");
+
+                            // Get the address where to write the struct/union.
+                            // It has been passed to the current function as a hidden 1st parameter.
+                            out.ins("LDX", currentFunctionDef->getAddressOfReturnValue(), "address of return value");
+
+                            callUtility(out, "copySingle");
+                        }
                     }
                     else if (currentFunctionDef->getType() == CLASS_TYPE)  // if returning struct/union
                     {
@@ -241,7 +313,7 @@ JumpStmt::emitCode(ASMText &out, bool lValue) const
                         if (!argument->emitCode(out, false))  // value in B or D
                             return false;
 
-                        CastExpr::emitCastCode(out, currentFunctionDef->getTypeDesc(), argument->getTypeDesc());
+                        CastExpr::emitCastCode(out, currentFunctionDef->getTypeDesc(), argument->getTypeDesc(), *this);
                     }
                 }
                 string label = TranslationUnit::instance().getCurrentFunctionEndLabel();
@@ -278,3 +350,4 @@ JumpStmt::iterate(Functor &f)
         return false;
     return true;
 }
+

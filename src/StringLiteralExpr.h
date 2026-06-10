@@ -1,4 +1,4 @@
-/*  $Id: StringLiteralExpr.h,v 1.11 2019/04/05 03:01:02 sarrazip Exp $
+/*  $Id: StringLiteralExpr.h,v 1.13 2023/08/27 01:41:05 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -38,7 +38,7 @@ public:
     std::string getArg() const;
     std::string getEscapedVersion() const;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
     static std::string escape(const std::string &s);
     std::string decodeEscapedLiteral(bool &hexEscapeOutOfRange,
@@ -51,14 +51,14 @@ public:
     // e.g., an actual character 13 where the original literal specified \r.
     // Ends with an FCB 0 directive that represents the C string terminator.
     //
-    static void emitStringLiteralDefinition(ASMText &out, const std::string &value);
+    static void emitStringLiteralDefinition(ASMText &out, const std::string &value, bool emitTerminatingNullByte = true);
 
     // Calls the static emitStringLiteralDefinition() with the post-backslash
     // value of this literal.
     //
     void emitStringLiteralDefinition(ASMText &out) const;
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
 private:
 

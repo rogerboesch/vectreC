@@ -9,6 +9,110 @@ LINBUF          IMPORT
 
 _readline
 
+	IFDEF THOMMO
+	LEAX	LINBUF+1,pcr
+	LDA #LBUFMX-1           ; room left in buffer
+LOOP
+	SWI                     ; system call #10: read keyboard into B
+	FCB $0A
+	BEQ LOOP
+	CMPB #127
+	BEQ DELETE
+	CMPB #13
+	BNE STORE
+	SWI                     ; system call #2: print carriage return (in B)
+	FCB $02
+	CLR ,X
+	LEAX	LINBUF+1,pcr
+	TFR	X,D
+	RTS
+STORE
+	TSTA
+	BEQ LOOP
+	DECA
+	SWI                     ; system call #2: print char in B
+	FCB $02
+	STB ,X+
+	BRA LOOP
+DELETE
+	CMPA #LBUFMX-1
+	BEQ LOOP
+	INCA
+	LDB #8
+	SWI
+	FCB $02
+	LDB #32
+	SWI
+	FCB $02
+	LDB #8
+	SWI
+	FCB $02
+	CLR ,-X
+	BRA LOOP
+	ENDC
+
+	IFDEF THOMTO
+	LEAX	LINBUF+1,pcr
+	LDA #LBUFMX-1           ; room left in buffer
+LOOP
+	JSR $E806               ; read keyboard into B
+	TSTB
+	BEQ LOOP
+	CMPB #127
+	BEQ DELETE
+	CMPB #13
+	BNE STORE
+	JSR $E803               ; print carriage return (in B)
+	CLR ,X
+	LEAX	LINBUF+1,pcr
+	TFR	X,D
+	RTS
+STORE
+	TSTA
+	BEQ LOOP
+	DECA
+	JSR $E803               ; print char in B
+	STB ,X+
+	BRA LOOP
+DELETE
+	CMPA #LBUFMX-1
+	BEQ LOOP
+	INCA
+	LDB #8
+	JSR $E803
+	LDB #32
+	JSR $E803
+	LDB #8
+	JSR $E803
+	CLR ,-X
+	BRA LOOP
+	ENDC
+
+
+        IFDEF FLEX
+
+LINBUF  EQU     $C080
+INBUFF  EQU     $CD1B
+
+        JSR     INBUFF      read line buffer, argv and former readlines will be overwritten!!
+        LDX     #LINBUF
+        LDA     #128
+@readline_scan
+        LDB     ,X+
+        CMPB    #$0D
+        BEQ     @readline_end
+        DECA
+        BNE     @readline_scan
+        CLRB                should never happen as the end of the linebuffer should always be $0D
+        RTS
+@readline_end
+        CLR     -1,x        put $00 as lineend instead of $0D
+        LDD     #LINBUF
+        RTS
+
+        ENDC	; FLEX
+
+
 	IFDEF _COCO_OR_DRAGON_BASIC_
 
 	IFDEF _COCO_BASIC_
@@ -87,6 +191,15 @@ readline_empty
         IFDEF VECTREX
 
 * Return NULL (meaning failure) on the Vectrex, which has no keyboard.
+	CLRA
+	CLRB
+	RTS
+
+        ENDC
+
+        IFDEF _CMOC_VOID_TARGET_
+
+* Return NULL (meaning failure), because no known I/O system.
 	CLRA
 	CLRB
 	RTS

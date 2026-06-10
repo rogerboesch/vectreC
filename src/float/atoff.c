@@ -6,12 +6,8 @@
 #include "cmoc.h"
 
 
-#ifdef _COCO_BASIC_
-
 float atoff(_CMOC_CONST_ char *nptr)
 {
     char *endptr;
     return strtof(nptr, &endptr);
 }
-
-#endif  /* _COCO_BASIC_ */

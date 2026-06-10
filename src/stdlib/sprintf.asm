@@ -4,23 +4,16 @@ _sprintf        EXPORT
 
 CHROUT          IMPORT
 _printf         IMPORT
+chrtomem		IMPORT
+chrtomem_writer	IMPORT
 
 
-* Writes register A at the address given by chrtomem_writer,
-* which gets incremented by 1. Used by _sprintf.
+* int sprintf(char *str, const char *format, ...);
 *
-chrtomem:
-	pshs	x
-	ldx	chrtomem_writer,pcr
-	sta	,x+
-	stx	chrtomem_writer,pcr
-	puls	x,pc
-
-
 _sprintf
 	ldx	CHROUT,pcr
 	stx	sprintf_oldCHROUT,pcr	preserve initial output routine address
-	leax	chrtomem,pcr		install chrtomem as destination of printf()
+	leax	chrtomem,PCR		install chrtomem as destination of printf()
 	stx	CHROUT,pcr
 
 	ldx	,s++			remove return address in caller of sprintf()
@@ -46,7 +39,6 @@ _sprintf
 
         SECTION bss
         	
-chrtomem_writer	        RMB	2	used by chrtomem, itself used by _sprintf
 sprintf_retaddr	        RMB	2	used by _sprintf
 sprintf_oldCHROUT	RMB	2	used by _sprintf
 

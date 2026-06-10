@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 cmpUnsignedIntSingle	EXPORT
@@ -12,7 +14,7 @@ cmpUnsignedIntSingle
 	lbsr	loadUnsignedDInFPA0	; load D (unsigned) into FPA0
 
 	ldx	10,s		; point to right operand (single)
-	jsr	$BC96		; compare FPA0 to X: puts -1, 0 or +1 in B, sets CC
+	flt_compareFPA0ToX
 
 	puls	x,y,u,pc
 

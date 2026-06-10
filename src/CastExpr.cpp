@@ -1,7 +1,5 @@
-/*  $Id: CastExpr.cpp,v 1.12 2020/04/10 02:26:03 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -25,6 +23,7 @@
 #include "WordConstantExpr.h"
 #include "VariableExpr.h"
 #include "IdentifierExpr.h"
+#include "BinaryOpExpr.h"
 
 #include <assert.h>
 
@@ -97,6 +96,36 @@ CastExpr::isZeroCastToVoidPointer(const Tree &tree)
 }
 
 
+// Emits code for this case: (short) (longValue >> 16). Result left in D.
+// Returns true iff this function emitted code.
+// Returns false if this tree does not fit the targeted case.
+//
+bool
+CastExpr::emitCodeIfShiftingLongRight16Bits(ASMText &out, bool lValue) const
+{
+    if (lValue)
+        return false;  // optimization not applied
+    if (getType() != WORD_TYPE)
+        return false;
+    if (! subExpr->isLong())
+        return false;
+    auto binOp = dynamic_cast<const BinaryOpExpr *>(subExpr);
+    if (! binOp || binOp->getOperator() != BinaryOpExpr::RIGHT_SHIFT)
+        return false;
+    uint16_t numBitsToShift = 0;
+    if (! binOp->getRight()->evaluateConstantExpr(numBitsToShift))
+        return false;
+    if (numBitsToShift != 16)
+        return false;
+
+    out.emitComment("Shifting a long right by 16 bits into a word. Emitting expression to be shifted.");
+    if (!binOp->getLeft()->emitCode(out, true))  // l-value, so that X will points to resulting long
+        return false;
+
+    out.ins("LDD", ",X", "shift long right by 16 bits by keeping high word");
+    return true;  // optimization applied
+}
+
 
 /*virtual*/
 CodeStatus
@@ -108,6 +137,7 @@ CastExpr::emitCode(ASMText &out, bool lValue) const
     const TypeDesc *castTD = getTypeDesc();
     const TypeDesc *subTD = subExpr->getTypeDesc();
 
+    // If casting to long from real, or to real from long.
     if ((isLong() && subExpr->isReal()) || (isReal() && subExpr->isLong()))
     {
         if (!subExpr->emitCode(out, true))  // get address of source number in X
@@ -115,17 +145,19 @@ CastExpr::emitCode(ASMText &out, bool lValue) const
         assert(resultDeclaration);
         out.ins("TFR", "X,D", "cast to " + castTD->toString() + ": address of source number in D");
         out.ins("LEAX", resultDeclaration->getFrameDisplacementArg(0), "destination of cast");
-        if ((isLong() && isSigned()) || (isReal() && subExpr->isSigned()))
-            out.ins("ORCC", "#$01", "C=1 means signed");
-        else
-            out.ins("ANDCC", "#$FE", "C=0 means unsigned");
         if (isLong())
-            callUtility(out, "initDWordFrom" + string(subTD->isSingle() ? "Single" : "Double"));
+            callUtility(out, "init" + string(isSigned() ? "Signed" : "Unsigned") + "DWordFrom" + (subTD->isSingle() ? "Single" : "Double"));
         else
-            callUtility(out, "init" + string(isSingle() ? "Single" : "Double") + "FromDWord");
+            callUtility(out, "init" + string(isSingle() ? "Single" : "Double") + "From" + (subTD->isSigned ? "Signed" : "Unsigned") + "DWord");
+        out.emitComment("Address of `" + castTD->toString() + "' is in X.");
         return true;
     }
 
+    // If case like (short) (longValue >> 16).
+    if (emitCodeIfShiftingLongRight16Bits(out, lValue))
+        return true;
+
+    // If casting to integral from real or long.
     if (isIntegral() && subExpr->isRealOrLong())
     {
         if (!subExpr->emitCode(out, true))  // get address of real/long in X
@@ -134,7 +166,7 @@ CastExpr::emitCode(ASMText &out, bool lValue) const
         if (isLong() && subExpr->isLong())
             return true;  // done
 
-        out.ins("TFR", "X,D", "cast to " + castTD->toString() + ": address of source number in D");
+        out.ins("TFR", "X,D", "cast to `" + castTD->toString() + "': address of source number in D");
 
         // Allocate stack space for the result.
         int16_t resultTypeSize = TranslationUnit::instance().getTypeSize(*castTD);
@@ -142,38 +174,55 @@ CastExpr::emitCode(ASMText &out, bool lValue) const
         out.ins("LEAS", "-" + wordToString(resultTypeSize) + ",S", "result of cast");
         out.ins("LEAX", ",S");
 
-        // Call a utility routine of the form initXXXFromYYY.
-        callUtility(out, "init" + string(subTD->isLong() ? "" : (castTD->isSigned ? "Signed" : "Unsigned"))
-                                + (castTD->type == BYTE_TYPE ? "Byte" : "Word")
-                                + "From" + (subTD->isLong() ? "DWord" : (subTD->isSingle() ? "Single" : "Double")));
+        // Call a utility routine of the form initSomethingFromSomething.
+        assert(!castTD->isLong());
+        if (subTD->isLong())
+            callUtility(out, "init" + string(castTD->type == BYTE_TYPE ? "Byte" : "Word") + "FromDWord");
+        else
+            callUtility(out, "init" + string(castTD->isSigned ? "Signed" : "Unsigned")
+                                    + (castTD->type == BYTE_TYPE ? "Byte" : "Word")
+                                    + "From" + (subTD->isSingle() ? "Single" : "Double"));
 
         // Pop result into register.
         out.ins("PULS", resultTypeSize == 1 ? "B" : "A,B", "result of cast");
         return true;
     }
 
+    // If casting to pointer from long.
+    if (castTD->type == POINTER_TYPE && subExpr->isLong())
+    {
+        if (!subExpr->emitCode(out, true))  // get address of real/long in X
+            return false;
+        out.ins("LDD", "2,X", "cast `" + subTD->toString() + "' to `" + castTD->toString() + "'");
+        return true;
+    }
+
+    // If casting to real or long from integral.
     if (isRealOrLong() && subExpr->isIntegral())
     {
         if (!subExpr->emitCode(out, false))  // load integral in B or D
             return false;
         if (subExpr->getType() == BYTE_TYPE)
-            out.ins(subExpr->isSigned() ? "SEX" : "CLRA", "", "promote to word");
+            out.ins(subExpr->getConvToWordIns(), "", "promote to word");
         assert(resultDeclaration);
         out.ins("LEAX", resultDeclaration->getFrameDisplacementArg(0), "destination of cast");
-        callUtility(out, "init" + string(isLong() ? "DWord" : (isSingle() ? "Single" : "Double"))
-                         + "From" + (subExpr->isLong() ? "" : (subExpr->isSigned() ? "Signed" : "Unsigned")) + "Word");
+        if (isLong())
+            callUtility(out, "initDWordFrom" + string(subExpr->isLong() ? "" : (subExpr->isSigned() ? "Signed" : "Unsigned")) + "Word");
+        else
+            callUtility(out, "init" + string(isSingle() ? "Single" : "Double")
+                                + "From" + (subExpr->isSigned() ? "Signed" : "Unsigned") + (subExpr->isLong() ? "DWord" : "Word"));
         return true;
     }
 
     if (!subExpr->emitCode(out, lValue))
         return false;
 
-    return emitCastCode(out, castTD, subTD);
+    return emitCastCode(out, castTD, subTD, *this);
 }
 
 
 CodeStatus
-CastExpr::emitCastCode(ASMText &out, const TypeDesc *castTD, const TypeDesc *subTD)
+CastExpr::emitCastCode(ASMText &out, const TypeDesc *castTD, const TypeDesc *subTD, const Tree &tree)
 {
     if (castTD->type == VOID_TYPE || subTD == castTD)
         return true;
@@ -183,11 +232,26 @@ CastExpr::emitCastCode(ASMText &out, const TypeDesc *castTD, const TypeDesc *sub
         // We are casting to a 2-byte type.
         assert(TranslationUnit::instance().getTypeSize(*castTD) == 2);
 
-        const char *extendIns = (subTD->isSigned ? "SEX" : "CLRA");  // as in C
+        const char *extendIns = subTD->getConvToWordIns();  // as in C
         out.ins(extendIns, "", "cast from byte");
         return true;
     }
 
+    if (castTD->type == BYTE_TYPE)
+    {
+        out.emitComment("Cast from `" + subTD->toString() + "' to byte: result already in B");
+        return true;
+    }
+
+    int16_t subSize = subTD->isArray() ? 2 : TranslationUnit::instance().getTypeSize(*subTD);
+
+    if (TranslationUnit::instance().getTypeSize(*castTD) != subSize)
+    {
+        tree.errormsg("casting from `%s' to `%s' is not supported", subTD->toString().c_str(), castTD->toString().c_str());
+        return true;
+    }
+
+    out.emitComment("Emitted no code to cast `" + subTD->toString() + "' to `" + castTD->toString() + "'");
     return true;
 }
 

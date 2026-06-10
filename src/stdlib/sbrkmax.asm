@@ -1,39 +1,33 @@
 	SECTION code
 
-_sbrkmax	EXPORT
 
+; OS-9: Nothing generated. See os9-sbrkmax.c.
 	IFNDEF OS9
+
+
+_sbrkmax        EXPORT
 end_of_sbrk_mem IMPORT
 program_break   IMPORT
-	ENDC
 
 
-* size_t sbrkmax();
+* size_t sbrkmax(void);
 *
 * Returns (in D) the maximum number of bytes that can be successfully
 * asked of sbrk().
 *
 _sbrkmax
-	IFNDEF OS9
 
 	ldd	end_of_sbrk_mem,pcr
 	subd	program_break,pcr
-	bhs     sbrkmax_non_neg
+	bhs     @sbrkmax_non_neg
 * The program break is after the stack space. Not supported by sbrk().
-
-	ENDC
-
 	clra
 	clrb
-sbrkmax_non_neg
+@sbrkmax_non_neg
 	rts
 
 
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
-; Support for the "long" type.
-;
+	ENDC
 
 
 	ENDSECTION

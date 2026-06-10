@@ -1,4 +1,4 @@
-/*  $Id: StringLiteralExpr.cpp,v 1.20 2019/04/05 03:01:02 sarrazip Exp $
+/*  $Id: StringLiteralExpr.cpp,v 1.21 2021/01/09 19:21:01 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2018 Pierre Sarrazin <http://sarrazip.com/>
@@ -259,7 +259,7 @@ StringLiteralExpr::getDecodedLength() const
 
 /*static*/
 void
-StringLiteralExpr::emitStringLiteralDefinition(ASMText &out, const string &value)
+StringLiteralExpr::emitStringLiteralDefinition(ASMText &out, const string &value, bool emitTerminatingNullByte)
 {
     enum State { LINE_START, IN_FCC };
 
@@ -306,7 +306,8 @@ StringLiteralExpr::emitStringLiteralDefinition(ASMText &out, const string &value
         out.ins("FCC", buffer.str());
     }
 
-    out.ins("FCB", "0");
+    if (emitTerminatingNullByte)
+        out.ins("FCB", "0");
 }
 
 

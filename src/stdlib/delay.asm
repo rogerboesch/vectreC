@@ -5,8 +5,35 @@
 _delay	EXPORT
 
 
+	IFDEF THOMMO
+numDelayIters EQU $800
+	ENDC
+	IFDEF THOMTO
+numDelayIters EQU $800
+	ENDC
+	IFDEF FLEX
+numDelayIters EQU $AE6		; based on 1.3398 MHz CPU frequency
+	ENDC
+
+
 * Wait for a number of ticks (1/60 second) which is given on the stack.
 _delay
+	IFDEF numDelayIters
+	LDX 2,S
+	BEQ @EXIT
+	PSHS Y
+	LDY #numDelayIters
+@LOOP
+	LEAY -1,Y		; 5 cycles
+	BNE @LOOP		; 3 cycles
+	LDY #numDelayIters
+	LEAX -1,X
+	BNE @LOOP
+	PULS Y
+@EXIT
+	RTS
+	ENDC
+
 
 	IFDEF _COCO_OR_DRAGON_BASIC_
 
@@ -39,6 +66,13 @@ DELAY9	RTS
 
 
 	IFDEF VECTREX
+
+	RTS
+
+	ENDC
+
+
+	IFDEF _CMOC_VOID_TARGET_
 
 	RTS
 

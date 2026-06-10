@@ -1,6 +1,4 @@
-/*  $Id: DWordConstantExpr.h,v 1.2 2018/02/21 00:44:36 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
+/*  CMOC - A C-like cross-compiler
     Copyright (C) 2003-2017 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
@@ -45,16 +43,27 @@ public:
     //
     std::vector<uint8_t> getRepresentation() const;
 
-    // Emits a definition of this constant, using the given representation,
-    // of the type returned by getRepresentation().
+    // Emits assembly directives of this constant.
+    //
+    bool emitDWordConstantDefinition(ASMText &out) const;
+
+    // Emits an assembly directive for the given big endian representation.
     //
     static void emitDWordConstantDefinition(ASMText &out, const std::vector<uint8_t> &representation);
 
-    virtual void checkSemantics(Functor &f);
+    // Emits an assembly directive for the given dword.
+    //
+    static void emitDWordConstantDefinition(ASMText &out, uint32_t value);
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual bool isLValue() const { return false; }
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
+
+    virtual bool isLValue() const override { return false; }
+
+private:
+
+    static std::vector<uint8_t> getRepresentation(uint32_t value);
 
 private:
 

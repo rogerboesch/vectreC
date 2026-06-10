@@ -1,4 +1,4 @@
-        INCLUDE float.inc
+	INCLUDE float.inc
 
 	SECTION code
 
@@ -8,20 +8,32 @@ loadSignedDWordInFPA0	EXPORT
 ; Input: X => unsigned dword.
 ;
 loadSignedDWordInFPA0
-	clr	VALTYP		; set value type to numeric
+
+        IFDEF _CMOC_MC6839_
+
+initSingleFromDWord IMPORT
+        tfr     x,d             ; point D to dword
+        leax    FP0ADDR,pcr     ; destination
+        orcc    #1              ; dword is signed
+        lbra    initSingleFromDWord
+
+        ELSE
+
+	flt_clrVALTYP
 	ldd	,x
 	std	FP0MAN		; store in upper mantissa of FPA0
 	ldd	2,x
 	std	FP0MAN+2	; store in upper mantissa of FPA0
-	ldb	#128+32 	; 32 = exponent required
-	stb	FP0EXP
-	clr	FPSBYT
-	clr	FP0SGN
-	ldb	FP0MAN
-	subb	#$80		; set carry if value is non-negative (see $BA18)
-	jmp	$BA18		; normalize FPA0 (reads carry)
+	ldb	#EXPBIAS+32 	; 32 = exponent required
+	flt_storeBInFPA0BiasedExp
+	flt_clrFPSBYT
+	flt_clearFPA0Sign
+	flt_loadBFromTopFPA0MantissaByte
+	subb	#$80		; set carry if value is non-negative
+	flt_normalizeFPA0
+	rts
 
-
+        ENDC
 
 
 	ENDSECTION

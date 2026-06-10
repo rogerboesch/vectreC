@@ -11,7 +11,7 @@ _divdww	EXPORT
 _divdww
 _div3216
 	pshs	u
-	tfr	s,u
+	leau	,s
 
 	ldd	6,u		load divisor
 	beq	div3216_900	division by zero: do nothing
@@ -67,7 +67,7 @@ div3216_rolq
 	std	2,x
 
 div3216_900
-	tfr	u,s
+	leas	,u
 	puls	u,pc
 
 * Determines if divisor fits into accumulator.
@@ -87,7 +87,7 @@ div3216_tryfit
 	cmpd	6,u
 	rts
 @fit
-	andcc	#0		return C = 0
+	andcc	#$FE		return C = 0
 	puls	b,pc
 
 * Subtracts divisor from accumulator.

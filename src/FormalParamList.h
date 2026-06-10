@@ -1,4 +1,4 @@
-/*  $Id: FormalParamList.h,v 1.5 2017/12/25 22:36:17 sarrazip Exp $
+/*  $Id: FormalParamList.h,v 1.7 2025/08/28 02:28:18 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2017 Pierre Sarrazin <http://sarrazip.com/>
@@ -23,6 +23,8 @@
 #include "TreeSequence.h"
 
 
+// List of FormalParameter objects.
+//
 class FormalParamList : public TreeSequence
 {
 public:
@@ -30,9 +32,11 @@ public:
 
     virtual ~FormalParamList();
 
-    void endWithEllipsis();
+    void endWithEllipsis(bool ellipsisImplied = false);
 
     bool endsWithEllipsis() const;
+
+    bool isEllipsisImplied() const;
 
     bool hasSingleVoidParam() const;
 
@@ -40,6 +44,7 @@ public:
 
 private:
     bool ellipsis;
+    bool ellipsisImplied;  // used for K&R functions whose parameter list is an empty parenthesis, e.g., f()
 };
 
 

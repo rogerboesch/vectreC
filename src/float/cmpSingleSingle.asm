@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 cmpSingleSingle	EXPORT
@@ -11,10 +13,10 @@ cmpSingleSingle
 	pshs	u,y,x
 
 	ldx	8,s		; point to left operand (single)
-	jsr	$BC14		; unpack from X to FPA0
+	flt_unpackFromXToFPA0
 
 	ldx	10,s		; point to right operand (single)
-	jsr	$BC96		; compare FPA0 to X: puts -1, 0 or +1 in B, sets CC
+	flt_compareFPA0ToX
 
 	puls	x,y,u,pc
 

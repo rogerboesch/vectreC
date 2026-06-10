@@ -1,4 +1,4 @@
-/*  $Id: Pseudo6809.h,v 1.3 2017/03/05 19:54:23 sarrazip Exp $
+/*  $Id: Pseudo6809.h,v 1.5 2022/08/10 02:43:12 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -47,6 +47,8 @@ template <typename T> struct PossiblyKnownVal
 
     PossiblyKnownVal(T startval, bool isKnown=true, int idx1=-1)
         : index(idx1), index2(-1), val(startval), known(isKnown) {}
+
+    /* The following shift methods assume that the value is a byte. */
 
     PossiblyKnownVal<T> asl() const
     {
@@ -251,8 +253,11 @@ struct Pseudo6809Registers {
 };
 
 
+typedef std::stack<PossiblyKnownVal<uint8_t> > PossiblyKnownValStack;
+
+
 /** Represents the state of the processor at a given point in time */
-typedef std::pair<Pseudo6809Registers, std::stack<PossiblyKnownVal<uint8_t> > > Pseudo6809State;
+typedef std::pair<Pseudo6809Registers, PossiblyKnownValStack> Pseudo6809State;
 
 
 /**
@@ -416,7 +421,7 @@ public:
     return a;
   }
 
-  std::stack<PossiblyKnownVal<uint8_t> > stack;
+  PossiblyKnownValStack stack;
   Pseudo6809Registers regs;
 
   /** maps index of an instruction that loads a value to a vector

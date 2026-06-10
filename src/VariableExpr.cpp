@@ -1,7 +1,5 @@
-/*  $Id: VariableExpr.cpp,v 1.16 2020/02/09 17:48:55 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2026 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -103,10 +101,7 @@ VariableExpr::checkSemantics(Functor &f)
     SemanticsChecker &sem = dynamic_cast<SemanticsChecker &>(f);
     TranslationUnit &tu = TranslationUnit::instance();
     const FunctionDef *curFD = sem.getCurrentFunctionDef();
-    if (!curFD)
-        curFD = tu.getFunctionDef("main");
-    if (curFD)
-        tu.registerFunctionCall(curFD->getId(), id);
+    tu.registerFunctionCall(curFD ? curFD->getId() : "main", id);
 }
 
 
@@ -134,12 +129,15 @@ VariableExpr::emitCode(ASMText &out, bool lValue) const
             return true;
         }
 
-        if (!fd->hasInternalLinkage())
-            out.emitImport(fd->getLabel().c_str());
-
-        out.ins("LEAX", fd->getLabel() + ",PCR", "address of " + id + "(), defined at " + fd->getLineNo());
-        if (!lValue)
-            out.ins("TFR", "X,D", "as r-value");
+        string comment = "address of " + id + "(), defined at " + fd->getLineNo();
+        if (TranslationUnit::instance().isRelocatabilitySupported())
+        {
+            out.ins("LEAX", fd->getLabel() + ",PCR", comment);
+            if (!lValue)
+                out.ins("TFR", "X,D", "as r-value");
+        }
+        else
+            out.ins(lValue ? "LDX" : "LDD", "#" + fd->getLabel(), comment);
         return true;
     }
 
@@ -153,11 +151,11 @@ VariableExpr::emitCode(ASMText &out, bool lValue) const
             return true;
         }
 
-        out.ins("LEAX", getFrameDisplacementArg(), "address of array " + getId());
+        out.ins("LEAX", getFrameDisplacementArg(), "address of array `" + getId() + "`");
         out.ins("TFR", "X,D", "as r-value");
         return true;
     }
-    else if (getType() == CLASS_TYPE && !lValue)
+    if (getType() == CLASS_TYPE && !lValue)
     {
         errormsg("cannot use variable `%s', of type `%s', as an r-value",
                  getId().c_str(), getTypeDesc()->toString().c_str());
@@ -168,7 +166,7 @@ VariableExpr::emitCode(ASMText &out, bool lValue) const
     out.ins(
             (lValue ? "LEAX" : getLoadInstruction(getType())),
             getFrameDisplacementArg(),
-            "variable " + getId() + ", declared at " + declaration->getLineNo());
+            "variable `" + getId() + "', declared at " + declaration->getLineNo());
 
     return true;
 }

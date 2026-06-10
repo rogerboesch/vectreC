@@ -3,29 +3,22 @@
 _strchr	EXPORT
 
 
-* byte *strchr(byte *s, word c)
-* Note that CMOC passes a character value (e.g., 'x')
-* as a word to a function.
+* char *strchr(const char *s, int c);
 *
-_strchr pshs	x
-	ldx	4,s		string
-	lda	7,s		char to search for (ignore MSB)
-
-_strchr_100
+_strchr:
+	ldx	2,s		string
+	lda	5,s		char to search for (ignore MSB)
+@loop
 	cmpa	,x
-	beq	_strchr_800	found
+	beq	@found
 	tst	,x+
-	bne	_strchr_100
-
+	bne	@loop
 	clra			not found: return NULL
 	clrb
-	bra	_strchr_900
-_strchr_800
+	rts
+@found
 	tfr	x,d		return address where char found
-_strchr_900
-	puls	x,pc
-
-
+	rts
 
 
 	ENDSECTION

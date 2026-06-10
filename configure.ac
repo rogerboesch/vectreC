@@ -1,9 +1,8 @@
-# $Id: configure.ac,v 1.132 2020/06/07 14:53:53 sarrazip Exp $
-
 AC_PREREQ(2.54)
 
-AC_INIT(cmoc, 0.1.67)
+AC_INIT(cmoc, 0.1.98)
 AC_CONFIG_SRCDIR(src/lexer.ll)
+AC_CONFIG_MACRO_DIRS([macros])
 AC_CANONICAL_HOST
 AM_INIT_AUTOMAKE
 
@@ -24,11 +23,31 @@ AC_SUBST(PACKAGE_FULL_NAME)
 AC_SUBST(PACKAGE_SUMMARY_EN)
 AC_SUBST(PACKAGE_SUMMARY_FR)
 
-MANUAL_DATE_EN="June 7th, 2020"; AC_SUBST(MANUAL_DATE_EN)
+MANUAL_DATE_EN="March 5th, 2026"; AC_SUBST(MANUAL_DATE_EN)
+
+dnl  Adds an --enable-debug option to configure.
+dnl  Must be invoked before AC_PROG_CXX.
+dnl
+AX_CHECK_ENABLE_DEBUG()
 
 AC_PROG_CXX
 AC_LANG_CPLUSPLUS
+
+dnl  The CMOC source code relies the C++11 standard.
+dnl  It also uses some POSIX functions that are not declared by default on all platforms.
+dnl  We pass [ext] to AX_CXX_COMPILE_STDCXX to use -std=gnu++11 if available,
+dnl  instead of -std=c++11.
+dnl  The latter does not necessarily define strdup(), fileno() and popen() on Cygwin as of Jan. 2023.
+dnl
+AX_CXX_COMPILE_STDCXX([11], [ext], [mandatory])
+
 AC_COMPILE_WARNINGS
+
+
+# Try to add -Wsuggest-override. See macros/cxx_suggest_override.m4.
+#
+CXX_SUGGEST_OVERRIDE
+
 
 AC_CHECK_PROG(GREP, grep, grep)
 AC_CHECK_PROG(EGREP, egrep, egrep)
@@ -38,6 +57,8 @@ AC_CHECK_PROG(TAIL, tail, tail)
 AC_CHECK_PROG(HEXDUMP, hexdump, hexdump)
 AC_CHECK_PROG(STRINGS, strings, strings)
 
+# The test suites are Perl scripts.
+#
 AC_PROG_PERL_MODULES(strict)
 
 
@@ -68,7 +89,8 @@ else
 
 	AC_MSG_CHECKING([if lwasm accepts --pragma=forwardrefmax])
 	# Passing --output=/dev/null to keep lwasm from creating a.out in current directory.
-	if lwasm --pragma=forwardrefmax --output=/dev/null >& /dev/null; then
+	# (Using 2>&1 instead of >& for portability, the latter being specific to GNU Bash.)
+	if lwasm --pragma=forwardrefmax --output=/dev/null 2>&1 > /dev/null; then
 		AC_MSG_RESULT([yes])
 	else
 		AC_MSG_RESULT([no])
@@ -137,6 +159,32 @@ AC_ARG_WITH([writecocofile],
 ])
 AC_MSG_RESULT([building writecocofile disk image tool: $build_writecocofile])
 AM_CONDITIONAL(BUILD_WRITECOCOFILE, [test "$build_writecocofile" = yes])
+
+
+# Determine if Floatable, a not-ready-for-prime-time floating point library,
+# gets distributed.
+#
+distribute_floatable=no
+AC_ARG_WITH([floatable],
+[  --with-floatable        build and distribute the Floatable floating point library (default: no)],
+[
+	if test "$withval" = no; then
+		distribute_floatable=no
+	else
+		distribute_floatable=yes
+	fi
+],
+[
+	distribute_floatable=no
+])
+AC_MSG_RESULT([building and distributing Floatable floating point library: $distribute_floatable])
+AM_CONDITIONAL(DISTRIBUTE_FLOATABLE, [test "$distribute_floatable" = yes])
+
+
+# Create a subdirectory in the build tree, in the case of an out-of-source-tree build.
+# This directive must appear before AC_CONFIG_FILES and AC_OUTPUT.
+#
+AC_CONFIG_COMMANDS([create-float-native-dir], [], [$MKDIR_P src/float/native])
 
 
 AC_CONFIG_FILES([

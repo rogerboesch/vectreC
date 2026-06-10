@@ -6,7 +6,7 @@ memcmpimpl      IMPORT
 
 
 _memcmp
-        leax    compareBytes,pcr
+        leax    compareBytes,PCR
         lbra    memcmpimpl
 
 

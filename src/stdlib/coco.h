@@ -10,7 +10,10 @@
 #include <cmoc.h>
 
 
+#ifndef _CMOC_HAVE_FALSE_TRUE_
 enum { FALSE, TRUE };
+#define _CMOC_HAVE_FALSE_TRUE_
+#endif
 
 #ifndef _CMOC_HAVE_BOOL_
 typedef unsigned char BOOL;
@@ -30,6 +33,9 @@ typedef signed long   sdword;
 
 #endif
 
+#ifndef _CMOC_STDINT_
+#define _CMOC_STDINT_
+
 typedef unsigned char uint8_t;
 typedef signed char   int8_t;
 typedef unsigned int  uint16_t;
@@ -37,35 +43,47 @@ typedef signed int    int16_t;
 typedef unsigned long uint32_t;
 typedef signed long   int32_t;
 
+#endif
 
+
+// Deprecated variables.
+// initCoCoSupport() must have been called for these variables to be valid.
+//
+extern byte isCoCo3;  // non-zero iff the machine is a CoCo 3
 extern byte textScreenWidth;
 extern byte textScreenHeight;
 
 
-extern byte isCoCo3;
-
-
-// May be called more than once.
+// Deprecated function.
+// To determine if the machine is a CoCo 3, this expression can be used:
+//   * (unsigned short *) 0xFFF8 == 0xFEF7
+// It is recommended to call width() to set the desired text mode.
+// (Note that width() assumes the presence of Basic.)
 //
-void initCoCoSupport();
+// May be called more than once.
+// Sets isCoCo3, textScreenWidth, textScreenHeight.
+//
+void initCoCoSupport(void);
 
 
 #if defined(_COCO_BASIC_) || defined(DRAGON)
 
 
-void setHighSpeed(byte fast);
+void setHighSpeed(BOOL fast);
 
 
+// Does not require the presence of Basic.
 // isRGB: If false, the CMP palette is used.
 // Does nothing if not on a CoCo 3.
 //
 byte resetPalette(byte isRGB);
 
 
-#define rgb() (resetPalette(TRUE))
-
-
-#define cmp() (resetPalette(FALSE))
+// These functions do not require Basic to be present.
+// They do nothing if not on a CoCo 3.
+//
+void rgb(void);
+void cmp(void);
 
 
 
@@ -91,26 +109,43 @@ byte setBorderColor(byte color);
 
 
 // Returns true for success, false if arg is invalid.
+// Assumes that Basic is present.
 //
 byte width(byte columns);
 
 
 // Returns 32, 40 or 80.
+// Assumes that Basic is present.
 //
 byte getTextMode();
 
 
 // color: Argument that would be passed to BASIC's CLS command.
 //        Pass 255 to signify no argument.
+// Requires Color Basic to be present in memory.
 //
 void cls(byte color);
 
 
+// CoCo 3 only.
 // foreColor: 0-7.
 // backColor: 0-7.
-// blink, underline: booleans.
+// blink, underline: Booleans.
+// Requires Super Extended Color Basic to be present in memory.
 //
 byte attr(byte foreColor, byte backColor, byte blink, byte underline);
+
+
+// Only works in 32x16 mode on a CoCo that has a 6847T1 VDG chip or
+// on a CoCo 3.
+// It does not work on the original CoCo 1 and 2 models (which have
+// a non-T1 6847).
+// N.B.: Lower-case may go back to inverted colors lower-case mode
+//       as soon as Basic's Console Out routine ([$A002]) gets used.
+//       The RVEC3 vector at $0167 can be modified to get around that:
+//           * (char *) 0x0167 = 57;  /* write RTS instruction */
+//
+#define enable6847T1TrueLowerCase() (* (byte *) 0xFF22 |= 0x10)
 
 
 // Positions the current printing position on the text screen.
@@ -138,7 +173,8 @@ void setCaseFlag(byte upperCase);
 void coldStart();
 
 
-// Returns 0 if no key is currently pressed.
+// Checks the keyboard and returns the ASCII code of the key being pressed,
+// if any. Returns 0 if no key is being pressed.
 // Requires Color Basic to be present in memory.
 //
 byte inkey();
@@ -256,8 +292,8 @@ const byte *readJoystickPositions();
 enum
 {
     JOYSTK_BUTTON_1_RIGHT = 0x01,
-    JOYSTK_BUTTON_2_RIGHT = 0x02,
-    JOYSTK_BUTTON_1_LEFT  = 0x04,
+    JOYSTK_BUTTON_1_LEFT  = 0x02,
+    JOYSTK_BUTTON_2_RIGHT = 0x04,
     JOYSTK_BUTTON_2_LEFT  = 0x08,
 };
 
@@ -268,11 +304,13 @@ enum
 // - bit 1: button 2 of right joystick;
 // - bit 2: button 1 of left joystick;
 // - bit 3: button 2 of left joystick.
+// Does not rely on Basic.
 //
 byte readJoystickButtons();
 
 
 // Same arguments as Color Basic's SOUND command.
+// Color Basic must be present in memory.
 //
 void sound(byte tone, byte duration);
 
@@ -315,12 +353,20 @@ void setSAMRegisters(byte *samAddr, byte value, byte numBits);
 
 
 // Based on Basic'S PMODE command.
+// Does not require the presence of Basic in memory.
 // mode: 0..4. Same as the first parameter of Basic's PMODE command.
 // screenBuffer: Must be divisible by 512. This address is remembered,
 //               for pcls() and screen().
+//               Extended Color Basic's current PMODE screen address
+//               can be obtained with this fancy expression:
+//                  (byte *) * (byte *) 0x00BC << 8
+//
 // Returns FALSE upon error (bad mode or bad screenBuffer).
 //
 // pcls() and screen() should typically be called after having called this function.
+//
+// Since version 0.1.89 of CMOC, this function does not change the screen mode anymore;
+// this is now done by screen(), as in Extended Color Basic.
 //
 // To display a different screen buffer after having called pmode() and screen(),
 // setSAMRegisters((byte *) 0xFFC6, pageNum, 7) can be called, where pageNum is
@@ -332,16 +378,20 @@ BOOL pmode(byte mode, byte *screenBuffer);
 
 // Writes the given byte in the PMODE screen buffer.
 // pmode() must have been called before.
+// Does not require the presence of Basic in memory.
 //
 void pcls(byte byteToClearWith);
 
 
 // Like Basic's SCREEN command.
+// Does not require the presence of Basic in memory.
 //
 // type: 0 for text, 1 for graphics.
 //       If 'type' is 1, this function switches to graphics mode and sets the
 //       address of the graphics screen. (This address can be changed later
 //       by calling setPmodeGraphicsAddress().)
+//       If 'type' is 0, this function switches to text mode and sets the address
+//       of the text screen to 1024.
 // colorset: 0 or 1.
 //
 // When switching to graphics, the screen buffer at the address passed to pmode()
@@ -355,20 +405,22 @@ void screen(byte type, byte colorset);
 // Sets the address of the graphics screen.
 // Does not change the graphics mode.
 //
-// newPmodeScreenBuffer: Must be a on 512-byte boundary.
+// newPmodeScreenBuffer: Must be an unsigned char pointer on a 512-byte boundary.
 //
-void setPmodeGraphicsAddress(byte *newPmodeScreenBuffer);
+#define setPmodeGraphicsAddress(newPmodeScreenBuffer) (setPmodeGraphicsAddressEx((newPmodeScreenBuffer), TRUE))
 
 
 // Like setPmodeGraphicsAddress(), but if FALSE is passed for makeVisible,
 // only the internal screen buffer pointer changes, i.e., the displayed
 // screen does not change. This is useful for double-buffering.
+// Does not require the presence of Basic in memory.
 //
 void setPmodeGraphicsAddressEx(byte *newPmodeScreenBuffer, BOOL makeVisible);
 
 
 // Sets the SAM registers to show the PMODE graphics specified by
 // 'samVRegisterValue' at address pageNum * 512.
+// Does not require the presence of Basic in memory.
 //
 // samVRegisterValue: 0..7. For PMODEs 0..4, use 3, 4, 5, 6, 6 respectively.
 //                    For PMODE 0 (32x16 text screen), use 0.
@@ -389,10 +441,94 @@ void showPmode4(byte colorset);
 // Deprecated in favor of screen(0, 0) (see above).
 // Select the 32x16 text mode and position the screen buffer at address 1024.
 //
-void showLowResTextAddress();
+void showLowResTextAddress(void);
 
 
 #endif  /* defined(_COCO_BASIC_) || defined(DRAGON) */
+
+
+#ifdef _COCO_BASIC_
+
+
+// Reads a Disk Basic file into the memory region designated by 'dest'.
+// Does not require the presence of Disk Basic in memory.
+// Uses its own standalone floppy sector I/O routine.
+// Only supports floppies and does not support DriveWire.
+//
+// See readDECBFileWithDECB() for a version that uses DECB's routines.
+//
+// dest: Must be at least 256 bytes, even if the file to be read is shorter than that.
+// filename: Space-padded 8-character filename followed by a space-padded
+//           3-character extension. Example: "FOOBAR  DAT".
+//           DO NOT use the dot notation, e.g., "FOOBAR.DAT".
+// workBuffer: Buffer to be used to read the directory and the FAT.
+//             Contents can be discarded after return.
+//             Must not intersect with the region at 'dest' where the file will be loaded.
+// sizePtr: Pointer to a size_t that receives the file length in bytes
+//          upon success. Note that complete sectors are read in memory,
+//          so up to 255 more bytes may get overwritten after the file's last
+//          valid byte.
+//
+// Returns:
+//   0 = success;
+//   1 = read error when reading directory sector(s);
+//   2 = file not found;
+//   3 = read error when reading the FAT;
+//   4 = read error when reading a file sector.
+//
+// Temporarily redirects the IRQ and NMI interrupts to internal routines.
+//
+// Supports reading an empty file. *sizePtr becomes zero.
+//
+// CAUTION: Upon return, interrupts are masked.
+//          Call enableInterrupts() when interrupts are wanted again.
+//
+byte readDECBFile(void *dest,
+                  byte driveNo, const char filename[11],
+                  byte workBuffer[256],
+                  size_t *sizePtr);
+
+
+// Like readDECBFile(), but uses Disk Basic's floppy sector I/O routine and Basic's
+// IRQ service routine.
+// This means that this function may support DriveWire if it is supported by
+// Disk Basic's routine.
+// This also means that DECB must be present in memory, and Basic's normal
+// IRQ and NMI service routines must be operative.
+//
+// See readDECBFile() for a version that uses its own section read routine
+// and does not require DECB's presence in memory.
+//
+byte readDECBFileWithDECB(void *dest,
+                          byte driveNo, const char filename[11],
+                          byte workBuffer[256],
+                          size_t *sizePtr);
+
+
+#endif  /* defined(_COCO_BASIC_) */
+
+
+#if defined(_COCO_BASIC_) || defined(DRAGON)
+
+// Math functions.
+// Extended Color Basic (or Dragon Basic) must be present when calling these functions.
+// Passing an invalid argument may display a Basic error message and
+// end the execution of the program.
+
+// logf() is declared in <cmoc.h>.
+
+float sinf(float radians);
+float cosf(float radians);
+float tanf(float radians);  // argument must not be pi/2 or 3*pi/2 or any other equivalent angle
+float atanf(float radians);  // returns value in [-pi/2, pi/2]
+float expf(float x);
+float sqrtf(float x);  // x >= 0
+float fabsf(float radians);
+float floorf(float x);  // returns the largest integral value that is not greater than x
+float truncf(float x);  // returns x rounded to the nearest integer value that is not larger in magnitude than x
+float roundf(float x);  // returns x rounded to the nearest integer, but halfway cases are rounded away from zero
+
+#endif  /* defined(_COCO_BASIC_) */
 
 
 #define disableInterrupts() asm("ORCC",  "#$50")

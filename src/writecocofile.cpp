@@ -1,7 +1,5 @@
-/*  $Id: writecocofile.cpp,v 1.20 2018/04/20 00:09:58 sarrazip Exp $
-
-    writecocofile.cpp - A tool to write native files to a CoCo DECB disk image.
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  writecocofile.cpp - A tool to write native files to a CoCo DECB disk image.
+    Copyright (C) 2003-2026 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -832,12 +830,37 @@ readFile(const char *dskFilename, const char *filenameToRead)
 
 
 // format ignored if killOnly true.
+// decbFilename: 8-character name of the file, without extension.
+// decbFileExt: 3-character extension of the file.
+//
 static int
 killAndWriteFile(const char *dskFilename, const char *filenameToAdd,
-                CoCoDisk::Format format, bool killOnly)
+                 CoCoDisk::Format format, bool killOnly, bool isFileEmpty,
+                 const char *decbFilename = NULL,
+                 const char *decbFileExt = NULL)
 {
     string cocoFilename, cocoFileExt;
     parseFilename(filenameToAdd, cocoFilename, cocoFileExt);
+    if (decbFilename)
+    {
+        if (strlen(decbFilename) != 8)
+        {
+            cout << PROGRAM << ": ERROR: given DECB filename '" << decbFilename
+                            << "' is not 8 characters long.\n";
+            return EXIT_FAILURE;
+        }
+        cocoFilename = decbFilename;
+    }
+    if (decbFileExt)
+    {
+        if (strlen(decbFileExt) != 3)
+        {
+            cout << PROGRAM << ": ERROR: given DECB file extension '" << decbFileExt
+                            << "' is not 3 characters long.\n";
+            return EXIT_FAILURE;
+        }
+        cocoFileExt = decbFileExt;
+    }
 
     CoCoDisk::Type type = CoCoDisk::BASIC_DATA;
     if (cocoFileExt == "BAS")
@@ -848,7 +871,7 @@ killAndWriteFile(const char *dskFilename, const char *filenameToAdd,
         type = CoCoDisk::ASCII_TEXT;
 
     if (verbose && !killOnly)
-        cout << "Writing native file " << filenameToAdd
+        cout << "Writing " << (isFileEmpty ? "empty" : "native") << " file " << filenameToAdd
             << " to CoCo file " << cocoFilename << "." << cocoFileExt
             << " as file type " << CoCoDisk::getFileTypeName(type)
             << " with format " << CoCoDisk::getFormatName(format)
@@ -866,10 +889,14 @@ killAndWriteFile(const char *dskFilename, const char *filenameToAdd,
         }
 
         ifstream fileToAdd;
-        stringstream asciiBasicMemoryFile;
+        stringstream memoryFile;
         istream *pFileToAdd = &fileToAdd;
 
-        if (!killOnly)
+        if (isFileEmpty)
+        {
+            pFileToAdd = &memoryFile;  // point to stringstream that stays empty
+        }
+        else if (!killOnly)
         {
             fileToAdd.open(filenameToAdd, ios::in | (convertASCIIBasicNewlines ? ios_base::openmode(0) : ios::binary));
             if (!fileToAdd)
@@ -879,7 +906,7 @@ killAndWriteFile(const char *dskFilename, const char *filenameToAdd,
             }
             if (convertASCIIBasicNewlines)
             {
-                asciiBasicMemoryFile << '\r';  // first line of DECB ASCII Basic file must be empty
+                memoryFile << '\r';  // first line of DECB ASCII Basic file must be empty
                 for (size_t lineNo = 1; ; ++lineNo)
                 {
                     char line[512];
@@ -891,9 +918,9 @@ killAndWriteFile(const char *dskFilename, const char *filenameToAdd,
                         cout << PROGRAM << ": ERROR: line " << lineNo << " of native file " << filenameToAdd << " is too long\n";
                         return EXIT_FAILURE;
                     }
-                    asciiBasicMemoryFile << line << '\r';
+                    memoryFile << line << '\r';
                 }
-                pFileToAdd = &asciiBasicMemoryFile;  // pass converted text to addFile() instead of native file
+                pFileToAdd = &memoryFile;  // pass converted text to addFile() instead of native file
             }
         }
 
@@ -987,12 +1014,11 @@ int listDirectory(const char *dskFilename)
                 cout << '\n';
         }
         cout << '\n';
-        cout << '\n';
 
 
         // Iterate through the directory entries.
         //
-        bool corrupt = false;
+        bool corrupt = false, headerWritten = false;
         size_t numGransUsedByDir = 0;
         CoCoDisk::DirIterator iter(theCoCoDisk);
 
@@ -1013,7 +1039,6 @@ int listDirectory(const char *dskFilename)
             {
                 cout << PROGRAM << ": warning: entry #" << entryIndex << " of image file " << dskFilename
                         << " is invalid (error #" << err << ")\n";
-                //return EXIT_FAILURE;
             }
 
             vector<size_t> granules;
@@ -1029,6 +1054,15 @@ int listDirectory(const char *dskFilename)
                           + bytesInLastSector;
                 if (numSectorsLastGranule > 0)
                     fileLen += (numSectorsLastGranule - 1) * CoCoDisk::BYTES_PER_SECTOR;
+            }
+
+            if (!headerWritten)
+            {
+                cout << "                                            Last\n";
+                cout << "                                     Total  Sector List of\n";
+                cout << "      Filename      Type     Format  Length Length Granules\n";
+                cout << "      ============  =======  ======  ====== ====== =========\n";
+                headerWritten = true;
             }
 
             cout << setw(3) << entryIndex << ".  "
@@ -1112,8 +1146,9 @@ int
 main(int argc, char *argv[])
 {
     enum Mode { WRITE_FILE, KILL_FILE, LIST_DIRECTORY, READ_FILE } mode = WRITE_FILE;
-
     CoCoDisk::Format format = CoCoDisk::BINARY;
+    bool isFileEmpty = false;
+    string decbFilename, decbFileExt;  // optional forced destination name
 
 
     /*  Process command-line arguments.
@@ -1192,7 +1227,22 @@ main(int argc, char *argv[])
             printToStdOut = true;
             continue;
         }
-
+        if (curopt == "--empty")
+        {
+            mode = WRITE_FILE;
+            isFileEmpty = true;
+            continue;
+        }
+        if (curopt.compare(0, 12, "--decb-name=") == 0)
+        {
+            decbFilename = string(curopt, 12, string::npos);
+            continue;
+        }
+        if (curopt.compare(0, 11, "--decb-ext=") == 0)
+        {
+            decbFileExt = string(curopt, 11, string::npos);
+            continue;
+        }
 
         if (curopt.empty() || curopt[0] == '-')
         {
@@ -1225,7 +1275,9 @@ main(int argc, char *argv[])
                 displayHelp();
                 return EXIT_FAILURE;
             }
-            return killAndWriteFile(dskFilename, argv[optind], format, mode == KILL_FILE);
+            return killAndWriteFile(dskFilename, argv[optind], format, mode == KILL_FILE, isFileEmpty,
+                                    decbFilename.empty() ? NULL : decbFilename.c_str(),
+                                    decbFileExt.empty() ? NULL : decbFileExt.c_str());
 
         case LIST_DIRECTORY:
             if (optind != argc)  // if extra argument

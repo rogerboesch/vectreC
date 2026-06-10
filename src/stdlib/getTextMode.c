@@ -4,7 +4,7 @@
 byte getTextMode()
 {
     #ifdef _COCO_BASIC_
-    if (isCoCo3)
+    if (* (word *) 0xFFF8 == 0xFEF7)  // if CoCo 3
     {
         byte hrWidth = * (byte *) 0x00E7;
         if (hrWidth == 1)

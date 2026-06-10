@@ -31,7 +31,7 @@ byte dskcon(byte operation, byte *buffer, byte drive, byte track, byte sector)
     * (byte *) 0x00EB = drive;      // DCDRV
     * (byte *) 0x00EC = track;      // DCTRK
     * (byte *) 0x00ED = sector;     // DCSEC
-    * (word *) 0x00EE = buffer;       // DCBPT
+    * (byte **) 0x00EE = buffer;    // DCBPT
 
     asm("PSHS", "U,Y,X,A");  // protect against BASIC routine
     asm("JSR", "[$C004]");  // call DSKCON
@@ -41,7 +41,7 @@ byte dskcon(byte operation, byte *buffer, byte drive, byte track, byte sector)
 }
 
 
-#else  /* ndef _COCO_BASIC_ */
+#elif USIM  /* Simulator used for CMOC self-testing. */
 
 
 byte dskcon(byte operation, byte *buffer, byte drive, byte track, byte sector)
@@ -65,12 +65,12 @@ byte dskcon(byte operation, byte *buffer, byte drive, byte track, byte sector)
     dskConUSimVars[1] = drive;   // DCDRV
     dskConUSimVars[2] = track;   // DCTRK
     dskConUSimVars[3] = sector;  // DCSEC
-    * (word *) (dskConUSimVars + 4) = buffer;  // DCBPT
+    * (byte **) (dskConUSimVars + 4) = buffer;  // DCBPT
 
     // Specifying the operation code causes the simulated DSKCON routine to run
     // (and block the execution).
     //
-    dskConUSimVars[0] = operation;  // DCOPC: DSKCON read operation code
+    dskConUSimVars[0] = operation;  // DCOPC: DSKCON operation code
 
     return !dskConUSimVars[6];  // zero in DCSTA means success
 }
@@ -105,9 +105,10 @@ byte initdisk(byte newFATBuffer[])
 
 byte openfile(struct FileDesc *fd, const char *filename)
 {
+    //printf("- openfile(fd=%p, %s): fatBuffer=%p\n", fd, filename, fatBuffer);
     if (fd == 0 || filename == 0 || fatBuffer == 0)
         return 0;  // invalid arguments, or initdisk() not called
-    //printf("- openfile(0x%x, %s): fd->curSector=0x%x\n", fd, filename, fd->curSector);
+    //printf("- openfile: fd->curSector=%p\n", fd->curSector);
     assert(fd->curSector != 0);
 
     char dirEntry[16];

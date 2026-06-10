@@ -94,6 +94,12 @@ sub work
     {
     }
 
+    # Replace <!-- --name="c_features" --> with <a name="XXX" />
+    #
+    while ($html =~ s,<!--\s+--name="(.*?)"\s*-->,<a name="$1" />,ig)
+    {
+    }
+
     my $htmlTOC = "";
     my $fh;
     if (!open($fh, '>', \$htmlTOC))

@@ -1,4 +1,4 @@
-/*  $Id: JumpStmt.h,v 1.7 2016/09/15 03:34:57 sarrazip Exp $
+/*  $Id: JumpStmt.h,v 1.10 2023/08/27 01:41:04 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -43,20 +43,20 @@ public:
 
     virtual ~JumpStmt();
 
-    virtual void checkSemantics(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual void replaceChild(Tree *existingChild, Tree *newChild)
+    virtual void replaceChild(Tree *existingChild, Tree *newChild) override
     {
         if (deleteAndAssign(argument, existingChild, newChild))
             return;
         assert(!"child not found");
     }
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
 private:
 

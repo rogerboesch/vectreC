@@ -3,7 +3,7 @@
 **A complete C toolchain for programming the Vectrex — no installation required.**
 
 VectreC is a ready-to-use distribution of the [CMOC](http://sarrazip.com/dev/cmoc.html)
-6809 cross-compiler (v0.1.67) by Pierre Sarrazin, bundled with the
+6809 cross-compiler (v0.1.98) by Pierre Sarrazin, bundled with the
 [lwtools](http://www.lwtools.ca) assembler/linker by William Astle and an
 enhanced C wrapper library for the Vectrex BIOS. You write C, you get a
 `.bin` ROM image that runs in an emulator or on real hardware.

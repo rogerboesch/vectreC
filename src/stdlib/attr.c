@@ -4,7 +4,7 @@
 byte attr(byte foreColor, byte backColor, byte blink, byte underline)
 {
     #ifdef _COCO_BASIC_
-    if (!isCoCo3)
+    if (* (word *) 0xFFF8 != 0xFEF7)  // if not CoCo 3
         return FALSE;
 
     // Bits 0-2: background color (0-7)

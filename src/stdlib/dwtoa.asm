@@ -9,7 +9,7 @@ sub32   IMPORT
 *
 doDigit:
 	PSHS	U	
-	TFR	S,U	
+	LEAU	,S
 	LEAS	-5,S	
 * Line 84: init of variable c
 	CLR	-1,U		variable c
@@ -56,7 +56,7 @@ doDigit_030:
 	LDX	10,U		variable dest (byte *)
 	STB	,X		store character in *dest
 
-	TFR	U,S	
+	LEAS	,U
 	PULS	U,PC		end of doDigit
 
 

@@ -1,4 +1,4 @@
-/*  $Id: WhileStmt.cpp,v 1.16 2018/02/02 02:55:59 sarrazip Exp $
+/*  $Id: WhileStmt.cpp,v 1.17 2024/06/08 01:42:50 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -49,6 +49,8 @@ WhileStmt::checkSemantics(Functor &)
     if (condition->getType() == CLASS_TYPE && !condition->isRealOrLong())
         condition->errormsg("invalid use of %s as condition of while statement",
                             condition->getTypeDesc()->isUnion ? "union" : "struct");
+    else if (const BinaryOpExpr *binCond = dynamic_cast<const BinaryOpExpr *>(condition))
+        binCond->warnIfAssignmentAsCondition();
 }
 
 

@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 decrementSingle	EXPORT
@@ -8,18 +10,20 @@ decrementSingle	EXPORT
 ;
 decrementSingle
 	pshs	u,y,x
-	jsr	$BC14		; unpack into Basic's FPA0 (preserves X)
-	leax	packedMinus1,PCR
-	jsr	$B9C2		; add number at X to FPA0 (trashes X)
+	flt_unpackFromXToFPA0
+	leax	@packedMinus1,PCR
+	flt_addNumberAtXToFPA0
 	ldx	,s		; retrieve original number address
-	jsr	$BC35		; pack FPA0 at X
+	flt_packFPA0ToX
 	puls	x,y,u,pc
-packedMinus1
+@packedMinus1
+        IFDEF _CMOC_MC6839_
+        fqb     $BF800000
+        ELSE
 	fcb	$81		; packed -1.0
 	fdb	$8000
 	fdb	0
-
-
+        ENDC
 
 
 	ENDSECTION

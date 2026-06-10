@@ -1,7 +1,5 @@
-/*  $Id: ClassDef.cpp,v 1.21 2019/06/22 03:35:43 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2026 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -126,11 +124,33 @@ ClassDef::getDataMemberOffset(const string &memberName,
 }
 
 
+int16_t
+ClassDef::getDataMemberOffset(size_t memberIndex,
+                              const ClassMember **member) const
+{
+    int16_t offset = 0;
+    if (member)
+        *member = NULL;
+    for (vector<ClassMember *>::const_iterator it = dataMembers.begin();
+                                              it != dataMembers.end(); it++)
+    {
+        if (memberIndex == 0)
+        {
+            if (member)
+                *member = *it;
+            return Union ? 0 : offset;
+        }
+        offset += (*it)->getSizeInBytes();
+        --memberIndex;
+    }
+    return -1;
+}
+
+
 void
 ClassDef::clearMembers()
 {
-    for (std::vector<ClassMember *>::iterator it = dataMembers.begin(); it != dataMembers.end(); ++it)
-        delete *it;
+    deleteVectorElements(dataMembers);
     dataMembers.clear();
 }
 
@@ -154,7 +174,7 @@ ClassDef::createClassMembers(DeclarationSpecifierList *dsl,
         assert(declarator);
 
         // Check bit field widths and types.
-        declarator->checkBitField(*dsl->getTypeDesc());
+        declarator->checkBitField(dsl->getTypeDesc());
 
         // Apply asterisks specified in the Declarator.
         // For example: if the declaration is of type char **, then dsl->getTypeDesc()
@@ -170,7 +190,9 @@ ClassDef::createClassMembers(DeclarationSpecifierList *dsl,
             td = TranslationUnit::getTypeManager().getFunctionPointerType(td,
                                                                           *declarator->getFormalParamList(),
                                                                           dsl->isInterruptServiceFunction(),
-                                                                          dsl->isFunctionReceivingFirstParamInReg());
+                                                                          dsl->getCallConvention());
+        else if (dsl->getTypeDesc()->type == VOID_TYPE && declarator->getPointerLevel() == 0)
+            ::errormsg("member of struct is void");
 
         ClassMember *member = new ClassDef::ClassMember(td, declarator);  // Declarator now owned by 'member'
         members->push_back(member);
@@ -179,6 +201,24 @@ ClassDef::createClassMembers(DeclarationSpecifierList *dsl,
     delete dsl;
     delete memberDeclarators;  // destroy the vector<Declarator *>, but not the Declarators
     return members;
+}
+
+
+void
+ClassDef::check()
+{
+    for (const ClassMember *member : dataMembers)
+        if (member->isArray())
+        {
+            size_t numElements = member->getTotalNumArrayElements();
+            if (numElements == size_t(-1))
+                member->errormsg("invalid dimensions for member array `%s' in struct `%s'",
+                                member->getDeclarator().getId().c_str(), getName().c_str());
+            else if (numElements == 0
+                        && TranslationUnit::instance().warnArraySizeZero())
+                member->warnmsg("array member `%s' of struct `%s' has size zero",
+                                    member->getName().c_str(), getName().c_str());
+        }
 }
 
 
@@ -210,6 +250,25 @@ ClassDef::ClassMember::ClassMember(const TypeDesc *_tp, Declarator *_di)
 
         setTypeDesc(TranslationUnit::getTypeManager().getArrayOf(getTypeDesc(), numDims));
     }
+    else if (getTypeDesc()->isPtrToFunction())
+    {
+        // If a call conv. has been pushed with push_calling_convention,
+        // apply it to this struct member of type function pointer.
+        //
+        CallConvention defaultConv = TranslationUnit::instance().getCurrentDefaultCallConvention();
+        if (defaultConv != DEFAULT_CMOC_CALL_CONV)
+        {
+            const TypeDesc *funcTypeDesc = getTypeDesc()->getFinalPointerType(); // function type pointed to
+            if (funcTypeDesc->getCallConvention() == DEFAULT_CMOC_CALL_CONV)  // if no explicit call conv. keyword on struct member
+            {
+                // Construct the same function pointer type, but with the current default call conv. on it.
+                TypeManager &tm = TranslationUnit::instance().getTypeManager();
+                const TypeDesc *newFuncTypeDesc = tm.getTypeWithCallConvention(funcTypeDesc, defaultConv);
+                const TypeDesc *newFuncPtrTypeDesc = tm.getPointerTo(newFuncTypeDesc);
+                setTypeDesc(newFuncPtrTypeDesc);
+            }
+        }
+    }
 }
 
 
@@ -228,18 +287,22 @@ ClassDef::ClassMember::getName() const
 }
 
 
-// Returns 1 for a non-array class member.
-//
-int16_t
-ClassDef::ClassMember::getNumArrayElements() const
+size_t
+ClassDef::ClassMember::getTotalNumArrayElements() const
 {
     assert(declarator != NULL);
 
-    uint16_t numElements = 1;
+    size_t numElements = 1;
     if (declarator->isArray())
-        numElements = declarator->getNumArrayElements();
-    size_t numElementsInType = getTypeDesc()->getNumArrayElements();
-    return int16_t(numElements > 0 ? numElements * numElementsInType : 1);
+    {
+        numElements = declarator->getTotalNumArrayElements(this);
+        if (numElements == size_t(-1))
+            return size_t(-1);  // invalid size
+    }
+    size_t numElementsInType = getTypeDesc()->getTotalNumArrayElements();
+    if (numElementsInType > 0x7FFF || numElements * numElementsInType > 0x7FFF)
+        return size_t(-1);  // invalid size
+    return numElements * numElementsInType;
 }
 
 
@@ -248,15 +311,11 @@ ClassDef::ClassMember::getSizeInBytes() const
 {
     assert(declarator != NULL);
 
-    // If array, then get the final array type (e.g., the "int" in "int[2][3]").
-    const TypeDesc *td = getTypeDesc();
-    while (td->type == ARRAY_TYPE)
-    {
-        td = td->pointedTypeDesc;
-        assert(td);
-    }
-
-    return TranslationUnit::instance().getTypeSize(*td) * getNumArrayElements();
+    const TypeDesc *td = getTypeDesc()->getFinalArrayType();
+    size_t numElements = getTotalNumArrayElements();
+    if (numElements == size_t(-1))  // if invalid
+        return 0;
+    return TranslationUnit::instance().getTypeSize(*td) * numElements;
 }
 
 
@@ -267,7 +326,8 @@ ClassDef::ClassMember::getArrayDimensions() const
 
     vector<uint16_t> arrayDimensions;
     if (!declarator->computeArrayDimensions(arrayDimensions, false, this))
-        assert(false);
+        errormsg("failed to compute array dimensions of struct member `%s'", getName().c_str());
+
     return arrayDimensions;
 }
 

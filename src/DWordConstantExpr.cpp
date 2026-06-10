@@ -1,6 +1,4 @@
-/*  $Id: DWordConstantExpr.cpp,v 1.7 2019/01/26 19:46:22 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
+/*  CMOC - A C-like cross-compiler
     Copyright (C) 2003-2018 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
@@ -69,27 +67,58 @@ DWordConstantExpr::setLabel(const string &newLabel)
 
 
 vector<uint8_t>
-DWordConstantExpr::getRepresentation() const
+DWordConstantExpr::getRepresentation(uint32_t value)
 {
-    uint32_t d = getDWordValue();
     vector<uint8_t> rep;
     for (int shift = 24; shift >= 0; shift -= 8)
-        rep.push_back(uint8_t((d >> shift) & 0xFF));
+        rep.push_back(uint8_t((value >> shift) & 0xFF));
     return rep;
+}
+
+
+vector<uint8_t>
+DWordConstantExpr::getRepresentation() const
+{
+    return getRepresentation(getDWordValue());
 }
 
 
 void
 DWordConstantExpr::emitDWordConstantDefinition(ASMText &out, const std::vector<uint8_t> &representation)
 {
+    size_t len = representation.size();
+    assert(len > 0);
     stringstream arg;
-    for (size_t len = representation.size(), i = 0; i < len; ++i)
+    for (size_t i = 0; i < len; ++i)
     {
         if (i > 0)
             arg << ',';
         arg << wordToString(representation[i], true);
     }
-    out.ins("FCB", arg.str());
+    string argstr = arg.str();
+    assert(!argstr.empty());
+    out.ins("FCB", argstr);
+}
+
+
+void
+DWordConstantExpr::emitDWordConstantDefinition(ASMText &out, uint32_t value)
+{
+    emitDWordConstantDefinition(out, getRepresentation(value));
+}
+
+
+bool
+DWordConstantExpr::emitDWordConstantDefinition(ASMText &out) const
+{
+    vector<uint8_t> rep = getRepresentation();
+    if (rep.size() == 0)
+    {
+        errormsg("internal compiler error: failed to emit bytes for long integer %lu (%ld)", value, value);
+        return false;
+    }
+    emitDWordConstantDefinition(out, rep);
+    return true;
 }
 
 
@@ -121,6 +150,7 @@ DWordConstantExpr::emitCode(ASMText &out, bool lValue) const
     }
 
     out.ins("LEAX", asmLabel + TranslationUnit::instance().getLiteralIndexRegister(true),
-                    "32-bit constant: " + doubleToString(value));
+                    "32-bit constant: "
+                    + doubleToString(isSigned() && int32_t(uint32_t(value)) < 0 ? int32_t(uint32_t(value)) : value));
     return true;
 }

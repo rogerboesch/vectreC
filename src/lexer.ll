@@ -1,6 +1,7 @@
 /* lexer.ll - Lexical analyser for GNU Flex */
 
 %{
+#include <limits.h>
 #include <string.h>
 #include <string>
 
@@ -14,6 +15,7 @@
 #include "FormalParameter.h"
 #include "FormalParamList.h"
 #include "DeclarationSpecifierList.h"
+#include "FunctionPointerCast.h"
 
 #define YY_NO_INPUT  /* do not generate yyinput() */
 
@@ -43,6 +45,8 @@ static void warnIfDoublePrecisionLiteral(const char *realLiteralText)
 extern "C" int yywrap(void) { return 1; }  // yylex() returns 0 when EOF reached
 
 bool isOctal(uint64_t &value, const char *str);
+
+bool processPreprocessorLineDirective(char *&reader);
 %}
 
 letter          [A-Za-z_]
@@ -90,6 +94,7 @@ asm({ws}|\n)*\{([^\{\}]|(\{[^\{\}]*\}))*\}         {
                                     // Verbatim assembler text.
                                     // Copy contents of braces into yytext, and count newlines.
                                     // Update 'lineno' according to number of source lines taken.
+                                    // Process cpp lines of the form '# <num> "<filename>"' if any.
                                     // 
                                     char *p;
                                     for (p = yytext + 3; *p != '{'; ++p)
@@ -101,12 +106,21 @@ asm({ws}|\n)*\{([^\{\}]|(\{[^\{\}]*\}))*\}         {
                                     if (begin != end)  // only return something if text not empty
                                     {
                                         char *writer = yytext;
+                                        bool lastCharIsNewline = true;
                                         for (char *reader = begin; reader != end; )
                                         {
                                             char c = *reader++;
-                                            *writer++ = c;
-                                            if (c == '\n')
-                                                ++lineno;
+                                            if (lastCharIsNewline && c == '#' && processPreprocessorLineDirective(reader))
+                                            {
+                                                lastCharIsNewline = true;
+                                            }
+                                            else
+                                            {
+                                                *writer++ = c;
+                                                if (c == '\n')
+                                                    ++lineno;
+                                                lastCharIsNewline = (c == '\n');
+                                            }
                                         }
                                         *writer = '\0';
 
@@ -215,13 +229,13 @@ asm({ws}|\n)*\{([^\{\}]|(\{[^\{\}]*\}))*\}         {
                 if (strcmp(yytext, "struct") == 0) return STRUCT;
                 if (strcmp(yytext, "union") == 0) return UNION;
                 if (strcmp(yytext, "interrupt") == 0) return INTERRUPT;
+                if (strcmp(yytext, "__gcccall") == 0) return FUNC_USES_GCC6809_CALL_CONV;
                 if (strcmp(yytext, "_CMOC_fpir_") == 0) return FUNC_RECEIVES_FIRST_PARAM_IN_REG;
                 if (strcmp(yytext, "sizeof") == 0) return SIZEOF;
                 if (strcmp(yytext, "typedef") == 0) return TYPEDEF;
                 if (strcmp(yytext, "switch") == 0) return SWITCH;
                 if (strcmp(yytext, "case") == 0) return CASE;
                 if (strcmp(yytext, "default") == 0) return DEFAULT;
-                if (strcmp(yytext, "asm") == 0) return ASM;
                 if (strcmp(yytext, "register") == 0) return REGISTER;
                 if (strcmp(yytext, "goto") == 0) return GOTO;
                 if (strcmp(yytext, "extern") == 0) return EXTERN;
@@ -298,5 +312,48 @@ bool isOctal(uint64_t &value, const char *str)
             return false;
         value = (value << 3) | (*str - '0');
     }
+    return true;
+}
+
+
+// If reader points to ' <num> "<filename>"\n', then move reader past that
+// and set global 'lineno' to <num>.
+//
+bool processPreprocessorLineDirective(char *&reader)
+{
+    char *r = reader;
+
+    // Pass blanks.
+    while (isspace(*r) && *r != '\n')
+        ++r;
+
+    // Try to parse a non-negative decimal int.
+    char *endptr;
+    unsigned long num = strtoul(r, &endptr, 10);
+    if ((num == ULONG_MAX && errno) || num > INT_MAX)
+        return false;
+    r = endptr;
+
+    // Pass blanks.
+    while (isspace(*r) && *r != '\n')
+        ++r;
+
+    // Expect filename in double quotes.
+    if (*r != '\"')
+        return false;
+    ++r;
+    while (*r && *r != '\"')
+        ++r;
+    if (*r != '\"')
+        return false;
+    ++r;
+    while (isspace(*r) && *r != '\n')
+        ++r;
+    if (*r != '\n')
+        return false;
+
+    // Found expected directive.
+    reader = r + 1;
+    ::lineno = (int) num;
     return true;
 }

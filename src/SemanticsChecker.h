@@ -1,4 +1,4 @@
-/*  $Id: SemanticsChecker.h,v 1.4 2017/06/25 20:38:45 sarrazip Exp $
+/*  $Id: SemanticsChecker.h,v 1.5 2023/08/27 01:41:05 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -31,9 +31,9 @@ public:
 
     ~SemanticsChecker();
 
-    virtual bool open(Tree *t);
+    virtual bool open(Tree *t) override;
 
-    virtual bool close(Tree *t);
+    virtual bool close(Tree *t) override;
 
     void setCurrentFunctionDef(FunctionDef *fd);
 

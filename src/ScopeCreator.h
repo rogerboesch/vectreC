@@ -1,4 +1,4 @@
-/*  $Id: ScopeCreator.h,v 1.5 2016/10/05 02:28:24 sarrazip Exp $
+/*  $Id: ScopeCreator.h,v 1.6 2023/08/27 01:41:05 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -44,9 +44,9 @@ public:
 
     virtual ~ScopeCreator();
 
-    virtual bool open(Tree *t);
+    virtual bool open(Tree *t) override;
 
-    virtual bool close(Tree *t);
+    virtual bool close(Tree *t) override;
 
     void processIdentifierExpr(IdentifierExpr &ie);
 

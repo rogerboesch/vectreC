@@ -716,7 +716,7 @@ void stop_sound() {
 
 void update_audio() {
 	if (Vec_Music_Flag != 0) {
-		init_music_chk(g_current_music);
+		init_music_chk((int8_t *) g_current_music);
 	}
 
 	if (Vec_Music_Flag == 0 && g_last_music_flag != 0) {

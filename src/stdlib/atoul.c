@@ -9,5 +9,5 @@
 unsigned long atoul(_CMOC_CONST_ char *nptr)
 {
     char *endptr;
-    return strtoul(nptr, &endptr, 10);
+    return strtoul10(nptr, &endptr);
 }

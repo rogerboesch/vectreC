@@ -1,4 +1,4 @@
-        INCLUDE float.inc
+	INCLUDE float.inc
 
 	SECTION code
 
@@ -7,23 +7,15 @@ unpackXtoFPA1AndPrep    EXPORT
 
 
 unpackXtoFPA0AndPrep
-	jsr	$BC14		; unpack from X to FPA0
+	flt_unpackFromXToFPA0
 	bra	prepBinFloatOp
 
 unpackXtoFPA1AndPrep
-	jsr	$BB2F		; unpack from X to FPA1
+	flt_unpackFromXToFPA1
 
 prepBinFloatOp
-        ; Compute sign of result, as in $BB2F.
-        ldb     FP0SGN
-        eorb    FP1SGN
-        stb     RESSGN
-
-        lda     FP1EXP
-        ldb     FP0EXP          ; as in $BB2F; sets N and Z
+        flt_computeResultSign
 	rts
-
-
 
 
 	ENDSECTION

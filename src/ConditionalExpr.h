@@ -1,7 +1,5 @@
-/*  $Id: ConditionalExpr.h,v 1.7 2016/09/15 03:34:56 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2026 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -37,20 +35,22 @@ public:
     //
     virtual ~ConditionalExpr();
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
     
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual void replaceChild(Tree *existingChild, Tree *newChild);
+    virtual void replaceChild(Tree *existingChild, Tree *newChild) override;
 
+    const Tree *getConditionExpression() const;
     const Tree *getTrueExpression() const;
     const Tree *getFalseExpression() const;
 
-    virtual bool isLValue() const { return trueExpr->isLValue() && falseExpr->isLValue(); }
+    virtual bool isLValue() const override { return trueExpr->isLValue() && falseExpr->isLValue(); }
 
 private:
 
-    static void promoteIfNeeded(ASMText &out, const Tree &exprToPromote, const Tree &otherExpr);
+    static void promoteIfNeeded(ASMText &out, const TypeDesc &typeToPromote, const TypeDesc &targetTypeDesc);
+    CodeStatus emitSubExpr(ASMText &out, bool lValue, const Tree &subExpr) const;
 
     // Forbidden:
     ConditionalExpr(const ConditionalExpr &);

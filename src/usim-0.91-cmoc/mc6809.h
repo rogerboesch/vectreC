@@ -184,14 +184,14 @@ private:
 	void			help_tst(Byte);
 
 protected:
-	virtual void		execute(void);
-	virtual void		trigger_irq(void);
+	virtual void		execute(void) override;
+	virtual void		trigger_irq(void) override;
 public:
 				mc6809();		// public constructor
 	virtual			~mc6809();		// public destructor
 
-	virtual void		reset(void);		// CPU reset
-	virtual void		status(void);
+	virtual void		reset(void) override;		// CPU reset
+	virtual void		status(void) override;
 
 };
 
