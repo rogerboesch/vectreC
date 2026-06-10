@@ -88,7 +88,7 @@ $env:PATH = "$env:VECTREC;$env:PATH"
 EOF
 
 # Ship the extensive Windows user guide and the example programs.
-cp -f "$SCRIPT_DIR/doc/README-WINDOWS.md" "$STAGE_DIR/README-WINDOWS.md"
+cp -f "$SCRIPT_DIR/cmoc/doc/README-WINDOWS.md" "$STAGE_DIR/README-WINDOWS.md"
 mkdir -p "$STAGE_DIR/examples"
 cp -f "$SCRIPT_DIR/examples/"*.c "$STAGE_DIR/examples/"
 

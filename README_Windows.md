@@ -18,7 +18,7 @@ cmoc --vectrex -I $env:VECTREC\stdlib -L $env:VECTREC\stdlib -o hello.bin exampl
 ```
 
 The package includes an extensive user guide,
-[README-WINDOWS.md](doc/README-WINDOWS.md), covering setup, your first
+[README-WINDOWS.md](cmoc/doc/README-WINDOWS.md), covering setup, your first
 program, compiler options, Vectrex programming (ROM header pragmas, ROM
 data, controller, sound), emulators, and troubleshooting.
 

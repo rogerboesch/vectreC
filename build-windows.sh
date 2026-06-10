@@ -25,6 +25,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="${1:-$USERPROFILE/retro-tools/vectrec}"
 INSTALL_DIR="$(cygpath -u "$INSTALL_DIR" 2>/dev/null || echo "$INSTALL_DIR")"
+# The CMOC source tree (vendored upstream + Vectrex overlay) lives in cmoc/.
+BUILD_DIR="$SCRIPT_DIR/cmoc"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 
 LWTOOLS_VER="4.24"
@@ -130,7 +132,7 @@ info "lwtools version: $LWASM_VER"
 # Step 4: Build CMOC compiler
 # ---------------------------------------------------------------------------
 
-cd "$SCRIPT_DIR"
+cd "$BUILD_DIR"
 
 # Clean previous build if any
 if [ -f Makefile ]; then
