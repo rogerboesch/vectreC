@@ -6,7 +6,7 @@ _memset	EXPORT
 * void *memset(void *s, int c, size_t n)
 *
 _memset	pshs	u
-	tfr	s,u
+	leau	,s
 	leas	-2,s		end address
 
 	ldd	4,u		start address (s)
@@ -23,7 +23,7 @@ _memset_cond
 	bne	_memset_loop	no, continue
 
 	ldd	4,u		return start address
-	tfr	u,s
+	leas	,u
 	puls	u,pc
 
 

@@ -3,19 +3,17 @@
 _strlen	EXPORT
 
 
-_strlen pshs	x
-	ldx	4,s
-_strlen_010
+_strlen:
+	ldx	2,s
+@loop
 	tst	,x+
-	bne	_strlen_010
+	bne	@loop
 
 	tfr	x,d
 	subd	#1		compensate for increment past '\0'
-	subd	4,s		substract start address
+	subd	2,s		substract start address
 
-	puls	x,pc
-
-
+	rts
 
 
 	ENDSECTION

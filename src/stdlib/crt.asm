@@ -7,6 +7,9 @@ _exit			EXPORT
 INISTK                  EXPORT
 CHROUT                  EXPORT
 null_ptr_handler        EXPORT
+unpackSingleAndConvertToASCII_hook EXPORT
+singlePrecisionSize     EXPORT
+nop_handler             EXPORT
 
         IFNDEF OS9
 end_of_sbrk_mem         EXPORT
@@ -54,6 +57,13 @@ s_bss   IMPORT
         ENDC
 	STX	INISTK,pcr		save this for exit()
 
+        IFDEF FLEX
+	LDS	$CC2B			put stack at memory end of flex
+	LDX	-2,X			Load return address
+	PSHS	X
+	LEAX	2,S			now the real initial stack pointer
+        ENDC
+
         IFNDEF OS9
 	LEAX	D,X			point to top of stack space
 	STX	end_of_sbrk_mem,pcr	sbrk() will not allocate past this
@@ -72,12 +82,107 @@ s_bss   IMPORT
 	IFDEF _COCO_OR_DRAGON_BASIC_
 	LDX	$A002			; system's current address for PUTCHR
 	ELSE
+	IFDEF FLEX
+	LDX	#$CD18			; putchr of FLEX
+	ELSE
 	LEAX	PUTCHR,PCR
+	ENDC
 	ENDC
 	STX	CHROUT,pcr
 
+	IFDEF FLEX
+	BSR	FLEXCL		prepare flex command line re: argc, argv
+	ENDC
+
+; Install dummy routine in hook that converts a float to decimal.
+; See enable_printf_float.asm.
+        LEAX    unpackSingleAndConvertToASCII_dummy,PCR         ; PCR in caps b/c ref to code
+        STX     unpackSingleAndConvertToASCII_hook,pcr          ; pcr in lower-case b/c ref to data
+
 	LBSR	INITGL		initialize global variables
         LBRA    constructors
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; See also unpackSingleAndConvertToASCII.asm.
+;
+unpackSingleAndConvertToASCII_dummy
+        ; Write "!" at U.
+	LDB     #'!
+        STB     ,u
+        CLR     1,u
+        RTS
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	IFDEF FLEX
+
+maxargcf	EQU	8	; maximum number of arguments to be passed to main()
+
+FLEXCL
+        LEAS    -((maxargcf+3)*2),S      maxargc+NULL pointer = *argv[] + 1xargc on stack
+        LDX     ((maxargcf+3)*2+2),S
+        PSHS    X                       restore return address
+        LDX     ((maxargcf+3)*2+2),S
+        PSHS    X                       restore return address
+
+; --> SP
+;       Return Address from FLEXCL
+; +2    Return Address from INILIB
+; +4    argc
+; +6    pointer to argv[] 
+; +8    pointer to argv[0]
+; +10   pointer to argv[1]
+; ...
+; +n    NULL
+
+        LDX     #$C080                  LineBuffer for Flex starts at $C080
+        LEAU    8,s
+        STU     6,S
+        STX     ,U++                   argv[0] = program name
+        INCB                            argc = 1
+
+findArgEndf
+        LDA     ,X+
+        BSR     isArgEndingCharf
+        BEQ     foundArgEndf
+        CMPA    #$0D
+        BNE     findArgEndf
+foundArgEndf
+        CLR     -1,X                ; replace space/tab w/ NUL to turn arg into C string
+        CMPB    #maxargcf            ; reached max?
+        BHS     eolf                ; if yes
+        CMPA    #$0D
+        BEQ     eolf
+
+findArgStartf
+        LDA     ,X+
+        BSR     isArgEndingCharf
+        BEQ     findArgStartf
+        CMPA    #$0D
+        BEQ     eolf
+; Found an argument starting at X-1.
+        LEAX    -1,X
+        STX     ,U++
+        LEAX    1,X
+        INCB                        ; count the argument
+        BRA     findArgEndf
+
+eolf
+        CLRA
+        STD     4,S                   save argc
+        CLR     ,U+                     NULL pointer for end of argv
+        CLR     ,U+
+        RTS
+
+isArgEndingCharf
+        CMPA    #' '
+        BEQ     donef
+        CMPA    #$09
+donef
+        RTS
+
+	ENDC		; FLEX
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -127,7 +232,7 @@ s_rwdata    IMPORT
 
 ; Copy the initialized data, if any, to the data segment at Y.
         leau    ,y                  ; destination: data segment
-        clr     ,u+                 ; reserve 1st byte so that (void *) serves as invalid ptr
+        clr     ,u+                 ; reserve 1st byte so that (void *) 0 serves as invalid ptr
         ldy     #l_rwdata           ; length to copy
         beq     @done               ; if table empty
         leax    s_rodata+l_rodata,PCR   ; 1st (writable) data address to copy
@@ -163,7 +268,7 @@ s_rwdata    IMPORT
 ; Any arguments beyond 'maxargc' are unreachable from argv[].
 ;
 ; Input: X => command line (ends with $0D).
-; Output: Fills argv[] (defined in argv.asm).
+; Output: Fills argv[].
 ;         Stores NULs in the command line after each argument.
 ;         X => argv[].
 ;         D = number of arguments (maxed at maxargc).
@@ -250,7 +355,7 @@ stk10   puls    a,b,x,pc            ; restore caller's registers, return to afte
 fixserr fcc     /**** STACK OVERFLOW ****/
         fcb     13
 
-fsterr  leax    <fixserr,pcr        ; address of error string
+fsterr  leax    <fixserr,PCR        ; address of error string
 E$MemFul equ    $CF
         ldb     #E$MemFul           ; MEMORY FULL error number
 
@@ -325,8 +430,29 @@ EXIT10	CLR	,X+
 
 	IFDEF VECTREX
 
-	BRA	_exit	The eternal Vectrex loop on exit...
+@vectrexExitLoop
+	BRA	@vectrexExitLoop        The eternal Vectrex loop on exit...
 
+	ENDC
+
+        IFDEF _CMOC_VOID_TARGET_
+
+        LDD     2,S             get exit() arg (may be main() return value)
+	LDS	INISTK,pcr	retrieve stack pointer saved at beginning
+; Fall through to the RTS at nop_handler.
+
+	ENDC
+
+	IFDEF THOMMO
+	LDS	INISTK,pcr
+	ENDC
+
+	IFDEF THOMTO
+	LDS	INISTK,pcr
+	ENDC
+
+	IFDEF FLEX
+	JMP	$CD03		Flex Warmstart
 	ENDC
 
 nop_handler:
@@ -364,6 +490,17 @@ program_break	RMB	2
 
 CHROUT  RMB     2       Routine to write char to current device
 
+; Pointer to a routine that does something if floating-point support is enabled,
+; or writes a placeholder string otherwise. See enable_printf_float().
+; Used by CMOC's printf() implementation (see printf.asm).
+; Initialized by float-ctor.asm in the ECB/Dragon cases.
+;
+unpackSingleAndConvertToASCII_hook RMB 2
+
+; Size in bytes of the float type. Used by printf.asm.
+;
+singlePrecisionSize RMB 1
+
         IFDEF OS9
 
 _errno   EXPORT
@@ -378,7 +515,7 @@ __memend RMB     2
 __mtop   RMB     2
 __sttop  RMB     2
 __stbot  RMB     2
-argv     RMB     maxargc*2+2     ; one more entry for terminating NULL
+argv     RMB     maxargc*2+2     ; one more entry for terminating NUL
 
         ENDC
 
@@ -388,13 +525,15 @@ argv     RMB     maxargc*2+2     ; one more entry for terminating NULL
         SECTION code
 
         IFNDEF _COCO_OR_DRAGON_BASIC_
+        IFNDEF FLEX
 PUTCHR  EXPORT
+        ENDC
         ENDC
 
 
 	IFDEF USIM
 
-* Code to be used with the version of usim that comes with CMOC.
+* Code to be used with the version of usim that CMOC is shipped with.
 *
 PUTCHR	STA	$FF00
 	RTS
@@ -414,8 +553,32 @@ PUTCHR	pshs	u,y,x,a
 
         ENDC
 
+        IFDEF THOMMO
+PUTCHR
+	exg a,b
+	swi
+	fcb 2
+	exg a,b
+	rts
+        ENDC
+
+	IFDEF THOMTO
+PUTCHR
+	exg a,b
+	jsr $E803
+	exg a,b
+	rts
+	ENDC
 
         IFDEF VECTREX
+
+PUTCHR
+	RTS
+
+        ENDC
+
+
+        IFDEF _CMOC_VOID_TARGET_
 
 PUTCHR
 	RTS

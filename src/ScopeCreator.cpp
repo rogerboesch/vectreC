@@ -1,4 +1,4 @@
-/*  $Id: ScopeCreator.cpp,v 1.20 2020/04/05 02:57:21 sarrazip Exp $
+/*  $Id: ScopeCreator.cpp,v 1.27 2025/09/06 18:14:20 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -96,23 +96,31 @@ ScopeCreator::privateOpen(Tree *t)
     DeclarationSequence *declSeq = dynamic_cast<DeclarationSequence *>(t);
     if (declSeq != NULL)
     {
-        for (std::vector<Tree *>::iterator it = declSeq->begin(); it != declSeq->end(); ++it)
+        for (Tree *tree : *declSeq)
         {
-            if (Declaration *decl = dynamic_cast<Declaration *>(*it))
+            if (Declaration *decl = dynamic_cast<Declaration *>(tree))
             {
-                /*cout << "# ScopeCreator::privateOpen(" << t << "): Declaration: " << decl->getVariableId()
+                const string declId = decl->getVariableId();
+                /*cout << "# ScopeCreator::privateOpen(" << t << "): Declaration: " << declId
                         << " at line " << decl->getLineNo()
                         << ", cs=" << cs << "\n";*/
                 if (!cs->declareVariable(decl))
                 {
-                    const Declaration *existingDecl = cs->getVariableDeclaration(decl->getVariableId(), false);
+                    const Declaration *existingDecl = cs->getVariableDeclaration(declId, false);
                     assert(existingDecl);
                     decl->errormsg("variable `%s' already declared in this scope at %s",
-                                   decl->getVariableId().c_str(), existingDecl->getLineNo().c_str());
+                                   declId.c_str(), existingDecl->getLineNo().c_str());
                 }
             }
+            else if (FunctionDef *fd = dynamic_cast<FunctionDef *>(tree))
+            {
+                if (fd->getBody())
+                    tree->errormsg("local functions not supported");
+                else
+                    TranslationUnit::instance().registerFunction(fd);  // register prototype that is local to a function
+            }
             else
-                (*it)->errormsg("invalid declaration");
+                tree->errormsg("invalid declaration");
         }
         return true;
     }
@@ -122,19 +130,6 @@ ScopeCreator::privateOpen(Tree *t)
     {
         processIdentifierExpr(*ie);
         return true;
-    }
-
-    if (const AssemblerStmt *ae = dynamic_cast<AssemblerStmt *>(t))
-    {
-        set<string> varNames;
-        ae->getAllVariableNames(varNames);
-        for (set<string>::const_iterator it = varNames.begin(); it != varNames.end(); ++it)
-        {
-            const string &id = *it;
-            Declaration *decl = cs->getVariableDeclaration(id, true);
-            if (!decl)
-                ae->errormsg("undeclared identifier `%s' in assembly language statement", id.c_str());
-        }
     }
 
     FunctionCallExpr *fce = dynamic_cast<FunctionCallExpr *>(t);
@@ -199,7 +194,6 @@ ScopeCreator::processIdentifierExpr(IdentifierExpr &ie)
         VariableExpr *ve = new VariableExpr(id);
         ve->setDeclaration(decl);
 
-        assert(decl->getType() != VOID_TYPE);
         ve->setTypeDesc(decl->getTypeDesc());
         ie.setVariableExpr(ve);  // sets the type of *ie
         return;
@@ -222,9 +216,12 @@ ScopeCreator::processIdentifierExpr(IdentifierExpr &ie)
 
     if (id == "__FUNCTION__" || id == "__func__")
     {
-        ie.setTypeDesc(translationUnit.getTypeManager().getArrayOfChar());
+        ie.setTypeDesc(translationUnit.getTypeManager().getArrayOfConstChar());
         return;
     }
+
+    if (ie.isNameInAFunctionCall())  // if foo(...) where foo() not declared: tolerate K&R usage
+        return;
 
     ie.errormsg("undeclared identifier `%s'", id.c_str());
 }

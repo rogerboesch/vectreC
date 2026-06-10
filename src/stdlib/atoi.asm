@@ -2,12 +2,15 @@
 
 _atoi	EXPORT
 
+passLeadingWhiteSpaceChars      IMPORT
 ATOW    IMPORT
 
 
 * int atoi(char *s);
 _atoi
         ldx     2,s             s
+        lbsr    passLeadingWhiteSpaceChars
+
         clr     ,-s             sign byte: 0 = positive
         ldb     ,x              1st char
         cmpb    #'-             minus sign?

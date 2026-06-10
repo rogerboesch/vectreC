@@ -19,7 +19,7 @@ mc6809::mc6809() : mode(immediate), u(0), s(0), x(0), y(0), dp(0), acc(), a(acc.
 
 	size_t size = 0x10000L;
 	memory = new Byte[size];
-	memset(memory, size, 0x12);  // RTS instructions
+	memset(memory, size, 0x12);  // NOP instructions
 	reset();
 
 	/* Set the IRQ vector and the initial (trivial) IRQ service routine. */
@@ -60,6 +60,12 @@ void mc6809::execute(void)
 	}
 
 	//fprintf(stderr, "PC=%04x D=%04x C=%d ", pc, d, cc.bit.c);
+	if (pc == 0 || pc >= 0xFF00)  /* Fail if trying to execute at address where code is not permitted. */
+	{
+		printf("\n[USim error: Tried to execute code at address $%04X. Registers: CC=$%02X, D=$%04X, X=$%04X, Y=$%04X, U=$%04X, S=$%04X, DP=$%02X]\n",
+			pc, cc.all, d, x, y, u, s, dp);
+		exit(1);
+	}
 	ir = fetch();
 	//fprintf(stderr, "IR=%04x\n", ir);
 

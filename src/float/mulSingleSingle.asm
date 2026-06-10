@@ -17,7 +17,7 @@ binOpSingleSingle       IMPORT
 ;
 mulSingleSingle
 	pshs	u,y,x
-	leau	unpackXToFPA1AndMul,pcr
+	leau	unpackXToFPA1AndMul,PCR
 	lbsr	binOpSingleSingle
 	puls	x,y,u,pc
 

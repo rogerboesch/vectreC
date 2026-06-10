@@ -1,12 +1,12 @@
         SECTION code
 
-memcmpimpl		EXPORT
+memcmpimpl      EXPORT
 
 
 * Input: Two pointers and a word on stack.
 *        X => Routine that loads bytes through X and U, advances X and U,
-*		  	  transforms the two bytes if needed, then compares the bytes
-*			  and returns with CC reflecting this comparison. (May trash D.)
+*             transforms the two bytes if needed, then compares the bytes
+*             and returns with CC reflecting this comparison. (May trash D.)
 *
 * Returns 0, 1 or -1 in D.
 *
@@ -27,7 +27,7 @@ memcmpimpl
         ldu     10,s            2nd string
 
 _memcmp_loop
-		jsr		[,s]			call load+transform+compare+advance routine
+        jsr     [,s]            call load+transform+compare+advance routine
         bne     _memcmp_diff    if bytes different
 
         leay    -1,y            one byte done

@@ -1,4 +1,4 @@
-/*  $Id: ObjectMemberExpr.cpp,v 1.11 2017/10/15 00:30:54 sarrazip Exp $
+/*  $Id: ObjectMemberExpr.cpp,v 1.13 2021/05/11 23:20:39 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -197,6 +197,8 @@ const ClassDef *
 ObjectMemberExpr::getClass() const
 {
     const std::string &className = getClassName();
+    if (className.empty())
+        return NULL;
     return TranslationUnit::instance().getClassDef(className);
 }
 
@@ -215,7 +217,7 @@ ObjectMemberExpr::getClassMember() const
     const ClassDef *cl = getClass();
     if (cl == NULL)
     {
-        errormsg("reference to member `%s' of undefined class `%s'",
+        errormsg("reference to member `%s' of undefined struct `%s'",
                  getMemberName().c_str(), getClassName().c_str());
         assert(!getClassName().empty());
         return NULL;

@@ -1,4 +1,4 @@
-/*  $Id: IfStmt.cpp,v 1.11 2017/08/26 21:11:32 sarrazip Exp $
+/*  $Id: IfStmt.cpp,v 1.17 2024/06/08 01:42:44 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -50,6 +50,8 @@ IfStmt::checkSemantics(Functor &)
     if (condition->getType() == CLASS_TYPE && !condition->isRealOrLong())
         condition->errormsg("invalid use of %s as condition of if statement",
                             condition->getTypeDesc()->isUnion ? "union" : "struct");
+    else if (const BinaryOpExpr *binCond = dynamic_cast<const BinaryOpExpr *>(condition))
+        binCond->warnIfAssignmentAsCondition();
 }
 
 
@@ -60,14 +62,15 @@ IfStmt::emitCode(ASMText &out, bool lValue) const
     if (lValue)
         return false;
 
-    uint16_t value = 0;
-    bool isCondConst = condition->evaluateConstantExpr(value);
-
-    if (isCondConst && value != 0)  // if condition always true, only emit "then" clause
-        return consequence->emitCode(out, lValue);
-
-    if (isCondConst && value == 0)  // if condition always false, only emit "else" clause, if any
+    if (condition->isExpressionAlwaysTrue())  // if condition always true, only emit "then" clause
     {
+        out.emitComment("The if() condition at " + getLineNo() + " is always true");
+        return consequence->emitCode(out, lValue);
+    }
+
+    if (condition->isExpressionAlwaysFalse())  // if condition always false, only emit "else" clause, if any
+    {
+        out.emitComment("The if() condition at " + getLineNo() + " is always false");
         if (alternative != NULL && !alternative->emitCode(out, lValue))
             return false;
         return true;
@@ -81,7 +84,8 @@ IfStmt::emitCode(ASMText &out, bool lValue) const
     if (! BinaryOpExpr::emitBoolJumps(out, condition, thenLabel, elseLabel))
         return false;
 
-    out.emitLabel(thenLabel, "then");
+    out.emitLabel(thenLabel, "then clause of if() started at " + condition->getLineNo());
+    consequence->writeLineNoComment(out, "");
 
     if (!consequence->emitCode(out, false))
         return false;
@@ -91,10 +95,14 @@ IfStmt::emitCode(ASMText &out, bool lValue) const
     if (alternative != NULL)
         out.ins("LBRA", endifLabel, "jump over else clause");
 
-    out.emitLabel(elseLabel, "else");
-    if (alternative != NULL && !alternative->emitCode(out, false))
-        return false;
-    out.emitLabel(endifLabel, "end if");
+    out.emitLabel(elseLabel, "else clause of if() started at " + condition->getLineNo());
+    if (alternative != NULL)
+    {
+        alternative->writeLineNoComment(out, "");
+        if (!alternative->emitCode(out, false))
+            return false;
+    }
+    out.emitLabel(endifLabel, "end of if() started at " + condition->getLineNo());
     return true;
 }
 

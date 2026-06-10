@@ -1,4 +1,4 @@
-/*  $Id: Pragma.h,v 1.10 2018/09/15 20:00:49 sarrazip Exp $
+/*  $Id: Pragma.h,v 1.13 2024/07/11 03:21:18 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -29,6 +29,14 @@ public:
 
     Pragma(const std::string &_directive);
 
+    // Indicate that this pragma has been processed.
+    //
+    void setProcessed();
+
+    // Determine if this pragma has been processed.
+    //
+    bool wasProcessed() const;
+
     // If this pragma is "org N", then stores N in 'address'
     // and returns true. Returns false otherwise.
     //
@@ -44,14 +52,19 @@ public:
     //
     bool isDataOrg(uint16_t &address) const;
 
-    // If #pragma exec_once.
-    //
-    bool isExecOnce() const;
-
     // If #pragma stack_space N.
     // numBytes receives N, but only when this method returns true.
     //
     bool isStackSpace(uint16_t &numBytes) const;
+
+    // If #pragma push_calling_convention <conv>.
+    // callConv receives <conv>, but only when this method returns true.
+    //
+    bool isPushCallConvention(CallConvention &callConv) const;
+
+    // If #pragma pop_calling_convention.
+    //
+    bool isPopCallConvention() const;
 
     std::string getDirective() const;
 
@@ -77,7 +90,7 @@ public:
     //
     bool isVxMusic(std::string &label) const;
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
 private:
 
@@ -87,6 +100,7 @@ private:
 private:
 
     std::string directive;
+    bool processed;
 
 };
 

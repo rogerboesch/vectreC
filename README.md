@@ -2,7 +2,7 @@
 
 A ready-to-build CMOC 6809 cross-compiler toolchain for Vectrex game development.
 
-Based on [CMOC](http://sarrazip.com/dev/cmoc.html) by Pierre Sarrazin (v0.1.67) with an
+Based on [CMOC](http://sarrazip.com/dev/cmoc.html) by Pierre Sarrazin (v0.1.98) with an
 enhanced C-wrapper library for Vectrex BIOS functions. You write C, you get a `.bin`
 ROM image that runs in an emulator or on real hardware.
 

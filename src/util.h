@@ -1,7 +1,5 @@
-/*  $Id: util.h,v 1.43 2020/06/06 04:41:43 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2023 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -23,16 +21,13 @@
 #include "TypeDesc.h"
 
 #include <typeinfo>
-#include <vector>
 #include <list>
 #include <set>
 #include <map>
 #include <algorithm>
-#include <iostream>
 #include <fstream>
 #include <sstream>
 #include <stdio.h>
-#include <string.h>
 #include <stdarg.h>
 #include <memory>
 
@@ -66,6 +61,37 @@ enum TargetPlatform
     USIM,           // USim 6809 simulator
     VECTREX,        // Vectrex video game console
     DRAGON,         // Dragon 32/64
+    VOID_TARGET,    // target with no I/O system known to this compiler
+    THOMMO,         // Thomson MO
+    THOMTO,         // Thomson TO
+    FLEX,           // FLEX by Technical Systems Consultants
+    INTERM_REP,     // Intermediate representation (CMOC-specific)
+};
+
+
+// Returns the displayable name for the given platform.
+//
+const char *getTargetPlatformName(TargetPlatform targetPlatform);
+
+
+// Returns the identifier that is used in the IFDEF directives in stdlib/*.asm.
+//
+const char *getTargetPlatformPreprocId(TargetPlatform targetPlatform);
+
+
+enum class FloatingPointLibrary : uint8_t
+{
+    ECB_ROM,  // Extended Color Basic ROM routines (or Dragon ROM)
+    NATIVE_LIB,  // yet-to-be-released library that would ship with CMOC
+    MC6839_LIB,  // third party library
+};
+
+
+enum class FramePointerOption : uint8_t
+{
+    DEFAULT,  // omit frame pointer is simple cases, e.g., no locals and no params
+    OMIT_A_LOT,  // use low-level optimizer to strip frame pointer when possible
+    KEEP_ALL,  // except pure asm functions
 };
 
 
@@ -108,11 +134,27 @@ enum ConstCorrectnessCode { CONST_CORRECT, CONST_INCORRECT, INCOMPAT_TYPES };
 ConstCorrectnessCode isPointerInitConstCorrect(const TypeDesc *declPointedTypeDesc, const TypeDesc *initPointedTypeDesc);
 
 
+// Returns a number of bytes, or -1 upon overflow (i.e., beyond 32767).
+// dims: Dimensions of an array. Must have at least one element.
+// dimIndex: Product starts at dims[dimIndex] and finishes at the end of dims. Must be <= dims.size().
+// finalArrayElementTypeSize: In bytes.
+//
+int16_t computeDimensionsProduct(const std::vector<uint16_t> &dims,
+                                 size_t dimIndex,
+                                 int16_t finalArrayElementTypeSize);
+
+
 // name: Must be in upper-case. Does not have to end with '\0'.
 // Example: getRegisterFromName("DP,...") returns DP.
 // Returns REGISTER if no register name is recognized.
 //
 Register getRegisterFromName(const char *name);
+
+
+// Returns the upper-case name of the given register, or NULL if 'reg'
+// is NO_REGISTER or an invalid numerical value.
+//
+const char *getRegisterName(Register reg);
 
 
 typedef std::vector<std::string> StringVector;
@@ -155,12 +197,6 @@ findInVectorOfPairsByKey(std::vector< std::pair<Key, Value> > &v, const Key &key
             return it;
     return v.end();
 }
-
-
-// Tag used in comments for asm(INS, ARG) statements.
-// Also used by ASMText.
-//
-extern const std::string inlineASMTag;
 
 
 const char *getLoadInstruction(BasicType t);
@@ -237,11 +273,19 @@ std::string doubleToString(double d);
 void stringToLower(std::string &s);
 
 
-// Determines if 'c' is a character that can appear in a C identifier.
+// Determines if 'c' is a character that can be the first character of a C identifier.
+//
+inline bool isCIdentifierStartingChar(char c)
+{
+    return isalpha(c) || c == '_';
+}
+
+
+// Determines if 'c' is a character that can be in a C identifier.
 //
 inline bool isCIdentifierChar(char c)
 {
-    return isalnum(c) || c == '_';
+    return isCIdentifierStartingChar(c) || isdigit(c);
 }
 
 
@@ -279,15 +323,23 @@ bool isRegisterName(const std::string &s);
 bool isPowerOf2(uint16_t n);
 
 
-bool startsWith(const std::string &s, const char *suffix);
+bool startsWith(const std::string &s, const char *prefix);
 
 bool endsWith(const std::string &s, const char *suffix);
 
-// Returns the removed extension, or an empty string if no period is found.
+// Returns the extension (which starts with a dot) of the basename of the given path,
+// or an empty string if no dot is found.
+//
+std::string getExtension(const std::string &s);
+
+// Returns the removed extension of the basename of the given path, or an empty string
+// if no dot is found.
 //
 std::string removeExtension(std::string &s);
 
-// newExt: Must start with period, if a period is wanted in the new extension.
+// Replaces the extension in the basename of path 's' by newExt,
+// if an extension is found. Otherwise, appends newExt to s.
+// newExt: Must start with dot, if a dot is wanted in the new extension.
 //
 std::string replaceExtension(const std::string &s, const char *newExt);
 
@@ -298,36 +350,26 @@ std::string replaceDir(const std::string &s, const std::string &newDir);
 
 std::string getBasename(const std::string &filename);
 
-// Returns true if 'c' is a directory separator ('/' on all platforms;
-// also '\' under Windows).
+
+// Multiples [begin, end) and if no overflow occurs, stores the result
+// in 'result' and returns true.
+// Returns false if an overflow occurs.
+// If [begin, end) is empty, 'result' becomes 1 and true is returned.
 //
-bool isDirSep(char c);
-
-// Returns the position of the last directory separator in 'path',
-// or string::npos if none is found.
-//
-std::string::size_type findLastDirSep(const std::string &path);
-
-// Returns true if 'path' contains at least one directory separator.
-//
-bool containsDirSep(const std::string &path);
-
-// Surrounds 'arg' with quotes for use in a command line passed to system()
-// or popen(). Double quotes are used because they are understood both by
-// POSIX shells and by the Windows command interpreter (cmd.exe), unlike
-// single quotes.
-//
-std::string quoteArg(const std::string &arg);
-
-
 template <typename ForwardIterator>
-inline uint16_t
-product(ForwardIterator begin, ForwardIterator end)
+inline bool
+product(uint16_t& result, ForwardIterator begin, ForwardIterator end)
 {
-    uint16_t result = 1;
+    result = 0;  // ensure defined value
+    uint32_t longResult = 1;
     for ( ; begin != end; ++begin)
-        result *= *begin;
-    return result;
+    {
+        longResult *= *begin;
+        if (longResult > 0xFFFF)
+            return false;  // overflow
+    }
+    result = uint16_t(longResult);
+    return true;
 }
 
 
@@ -373,6 +415,16 @@ vectorToString(const std::vector<T> &_vec, const char *_delimiter = ", ", const 
 }
 
 
+// Calls delete on each pointer in an std::vector<T *>.
+//
+template <typename T>
+void deleteVectorElements(std::vector<T *> &v)
+{
+    for (T *p : v)
+        delete p;
+}
+
+
 template <typename T>
 std::ostream &operator << (std::ostream &out, const VectorToString<T> &vts)
 {
@@ -388,6 +440,48 @@ std::ostream &operator << (std::ostream &out, const VectorToString<T> &vts)
 }
 
 
+// Array that makes no dynamic allocations and imposes a maximum compile-time capacity.
+//
+template <typename T, size_t capacity>
+class StaticArray
+{
+public:
+    StaticArray()
+    :   array(),
+        arraySize(0)
+    {
+    }
+
+    // Returns false if there is no room left.
+    //
+    bool push_back(const T &x)
+    {
+        if (arraySize >= capacity)
+            return false;
+        array[arraySize++] = x;
+        return true;
+    }
+
+    size_t size() const
+    {
+        return arraySize;
+    }
+
+    // index must lower than size().
+    //
+    const T &operator[](size_t index) const
+    {
+        if (index >= arraySize)
+            throw -1;
+        return array[index];
+    }
+
+private:
+    T array[capacity];
+    size_t arraySize;
+};
+
+
 // Returns a string of the form "foo.cpp:42".
 //
 std::string getSourceLineNo();
@@ -397,7 +491,7 @@ void errormsgEx(const std::string &explicitLineNo, const char *fmt, ...);
 void errormsgEx(const std::string &sourceFilename, int lineno, const char *fmt, ...);
 
 // diagType: "error" or "warning".
-void diagnoseVa(const char *diagType, const std::string &explicitLineNo, const char *fmt, va_list ap);
+void diagnoseVa(bool isError, const std::string &explicitLineNo, const char *fmt, va_list ap);
 
 void warnmsg(const char *fmt, ...);
 

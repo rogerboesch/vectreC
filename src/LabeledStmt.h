@@ -1,4 +1,4 @@
-/*  $Id: LabeledStmt.h,v 1.9 2019/03/10 18:29:45 sarrazip Exp $
+/*  $Id: LabeledStmt.h,v 1.12 2025/09/27 06:16:03 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -31,13 +31,17 @@ public:
 
     LabeledStmt(Tree *_defaultStatement);
 
-    LabeledStmt(const char *_id, const std::string &_asmLabel, Tree *_statement);
+    // For a statement labeled with an identifier, e.g., foo: x = 1;
+    //
+    LabeledStmt(const char *_id, Tree *_statement);
 
     virtual ~LabeledStmt();
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual void checkSemantics(Functor &f) override;
+
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
     bool isCase() const { return id.empty() && expression; }
 
@@ -55,19 +59,21 @@ public:
 
     Tree *getStatement() { return statement; }
 
+    const std::string &getAssemblyLabel() const { return asmLabel; }
+
     std::string getAssemblyLabelIfIDEqual(const std::string &id) const;
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
 private:
 
     LabeledStmt(const LabeledStmt&);
     LabeledStmt &operator = (const LabeledStmt&);
 
-    std::string id;        // when ID_LABEL (empty otherwise)
-    std::string asmLabel;  // when ID_LABEL (empty otherwise)
-    Tree *expression;  // when CASE_LABEL (null otherwise)
-    Tree *statement;
+    std::string id;        // empty if 'case' or 'default' statement
+    std::string asmLabel;  // empty if 'case' or 'default' statement
+    Tree *expression;  // when 'case' statement (null otherwise)
+    Tree *statement;  // sub-statement
 
 };
 

@@ -1,7 +1,5 @@
-/*  $Id: FunctionDef.h,v 1.27 2019/06/22 05:16:58 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2016 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -36,14 +34,22 @@ public:
 
     // Takes ownership of the FormalParamList of 'declarator', if any.
     // 'declarator' loses its FormalParamList in such a case.
+    // dsl: Specifies the return type of this function.
+    //      The FunctionDef does not keep a reference to the DeclarationSpecifierList.
+    //      NULL is accepted: a signed int return value is then assumed.
     //
-    FunctionDef(const DeclarationSpecifierList &dsl,
+    FunctionDef(const DeclarationSpecifierList *dsl,
                 Declarator &declarator);
 
     // Calls delete on the FormalParamList pointer received for the constructor, if any.
     //
     virtual ~FunctionDef();
-    
+
+    // Central function that determines the assembly language label of the entry point
+    // of a C function whose name is given by 'id'.
+    //
+    static std::string makeLabelFromFunctionId(const std::string &id);
+
     // If this FunctionDef already has a body, this method calls delete on 'body'
     // and issues a compiler error.
     // Otherwise, this FunctionDef becomes owner of the TreeSequence object,
@@ -59,7 +65,11 @@ public:
     std::string getLabel() const;
     std::string getEndLabel() const;
 
-    bool hasSameReturnType(const FunctionDef &fd) const;
+    // Determines if this function and 'fd' have the same return type,
+    // the same calling convention and the same interruptness.
+    //
+    bool hasSameReturnTypeAndModifiers(const FunctionDef &fd) const;
+
     bool hasSameFormalParams(const FunctionDef &fd) const;
     size_t getNumFormalParams() const;
 
@@ -73,7 +83,7 @@ public:
     //
     bool isCalled() const;
 
-    virtual void checkSemantics(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
     // Must be called before calling emitCode().
     // Must only be called once.
@@ -82,16 +92,23 @@ public:
 
     // declareFormalParams() and allocateLocalVariables() must have been called.
     //
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
     // May return NULL.
     const FormalParamList *getFormalParamList() const;
 
+    // Make this function an interrupt service function, i.e.,
+    // give it the 'interrupt' keyword.
+    //
+    void setInterruptServiceRoutine(bool _isISR);
+
     bool isInterruptServiceRoutine() const;
 
-    bool isFunctionReceivingFirstParamInReg() const;
+    void setCallConvention(CallConvention callConv);
+
+    CallConvention getCallConvention() const;
 
     bool isAssemblyOnly() const;
 
@@ -108,13 +125,19 @@ public:
     //
     std::string findAssemblyLabelFromIDLabeledStatement(const std::string &id) const;
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
     // Returns an instruction argument.
     // Only relevant when a function receives a hidden parameter that points
     // to where the return value must be stored.
     //
     std::string getAddressOfReturnValue() const;
+
+    // Returns the prototype of this function.
+    //
+    const TypeDesc *getPrototypeTypeDesc() const;
+
+    std::string getPrototypeWithFunctionId() const;
 
     // Number of bytes that a function is expected to use in addition to its local variables.
     // Useful when targeting OS-9.
@@ -132,6 +155,9 @@ private:
 
     void declareFormalParams();
     bool hasHiddenParam() const;
+    bool hasHiddenParamAndReceivesItInReg() const;
+    bool firstParamIsUnsignedChar() const;
+    CodeStatus emitParameterSpillInstructions(ASMText &out) const;
 
 private:
 
@@ -149,7 +175,7 @@ private:
     bool asmOnly;
     bool noReturnInstruction;
     bool called;  // true means at least one call or address-of seen on this function
-    bool firstParamReceivedInReg;
+    CallConvention callConvention;
 
     static uint16_t functionStackSpace;  // in bytes; 0 means no stack check
 

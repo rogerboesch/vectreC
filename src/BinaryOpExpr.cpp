@@ -1,7 +1,5 @@
-/*  $Id: BinaryOpExpr.cpp,v 1.163 2020/06/07 14:53:53 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2020 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -105,19 +103,45 @@ BinaryOpExpr::checkSemantics(Functor &)
 {
     bool declareTemporary = false;
     const TypeDesc *tempTD = NULL;
-    const TypeDesc *sub0TD = subExpr0->getTypeDesc(), *sub1TD = subExpr1->getTypeDesc();
+    const TypeDesc *sub0TD = subExpr0->getTypeDesc();
 
     switch (oper)
     {
     case ADD:
     case SUB:
+        if (       (subExpr0->isPtrOrArray() && subExpr1->isLong())
+                || (subExpr1->isPtrOrArray() && subExpr0->isLong()))
+            warnmsg("array index is 32 bits (only low 16 bits used)");
+
+        // Optimization: If both operands are bytes, if any side is a WordConstantExpr,
+        // force it to emit a byte load.
+        if (getType() == BYTE_TYPE)
+        {
+            if (WordConstantExpr *wce = dynamic_cast<WordConstantExpr *>(subExpr0))
+                wce->forceAsByte();
+            if (WordConstantExpr *wce = dynamic_cast<WordConstantExpr *>(subExpr1))
+                wce->forceAsByte();
+        }
+
+        /* FALLTHROUGH */
+
     case MUL:
+        // Optimization: If both operands are bytes, if any side is a WordConstantExpr,
+        // force it to emit a byte load.
+        if (getType() == BYTE_TYPE)
+        {
+            if (WordConstantExpr *wce = dynamic_cast<WordConstantExpr *>(subExpr0))
+                wce->forceAsByte();
+            if (WordConstantExpr *wce = dynamic_cast<WordConstantExpr *>(subExpr1))
+                wce->forceAsByte();
+        }
+
+        /* FALLTHROUGH */
+
     case DIV:
     case MOD:
         if (isRealOrLong())
             declareTemporary = true;
-        if (sub0TD->type == BYTE_TYPE && sub1TD->type == BYTE_TYPE && TranslationUnit::instance().warnOnBinaryOpGivingByte())
-            warnmsg("operator `%s' on two byte-sized arguments gives byte under CMOC, unlike under Standard C", getOperatorName(oper));
         break;
 
     case INC_ASSIGN:
@@ -147,6 +171,17 @@ BinaryOpExpr::checkSemantics(Functor &)
         /* FALLTHROUGH */
 
     case ASSIGNMENT:
+        {
+            // Optimization: If assigning a WordConstantExpr to a byte, tell the WordConstantExpr
+            // to emit a byte instead of a word. This helps avoid a useless CLRA.
+            WordConstantExpr *wce = NULL;
+            if (subExpr0->getType() == BYTE_TYPE
+                        && (wce = dynamic_cast<WordConstantExpr *>(subExpr1)) != NULL)
+                wce->forceAsByte();
+        }
+
+        /* FALLTHROUGH */
+
     case XOR_ASSIGN:
     case AND_ASSIGN:
     case OR_ASSIGN:
@@ -156,17 +191,6 @@ BinaryOpExpr::checkSemantics(Functor &)
             errormsg("cannot assign to array name");
         else if (!subExpr0->isLValue() && subExpr0->getType() != VOID_TYPE)
             errormsg("l-value required as left operand of assignment");
-
-        {
-            // N.B. These checks might be better placed in FunctionCallExpr::paramAcceptsArg(), called by ExpressionTypeSetter::processBinOp().
-            const ObjectMemberExpr *ome0 = dynamic_cast<const ObjectMemberExpr *>(subExpr0);
-            if (ome0 && (ome0->getSubExpr()->isConst() || ome0->getSubExpr()->isPtrToOrArrayOfConst()))
-                errormsg("assigning to member `%s' of `%s' is not const-correct",
-                         ome0->getMemberName().c_str(),
-                         ome0->getSubExpr()->isPtrToOrArrayOfConst()
-                             ? ome0->getSubExpr()->getTypeDesc()->getPointedTypeDesc()->toString().c_str()
-                             : ome0->getSubExpr()->getTypeDesc()->toString().c_str());
-        }
         break;
 
     case LEFT_SHIFT:
@@ -203,7 +227,7 @@ BinaryOpExpr::checkSemantics(Functor &)
             else if (sub0TD->pointedTypeDesc)
                 numBytesPerElement = TranslationUnit::instance().getTypeSize(*sub0TD->pointedTypeDesc);
 
-            if (numBytesPerElement == 0)
+            if (numBytesPerElement < 0)
                 errormsg("failed to determine array element size");
         }
         if (!subExpr1->getTypeDesc()->isIntegral())
@@ -258,23 +282,27 @@ BinaryOpExpr::checkSemantics(Functor &)
 
 
 // Emits the code for both sub-expressions.
-// One of them is left as a word on the stack.
-// The other is left in D.
+// One of them is left on the stack, as a byte or word depending on 'bothOperandsAreByte'.
+// The other is left in B or D.
 //
 CodeStatus
-BinaryOpExpr::emitSubExpressions(ASMText &out, bool reverseOrder) const
+BinaryOpExpr::emitSubExpressions(ASMText &out, bool reverseOrder, bool bothOperandsAreByte) const
 {
-    Tree *first  = (reverseOrder ? subExpr1 : subExpr0);
-    Tree *second = (reverseOrder ? subExpr0 : subExpr1);
+    const Tree *first  = (reverseOrder ? subExpr1 : subExpr0);
+    const Tree *second = (reverseOrder ? subExpr0 : subExpr1);
 
     if (!first->emitCode(out, false))
         return false;
-    if (first->getType() == BYTE_TYPE)
+    if (!bothOperandsAreByte && first->getType() == BYTE_TYPE)
         out.ins(first->getConvToWordIns(), "", "promotion of binary operand");
-    out.ins("PSHS", "B,A");
+    out.ins("PSHS", bothOperandsAreByte ? "B" : "B,A",
+                bothOperandsAreByte ? "both operands of " + string(getOperatorName(oper)) + " are byte-sized"
+                                    : "operands of " + string(getOperatorName(oper)) + " are not both byte-sized");
+
     if (!second->emitCode(out, false))
         return false;
-    if (second->getType() == BYTE_TYPE)
+
+    if (!bothOperandsAreByte && second->getType() == BYTE_TYPE)
         out.ins(second->getConvToWordIns(), "", "promotion of binary operand");
     return true;
 }
@@ -293,7 +321,7 @@ BinaryOpExpr::isArrayRefAndLongSubscript(const Tree *&arrayTree,
     if (subExpr1->getTypeDesc()->isPtrOrArray() && subExpr0->isLong())
     {
         arrayTree = subExpr1;
-        subscriptTree = subExpr1;
+        subscriptTree = subExpr0;
         return true;
     }
     return false;
@@ -337,10 +365,10 @@ BinaryOpExpr::emitCode(ASMText &out, bool lValue) const
     switch (oper)
     {
         case ADD:
-            return emitAdd(out, lValue, false);
+            return emitAddOrSub(out, lValue, false);
 
         case SUB:
-            return emitAdd(out, lValue, true);
+            return emitAddOrSub(out, lValue, true);
 
         case MUL:
         case DIV:
@@ -410,8 +438,10 @@ BinaryOpExpr::emitCode(ASMText &out, bool lValue) const
 }
 
 
+// Emits instructions that put the sum in D.
+//
 CodeStatus
-BinaryOpExpr::emitAddImmediateToVariable(ASMText &out,
+BinaryOpExpr::emitAddImmediateAndVariable(ASMText &out,
                                         const VariableExpr *ve0,
                                         uint16_t imm) const
 {
@@ -454,8 +484,9 @@ BinaryOpExpr::emitAddImmediateToVariable(ASMText &out,
 
     if (ve0->getType() == BYTE_TYPE)
     {
-        out.ins("LDB", ve0->getFrameDisplacementArg());
-        out.ins(ve0->getConvToWordIns());
+        out.ins("LDB", ve0->getFrameDisplacementArg(), "variable " + ve0->getId());
+        if (getType() != BYTE_TYPE)
+            out.ins(ve0->getConvToWordIns());
     }
     else
     {
@@ -465,7 +496,9 @@ BinaryOpExpr::emitAddImmediateToVariable(ASMText &out,
 
     if (imm != 0)
     {
-        out.ins("ADDD", "#" + wordToString(imm, true), wordToString(imm, false));
+        if (getType() == BYTE_TYPE)
+            imm &= 0xFF;
+        out.ins(getType() == BYTE_TYPE ? "ADDB" : "ADDD", "#" + wordToString(imm, true), wordToString(imm, false));
     }
 
     return true;
@@ -505,7 +538,7 @@ BinaryOpExpr::emitBitwiseOperation(ASMText &out, bool lValue, Op op) const
         return true;
     }
 
-    // Optimization for VARIABLE & CONST value.
+    // Optimization for VARIABLE op CONST value.
     //
     const VariableExpr *ve0 = subExpr0->asVariableExpr();
     uint16_t rightValue = 0;
@@ -519,26 +552,53 @@ BinaryOpExpr::emitBitwiseOperation(ASMText &out, bool lValue, Op op) const
         return true;
     }
 
-    // Optimization for (byte) VARIABLE & CONST value.
+    // Optimization for ((byte) VARIABLE) op CONST value, e.g., ((byte) someWordVar) & 0x1F.
     //
     if (const CastExpr *castExpr0 = dynamic_cast<CastExpr *>(subExpr0))
     {
-        const VariableExpr *castVar0 = castExpr0->getSubExpr()->asVariableExpr();
-        if (castExpr0->getType() == BYTE_TYPE && castVar0 && subExpr1->evaluateConstantExpr(rightValue))
+        const VariableExpr *castVar0 = castExpr0->getSubExpr()->asVariableExpr();  // is it a variable that gets converted to byte?
+        if (castVar0
+                && castExpr0->getType() == BYTE_TYPE  // are we converting to byte?
+                && (castVar0->getTypeDesc()->isIntegral() || castVar0->getTypeDesc()->type == POINTER_TYPE)  // is var integral or ptr?
+                && subExpr1->evaluateConstantExpr(rightValue))  // is right side of 'op' a compile-time constant?
         {
-            int16_t offset = (castVar0->getType() == BYTE_TYPE ? 0 : 1);  // if var is word, look at its LSB
-            out.ins("LDB", castVar0->getFrameDisplacementArg(offset), "variable " + castVar0->getId() + ", cast to byte");
+            // Generate an LDB that loads the low byte of the variable that is getting cast to a byte (6809 is big endian).
+            int16_t varSize = TranslationUnit::instance().getTypeSize(*castVar0->getTypeDesc());
+            out.ins("LDB", castVar0->getFrameDisplacementArg(varSize - 1), "variable " + castVar0->getId() + ", cast to byte");
             out.ins(bInstr, "#" + wordToString(rightValue & 0xFF, true));
+            return true;
+        }
+    }
+
+    // Optimization for *VARIABLE op VARIABLE.
+    //
+    if (const UnaryOpExpr *ue0 = dynamic_cast<const UnaryOpExpr *>(subExpr0))
+    {
+        const VariableExpr *ve0, *ve1;
+        if (ue0->getOperator() == UnaryOpExpr::INDIRECTION
+                && (ve0 = ue0->getSubExpr()->asVariableExpr()) != NULL 
+                && (ve1 = subExpr1->asVariableExpr()) != NULL)
+        {
+            bool isByteResult = subExpr0->getType() == BYTE_TYPE;
+            out.ins(getLoadInstruction(subExpr0->getType()), "[" + ve0->getFrameDisplacementArg() + "]", "read via pointer " + ve0->getId());
+            string ve1Comment = "variable " + ve1->getId();
+            if (!isByteResult)
+            {
+                out.ins(aInstr, ve1->getFrameDisplacementArg(), ve1Comment);
+                ve1Comment.clear();
+            }
+            out.ins(bInstr, ve1->getFrameDisplacementArg(), ve1Comment);
             return true;
         }
     }
 
     // General case.
     //
-    if (!emitSubExpressions(out, true))
+    if (!emitSubExpressions(out, true, getType() == BYTE_TYPE))
         return false;
 
-    out.ins(aInstr, ",S+");
+    if (getType() != BYTE_TYPE)
+        out.ins(aInstr, ",S+");
     out.ins(bInstr, ",S+");
     return true;
 }
@@ -648,7 +708,7 @@ BinaryOpExpr::emitNumericalExpr(ASMText &out, const Tree &expr, bool pushRegiste
         return 'X';
     }
     if (expr.getType() == BYTE_TYPE)
-        out.ins(expr.isSigned() ? "SEX" : "CLRA", "promote to word");
+        out.ins(expr.getConvToWordIns(), "promote to word");
     if (pushRegister)
         out.ins("PSHS", "B,A");
     return 'D';
@@ -681,14 +741,14 @@ BinaryOpExpr::emitRealOrLongOp(ASMText &out, const char *opName, bool pushAddres
     if (pushAddressOfLeftOperand)
         out.ins("LEAS", "-2,S", "slot for pointer to left side");
 
-    out.emitComment("push right operand of " + string(opName));
+    out.emitComment("Push right operand of " + string(opName) + ".");
     char rightReg = emitNumericalExpr(out, *subExpr1);
     if (!rightReg)
         return false;
     assert(rightReg == 'X' || rightReg == 'D');
 
     char leftReg = '\0';  // to become 'X' or 'D'
-    out.emitComment("push left operand of " + string(opName));
+    out.emitComment("Push left operand of " + string(opName) + ".");
     if (pushAddressOfLeftOperand)
     {
         // Emit the left side as an l-value, to get its address in X.
@@ -709,7 +769,7 @@ BinaryOpExpr::emitRealOrLongOp(ASMText &out, const char *opName, bool pushAddres
             if (subExpr0->getType() == BYTE_TYPE)
             {
                 out.ins("LDB", ",X");
-                out.ins(subExpr0->isSigned() ? "SEX" : "CLRA", "promote to word");
+                out.ins(subExpr0->getConvToWordIns(), "promote to word");
             }
             else
                 out.ins("LDD", ",X");
@@ -807,13 +867,13 @@ BinaryOpExpr::emitSignedDivOrModOnLong(ASMText &out, bool isDivision) const
 
 
 CodeStatus
-BinaryOpExpr::emitAdd(ASMText &out, bool lValue, bool doSub) const
+BinaryOpExpr::emitAddOrSub(ASMText &out, bool lValue, bool doSub) const
 {
     if (lValue)
     {
         if (!getTypeDesc()->isRealOrLong())
         {
-            errormsg("internal error: unexpected l-value of type `%s' in BinaryOpExpr::emitAdd()",
+            errormsg("internal compiler error: unexpected l-value of type `%s' in BinaryOpExpr::emitAddOrSub()",
                      getTypeDesc()->toString().c_str());
             return false;
         }
@@ -824,31 +884,97 @@ BinaryOpExpr::emitAdd(ASMText &out, bool lValue, bool doSub) const
     if (emitBinOpIfConstants(out, doSub ? subtract : add))  // if this emits code
         return true;  // done
 
-    const VariableExpr *ve0 = subExpr0->asVariableExpr();
-    uint16_t rightValue = 0;
+    // Determine if operands are variables or constants or neither.
+    const VariableExpr *ve0 = subExpr0->asVariableExpr(),
+                       *ve1 = subExpr1->asVariableExpr();
+    uint16_t leftValue = 0, rightValue = 0;
+    bool isLeftConst  = subExpr0->evaluateConstantExpr(leftValue);
     bool isRightConst = subExpr1->evaluateConstantExpr(rightValue);
 
+    // If adding/sub. variable at left with constant at right.
     if (ve0 && !ve0->isFuncAddrExpr() && isRightConst)
-        return emitAddImmediateToVariable(out, ve0, (doSub ? -1 : +1) * rightValue);
+        return emitAddImmediateAndVariable(out, ve0, (doSub ? -1 : +1) * rightValue);
 
-    const Tree *arrayTree, *subscriptTree;
+    // If adding constant at left with variable at right.
+    if (!doSub && ve1 && !ve1->isFuncAddrExpr() && isLeftConst)
+        return emitAddImmediateAndVariable(out, ve1, leftValue);
+
+    if (ve0 && ve1)  // if both sides are variables
+    {
+        if (ve0->getType() == BYTE_TYPE && ve1->getType() == BYTE_TYPE)
+        {
+            out.ins("LDB", ve0->getFrameDisplacementArg(), "variable " + ve0->getId());
+            out.ins(doSub ? "SUBB" : "ADDB", ve1->getFrameDisplacementArg(), "variable " + ve1->getId());
+            return true;
+        }
+        if (ve0->getType() == WORD_TYPE && ve1->getType() == WORD_TYPE)
+        {
+            out.ins("LDD", ve0->getFrameDisplacementArg(), "variable " + ve0->getId());
+            out.ins(doSub ? "SUBD" : "ADDD", ve1->getFrameDisplacementArg(), "variable " + ve1->getId());
+            return true;
+        }
+    }
+
+    const Tree *arrayTree = NULL, *subscriptTree = NULL;
     if (isArrayRefAndLongSubscript(arrayTree, subscriptTree))
     {
+        // We have an array reference added to a long index, which will be added
+        // to get the address of an element of that array.
+        //
+        assert(getTypeDesc()->isPtrOrArray());
         if (!subscriptTree->emitCode(out, true))  // get address of long subscript in X
             return false;
-        out.ins("LDD", "2,X", "low word of long array subscript");
-        out.ins("PSHS", "B,A", "word-sized array subscript");
-        if (!arrayTree->emitCode(out, false))  // get address of array in D
+        out.ins("LDD", "2,X", "low word of long array index");
+        out.ins("PSHS", "B,A", "word-sized array index");
+        if (!arrayTree->emitCode(out, false))  // get address of array in D; code below processes ptr_in_D + index_in_stack
             return false;
+
+        if (subExpr1->getTypeDesc()->isPtrOrArray())
+        {
+            // Right side is pointer or array.
+            // Swap with left side because following code expects
+            // only pointer or array on left side.
+            //
+            emitAddIntegerToPointer(out, subExpr1, doSub);
+        }
+        else
+            emitAddIntegerToPointer(out, subExpr0, doSub);
+        return true;
     }
-    else if (!emitSubExpressions(out, true))
+
+
+    // If we have <byte or word expr> + N, where N is a constant,
+    // then evaluate the expression first, then add N.
+    // This avoids pushing N, then popping it later to add it.
+    //
+    if (oper == ADD
+            && ! isLeftConst && isRightConst
+            && subExpr0->getTypeDesc()->isByteOrWord())
+    {
+        if (!subExpr0->emitCode(out, false))  // get left side in B or D
+            return false;
+        if (rightValue != 0)
+        {
+            if (getType() == BYTE_TYPE && rightValue == 1)
+                out.ins("INCB", "", "add right side");
+            else if (getType() == BYTE_TYPE)
+                out.ins("ADDB", "#" + wordToString(rightValue & 0xFF), "add right side");
+            else
+                out.ins("ADDD", "#" + wordToString(rightValue), "add right side");
+        }
+        return true;
+    }
+
+
+    // General case.
+    //
+    if (!emitSubExpressions(out, true, getType() == BYTE_TYPE))
         return false;
 
-    // Here, the word on the stack must be popped, multiplied if necessary, and added to D.
+    // Here, the byte/word on the stack must be popped, multiplied if necessary, and added to B or D.
 
     if (getType() == BYTE_TYPE)
     {
-        out.ins("LEAS", "1,S");
         out.ins(doSub ? "SUBB" : "ADDB", ",S+");
     }
     else
@@ -887,6 +1013,8 @@ BinaryOpExpr::emitAdd(ASMText &out, bool lValue, bool doSub) const
         }
         else
         {
+            // Subtraction.
+            //
             if (   subExpr0->getTypeDesc()->isPtrOrArray()
                 && subExpr1->getTypeDesc()->isPtrOrArray())  // difference of pointers
             {
@@ -1071,47 +1199,44 @@ BinaryOpExpr::emitMulDivMod(ASMText &out, bool lValue) const
     bool bothWordOperands = (subExpr0->getType() != BYTE_TYPE && subExpr1->getType() != BYTE_TYPE);
     bool bothVarOrConst = (ve0 || const0) && (ve1 || const1);
 
-    if (oper == MUL)
+    if (oper == MUL && isByteResult && bothVarOrConst)
     {
-        // If result is byte and both operands are bytes, use MUL and avoid stack.
+        // Result is byte and both operands are bytes, so use MUL and avoid stack.
         // If mult. by a power of 2 <= 32, use LSLB, because MUL takes 11 cycles
         // while LSLB takes 2. Hence, 5 shifts are faster than MUL to mult. by 2**5.
         //
-        if (isByteResult && bothVarOrConst)
+        val0 &= 0xFF;  // if constant is negative, avoid passing #$FFxx to LDA or LDB
+        val1 &= 0xFF;
+        string leftArg  = (const0 ? "#" + wordToString(val0, true) : ve0->getFrameDisplacementArg());
+        string rightArg = (const1 ? "#" + wordToString(val1, true) : ve1->getFrameDisplacementArg());
+
+        if (const0 && (val0 == 0 || (isPowerOf2(val0) && val0 <= 32)))  // if left side is zero or power of 2
         {
-            val0 &= 0xFF;  // if constant is negative, avoid passing #$FFxx to LDA or LDB
-            val1 &= 0xFF;
-            string leftArg  = (const0 ? "#" + wordToString(val0, true) : ve0->getFrameDisplacementArg());
-            string rightArg = (const1 ? "#" + wordToString(val1, true) : ve1->getFrameDisplacementArg());
-
-            if (const0 && (val0 == 0 || (isPowerOf2(val0) && val0 <= 32)))  // if left side is zero or power of 2
-            {
-                std::swap(leftArg, rightArg);
-                std::swap(const0, const1);
-                std::swap(val0, val1);
-            }
-
-            if (const1)
-            {
-                if (val1 == 0)
-                {
-                    out.ins("CLRB", "", "multiplication by 0");
-                    return true;
-                }
-                if (isPowerOf2(val1) && val1 <= 32)  // if right side is power of 2
-                {
-                    out.ins("LDB", leftArg, "to be multiplied by " + wordToString(val1));
-                    for ( ; val1 > 1; val1 >>= 1)
-                        out.ins("LSLB");
-                    return true;
-                }
-            }
-
-            out.ins("LDA", leftArg);
-            out.ins("LDB", rightArg);
-            out.ins("MUL", "", "result of type byte in B");
-            return true;
+            std::swap(leftArg, rightArg);
+            std::swap(const0, const1);
+            std::swap(val0, val1);
         }
+
+        if (const1)
+        {
+            if (val1 == 0)
+            {
+                out.ins("CLRB", "", "multiplication by 0");
+                return true;
+            }
+            if (isPowerOf2(val1) && val1 <= 32)  // if right side is power of 2
+            {
+                out.ins("LDB", leftArg, "to be multiplied by " + wordToString(val1));
+                for ( ; val1 > 1; val1 >>= 1)
+                    out.ins("LSLB");
+                return true;
+            }
+        }
+
+        out.ins("LDA", leftArg);
+        out.ins("LDB", rightArg);
+        out.ins("MUL", "", "result of type byte in B");
+        return true;
     }
 
     // Optimizations for an unsigned value divided by 10.
@@ -1200,14 +1325,29 @@ BinaryOpExpr::emitMulDivMod(ASMText &out, bool lValue) const
             {
                 if (leftIsVarOrConst)
                     out.ins("LDA", leftArg, "dividend");
-                else if (!subExpr0->emitCode(out, false))  // get left side in B
-                    return false;
                 else
-                    out.ins("TFR", "B,A", "modulo dividend expected in A by DIV8BY7");
+                {
+                    if (!subExpr0->emitCode(out, false))  // get left side in B
+                        return false;
+                    out.ins("TFR", "B,A", "dividend expected in A by DIV8BY7");
+                }
 
                 callUtility(out, "DIV8BY7");
                 if (oper == MOD)
                     out.ins("TFR", "A,B", "resulting modulo in B");
+                return true;
+            }
+            if (oper == DIV && val1 == 3 && isByteResult)
+            {
+                if (leftIsVarOrConst)
+                    out.ins("LDB", leftArg, "dividend");
+                else
+                {
+                    if (!subExpr0->emitCode(out, false))  // get left side in B
+                        return false;
+                }
+
+                callUtility(out, "DIV8BY3");
                 return true;
             }
         }
@@ -1261,18 +1401,45 @@ BinaryOpExpr::emitMulDivMod(ASMText &out, bool lValue) const
         return true;
     }
 
-    // Handle case where two unsigned bytes (possibly cast to unsigned int) get multiplied
+    // Handle case where two unsigned bytes (possibly cast to int) get multiplied
     // and the result is of type unsigned int.
-    if (oper == MUL && !lValue && emitMulOfTypeUnsignedBytesGivingUnsignedWord(out))
+    if (oper == MUL && !lValue && emitMulOfTypeUnsignedBytesGivingWord(out))
         return true;
 
-    emitSubExpressions(out);
+
+    // If we have <byte expr> * N, where N is a byte constant,
+    // then evaluate the expression first, then add N.
+    // This avoids pushing N, then popping it later to add it.
+    //
+    if (oper == MUL && getType() == BYTE_TYPE && ! const0 && const1)
+    {
+        assert(subExpr0->getType() == BYTE_TYPE);
+        if (!subExpr0->emitCode(out, false))  // get left side in B
+            return false;
+        if (val1 == 0)
+        {
+            // Note that we are still evaluating the left side,
+            // in case it has side effects.
+            out.ins("CLRB", "", "multiply with right side");
+        }
+        else if (val1 != 1)
+        {
+            out.ins("LDA", "#" + wordToString(val1 & 0xFF), "right side of multiplication");
+            out.ins("MUL", "", "only LSB used, left in B");
+        }
+        return true;
+    }
+
+
+    if (!emitSubExpressions(out, false, getType() == BYTE_TYPE))
+        return false;
 
     // If multiplication and result is byte, use MUL.
     if (isByteResult)
     {
-        out.ins("LDA", "1,S", "load LSB of left side of multiplication");
-        out.ins("LEAS", "2,S", "pop left side");
+        // emitSubExpressions() is assumed to have pushed 1 byte on the stack,
+        // and to have put the right side in B.
+        out.ins("PULS", "A", "retrieve left side of multiplication");
         if (oper == MUL)
             out.ins("MUL", "", "only LSB used, left in B");
         else
@@ -1323,27 +1490,63 @@ isEffectiveUnsignedByte(const Tree &tree)
 }
 
 
+// If tree is (word) byteExpression, returns byteExpression,
+// otherwise, returns NULL.
+//
+static const Tree *
+isUnsignedByteCastToWord(const Tree &tree)
+{
+    const CastExpr *ce = dynamic_cast<const CastExpr *>(&tree);
+    if (!ce)
+        return NULL;
+    if (ce->getTypeDesc()->type != WORD_TYPE)  // signed or unsigned
+        return NULL;
+    if (!ce->getSubExpr()->getTypeDesc()->isUnsignedByte())
+        return NULL;
+    return ce->getSubExpr();
+}
+
+
 // r-value result assumed.
 // TODO: Avoid PSHS/PULS when possible.
 //
 bool
-BinaryOpExpr::emitMulOfTypeUnsignedBytesGivingUnsignedWord(ASMText &out) const
+BinaryOpExpr::emitMulOfTypeUnsignedBytesGivingWord(ASMText &out) const
 {
     const Tree *leftUnsignedByteExpr = isEffectiveUnsignedByte(*subExpr0);
-    if (!leftUnsignedByteExpr)  // if left side not unsigned char
+    const Tree *convertedByteLeftExpr = isUnsignedByteCastToWord(*subExpr0);
+    if (!leftUnsignedByteExpr && !convertedByteLeftExpr)  // if left side neither unsigned char nor unsigned short
         return false;
     const Tree *rightUnsignedByteExpr = isEffectiveUnsignedByte(*subExpr1);
     if (!rightUnsignedByteExpr)  // if right side not unsigned char
         return false;
 
-    if (!leftUnsignedByteExpr->emitCode(out, false))  // value of left side in B
-        return false;
+    // TODO: Support cast to word on right side too, i.e., use isUnsignedByteCastToWord() on subExpr1.
 
     const VariableExpr *rightVar = rightUnsignedByteExpr->asVariableExpr();
     uint16_t leftVal = 0, rightVal = 0;
-    bool leftVarOrConst = (leftUnsignedByteExpr->asVariableExpr()  || leftUnsignedByteExpr->evaluateConstantExpr(leftVal));
+    const Tree *leftExpr = (leftUnsignedByteExpr ? leftUnsignedByteExpr : convertedByteLeftExpr);
+    bool leftVarOrConst = (leftExpr->asVariableExpr()  || leftExpr->evaluateConstantExpr(leftVal));
     bool rightVarOrConst = (rightVar || rightUnsignedByteExpr->evaluateConstantExpr(rightVal));
     bool bothVarOrConst = leftVarOrConst && rightVarOrConst;
+
+    if (leftUnsignedByteExpr)
+    {
+        if (!subExpr0->emitCode(out, false))  // value of left side in B
+            return false;
+    }
+    else
+    {
+        assert(convertedByteLeftExpr);
+        assert(convertedByteLeftExpr->getType() == BYTE_TYPE);
+
+        // We have "(signed short or unsigned short) unsignedByteExpression". Get the byte value in B.
+        // If the cast is to 'signed short', MUL can still be used because the unsigned byte expression is in 0..255
+        // and will still be non-negative as a signed short.
+        //
+        if (!convertedByteLeftExpr->emitCode(out, false))
+            return false;
+    }
 
     if (bothVarOrConst)
     {
@@ -1367,6 +1570,11 @@ BinaryOpExpr::emitMulOfTypeUnsignedBytesGivingUnsignedWord(ASMText &out) const
 }
 
 
+// Requires a comparison between two variables, or between a variable on the left side
+// and a non-long constant on the right side.
+// Returns true only if code was emitted.
+// Emits a sequence that ends with a CMPB or CMPD.
+//
 bool
 BinaryOpExpr::emitIntegralComparisonIfNoFuncAddrExprInvolved(ASMText &out) const
 {
@@ -1430,41 +1638,55 @@ BinaryOpExpr::emitIntegralComparisonIfNoFuncAddrExprInvolved(ASMText &out) const
 }
 
 
+// Applies only if operands are both 1 or 2 bytes.
+// isWordCase: False means byte case.
+// Returns true only if code was emitted.
+// Emits a sequence that ends with a CMPB or CMPD.
+//
 bool
-BinaryOpExpr::emitUnsignedComparisonOfByteExprWithByteConstant(ASMText &out) const
+BinaryOpExpr::emitComparisonOfIntegerWithByteConstant(ASMText &out, bool isWordCase) const
 {
-    if (subExpr0->isSigned() || subExpr1->isSigned())
+    if (   !subExpr0->getTypeDesc()->isByteOrWordOrPointer()
+        || !subExpr1->getTypeDesc()->isByteOrWordOrPointer())
+        return false;
+    if (isWordCase && subExpr0->getType() == BYTE_TYPE && subExpr1->getType() == BYTE_TYPE)
+        return false;
+    if (subExpr0->isSigned() != subExpr1->isSigned())
+        return false;  // different signedness
+    bool allowSwappingSides = (oper == EQUALITY || oper == INEQUALITY);
+
+    const Tree *constExpr = NULL;
+    uint16_t constValue0 = 0, constValue1 = 0, constValue = 0;
+    bool isConst0 = subExpr0->evaluateConstantExpr(constValue0);
+    bool isConst1 = subExpr1->evaluateConstantExpr(constValue1);
+    const Tree *otherTree = NULL;
+    if (allowSwappingSides && isConst0 && !isConst1)  // if constant is on left side and swapping sides is allowed
+        constExpr = subExpr0, constValue = constValue0, otherTree = subExpr1;
+    else if (!isConst0 && isConst1)  // if constant is on right side
+        constExpr = subExpr1, constValue = constValue1, otherTree = subExpr0;
+    else
         return false;
 
+    if (!isWordCase && (!constExpr->fits8Bits() || otherTree->getType() != BYTE_TYPE))
+        return false;
+
+    if (!isWordCase && otherTree->isSigned())
     {
-        const WordConstantExpr *wce1 = dynamic_cast<const WordConstantExpr *>(subExpr1);
-        if (wce1
-            && wce1->fits8Bits()
-            && (oper == EQUALITY || oper == INEQUALITY)
-            && subExpr0->getType() == BYTE_TYPE)
-        {
-            if (!subExpr0->emitCode(out, false))  // get left side in B
-                return false;
-            out.ins("CMPB", "#" + wordToString(wce1->getWordValue() & 0xFF));
-            return true;
-        }
+        int16_t intValue = static_cast<int16_t>(constValue);
+        if (constExpr != NULL && (intValue < -128 || intValue > 127))
+            return false;  // e.g., signed char c = -1; if (c == 255) { ... }  // 255 fits byte but is never equal to signed char
     }
 
-    {
-        const WordConstantExpr *wce0 = dynamic_cast<const WordConstantExpr *>(subExpr0);
-        if (wce0
-            && wce0->fits8Bits()
-            && (oper == EQUALITY || oper == INEQUALITY)
-            && subExpr1->getType() == BYTE_TYPE)
-        {
-            if (!subExpr1->emitCode(out, false))  // get right side in B
-                return false;
-            out.ins("CMPB", "#" + wordToString(wce0->getWordValue() & 0xFF));
-            return true;
-        }
-    }
+    if (!otherTree->emitCode(out, false))  // get value of other side in B or D
+        return false;
 
-    return false;  // nothing emitted
+    if (isWordCase && otherTree->getTypeDesc()->type == BYTE_TYPE)
+        out.ins(otherTree->getConvToWordIns());
+
+    const char *cmp = (isWordCase ? "CMPD" : "CMPB");
+    uint16_t mask = (isWordCase ? 0xFFFF : 0x00FF);
+    out.ins(cmp, "#" + wordToString(constValue & mask));
+    return true;
 }
 
 
@@ -1542,7 +1764,20 @@ BinaryOpExpr::emitRealOrLongComparison(ASMText &out) const
 }
 
 
-// condBranchInstr: Ignored if produceIntegerResult is false.
+bool
+BinaryOpExpr::canDo8BitCompare() const
+{
+    return subExpr0->isSigned() == subExpr1->isSigned()
+            && subExpr0->fits8BitsWithSignedness()
+            && subExpr1->fits8BitsWithSignedness();
+}
+
+
+// If produceIntegerResult is false, emits a sequence that sets CC.
+// If produceIntegerResult is true, emits a sequence that sets B to 0 or 1.
+// condBranchInstr: When produceIntegerResult is true, this must be the branch instruction
+//                  that takes the branch if the comparison gives true.
+//                  Ignored if produceIntegerResult is false.
 //
 CodeStatus
 BinaryOpExpr::emitComparison(ASMText &out,
@@ -1557,24 +1792,26 @@ BinaryOpExpr::emitComparison(ASMText &out,
     else if (emitIntegralComparisonIfNoFuncAddrExprInvolved(out))  // try some specific cases
     {
     }
-    else if (emitUnsignedComparisonOfByteExprWithByteConstant(out))
+    else if (emitComparisonOfIntegerWithByteConstant(out, false))  // byte case
+    {
+    }
+    else if (emitComparisonOfIntegerWithByteConstant(out, true))  // word case
     {
     }
     else
     {
         // General case.
-        if (!emitSubExpressions(out, true))
+        const bool is8BitCompare = canDo8BitCompare();
+        if (!emitSubExpressions(out, true, is8BitCompare))
             return false;
-        if (subExpr0->fits8Bits() && subExpr1->fits8Bits()
-                && !subExpr0->isSigned() && !subExpr1->isSigned())
+        if (is8BitCompare)
         {
-            // This optimization is only used if both operands are unsigned.
+            // This optimization is only used if both operands have the same signedness.
             // It should not be used for this case:
             //   unsigned char *e; if (*e == (char) 0xFF) {...}
-            // In such a case, we need to promote the operands to int to do the proper comparison,
+            // In such a case, we need to promote the operands to 16 bits to do the proper comparison,
             // i.e., *e gets zero-extended while the right side gets sign-extended to 0xFFFF.
             //
-            out.ins("LEAS", "1,S", "disregard MSB");
             out.ins("CMPB", ",S+", "compare with LSB");
         }
         else
@@ -1711,6 +1948,167 @@ BinaryOpExpr::emitLogicalOr(ASMText &out, bool lValue) const
 }
 
 
+// Leaves address of 32-bit destination in X.
+//
+CodeStatus
+BinaryOpExpr::emitCopied32BitLogicalShiftByBytes(ASMText &out, bool isLeftShift, uint16_t numBits) const
+{
+    assert(resultDeclaration != NULL);
+
+    if (!subExpr0->emitCode(out, true))  // get address of left side (source) long in X
+        return false;
+
+    if (TranslationUnit::instance().targetPlatformUsesY())
+        out.ins("PSHS", "Y", "preserve, because not a work register");  // useful on OS-9 and in __gcccall function
+    out.ins("LEAY", resultDeclaration->getFrameDisplacementArg(0),
+                "destination of shift, type " + resultDeclaration->getTypeDesc()->toString());
+
+    if (isLeftShift)
+    {
+        switch (numBits)
+        {
+        case 8:
+            out.ins("LDD", "1,X", "shift 32 bits 1 byte left");
+            out.ins("STD", ",Y");
+            out.ins("LDB", "3,X");
+            out.ins("STB", "2,Y");
+            out.ins("CLR", "3,Y");
+            break;
+        case 16:
+            out.ins("LDD", "2,X", "shift 32 bits 2 bytes left");
+            out.ins("STD", ",Y");
+            out.ins("CLR", "2,Y");
+            out.ins("CLR", "3,Y");
+            break;
+        case 24:
+            out.ins("LDB", "3,X", "shift 32 bits 3 bytes left");
+            out.ins("STB", ",Y");
+            out.ins("CLR", "1,Y");
+            out.ins("CLR", "2,Y");
+            out.ins("CLR", "3,Y");
+            break;
+        default:
+            assert(false);
+            return false;
+        }
+    }
+    else
+    {
+        switch (numBits)
+        {
+        case 8:
+            out.ins("LDD", "1,X", "shift 32 bits 1 byte right");
+            out.ins("STD", "2,Y");
+            out.ins("LDB", ",X");
+            out.ins("STB", "1,Y");
+            out.ins("CLR", ",Y");
+            break;
+        case 16:
+            out.ins("LDD", ",X", "shift 32 bits 2 bytes right");
+            out.ins("STD", "2,Y");
+            out.ins("CLR", ",Y");
+            out.ins("CLR", "1,Y");
+            break;
+        case 24:
+            out.ins("LDB", ",X", "shift 32 bits 3 bytes right");
+            out.ins("STB", "3,Y");
+            out.ins("CLR", ",Y");
+            out.ins("CLR", "1,Y");
+            out.ins("CLR", "2,Y");
+            break;
+        default:
+            assert(false);
+            return false;
+        }
+    }
+
+    out.ins("LEAX", ",Y", "finish shift with destination value address in X");
+    if (TranslationUnit::instance().targetPlatformUsesY())
+        out.ins("PULS", "Y");
+    return true;
+}
+
+
+// Leaves address of 32-bit location in X.
+//
+CodeStatus
+BinaryOpExpr::emitInPlace32BitLogicalShiftByBytes(ASMText &out, bool isLeftShift, uint16_t numBits) const
+{
+    if (!subExpr0->emitCode(out, true))  // get address of left side long in X
+        return false;
+    if (isLeftShift)
+    {
+        switch (numBits)
+        {
+        case 8:
+            out.ins("LDD", "1,X", "load middle word of unsigned long");
+            out.ins("STD", ",X", "store in high word of unsigned long");
+            out.ins("LDB", "3,X", "load low byte of unsigned long");
+            out.ins("STB", "2,X", "store in 2nd lowest byte of unsigned long");
+            out.ins("CLR", "3,X", "clear low byte");
+            break;
+        case 16:
+            out.ins("LDD", "2,X", "load low word of unsigned long");
+            out.ins("STD", ",X", "store in high word of unsigned long");
+            out.ins("CLR", "2,X", "clear 2nd lowest byte");
+            out.ins("CLR", "3,X", "clear low byte");
+            break;
+        case 24:
+            out.ins("LDB", "3,X", "load low byte of unsigned long");
+            out.ins("STB", ",X", "store in high byte of unsigned long");
+            out.ins("CLR", "1,X", "clear 2nd higest byte");
+            out.ins("CLR", "2,X", "clear 2nd lowest byte");
+            out.ins("CLR", "3,X", "clear low byte");
+            break;
+        default:
+            assert(false);
+            return false;
+        }
+    }
+    else
+    {
+        switch (numBits)
+        {
+        case 8:
+            out.ins("LDD", "1,X", "load middle word of unsigned long");
+            out.ins("STD", "2,X", "store in low word of unsigned long");
+            out.ins("LDB", ",X", "load high byte of unsigned long");
+            out.ins("STB", "1,X", "store in 2nd highest byte of unsigned long");
+            out.ins("CLR", ",X", "clear high byte");
+            break;
+        case 16:
+            out.ins("LDD", ",X", "load high word of unsigned long");
+            out.ins("STD", "2,X", "store in low word of unsigned long");
+            out.ins("CLR", ",X", "clear highest byte");
+            out.ins("CLR", "1,X", "clear 2nd higest byte");
+            break;
+        case 24:
+            out.ins("LDB", ",X", "load high byte of unsigned long");
+            out.ins("STB", "3,X", "store in low byte of unsigned long");
+            out.ins("CLR", ",X", "clear highest byte");
+            out.ins("CLR", "1,X", "clear 2nd higest byte");
+            out.ins("CLR", "2,X", "clear 2nd lowest byte");
+            break;
+        default:
+            assert(false);
+            return false;
+        }
+    }
+    return true;  // leave with address of unsigned long in X, since we are emitting an l-value
+}
+
+
+void
+BinaryOpExpr::checkForZeroResult(bool isLeftShift, uint16_t numBits) const
+{
+    if (!TranslationUnit::instance().warnShiftAlwaysZero())
+        return;
+    int16_t valueSizeInBytes = TranslationUnit::instance().getTypeSize(*getTypeDesc());
+    if (numBits >= valueSizeInBytes * 8u && (isLeftShift || !subExpr0->isSigned()))
+        warnmsg("shift always gives zero");
+}
+
+
 // changeLeftSide: If true, the left side gets the result of the shift AND
 //                 the address of the left side is left in X.
 //                 If false, only an r-value is computed (and left in D or B).
@@ -1721,75 +2119,20 @@ BinaryOpExpr::emitShift(ASMText &out, bool isLeftShift, bool changeLeftSide, boo
     uint16_t numBits = 0;
     bool constShift = subExpr1->evaluateConstantExpr(numBits);
 
+    if (constShift)
+        checkForZeroResult(isLeftShift, numBits);
+
     if (lValue && isLong())
     {
         assert(subExpr0->isLong());
         assert(subExpr0->isSigned() == isSigned());
 
         // Special case: Shifting unsigned long in place by 8, 16 or 24 bits.
-        if (!resultDeclaration && !subExpr0->isSigned() && constShift && (numBits == 8 || numBits == 16 || numBits == 24))
+        if (!subExpr0->isSigned() && constShift && (numBits == 8 || numBits == 16 || numBits == 24))
         {
-            if (!subExpr0->emitCode(out, true))  // get address of left side long in X
-                return false;
-            if (isLeftShift)
-            {
-                switch (numBits)
-                {
-                case 8:
-                    out.ins("LDD", "1,X", "load middle word of unsigned long");
-                    out.ins("STD", ",X", "store in high word of unsigned long");
-                    out.ins("LDB", "3,X", "load low byte of unsigned long");
-                    out.ins("STB", "2,X", "store in 2nd lowest byte of unsigned long");
-                    out.ins("CLR", "3,X", "clear low byte");
-                    break;
-                case 16:
-                    out.ins("LDD", "2,X", "load low word of unsigned long");
-                    out.ins("STD", ",X", "store in high word of unsigned long");
-                    out.ins("CLR", "2,X", "clear 2nd lowest byte");
-                    out.ins("CLR", "3,X", "clear low byte");
-                    break;
-                case 24:
-                    out.ins("LDB", "3,X", "load low byte of unsigned long");
-                    out.ins("STB", ",X", "store in high byte of unsigned long");
-                    out.ins("CLR", "1,X", "clear 2nd higest byte");
-                    out.ins("CLR", "2,X", "clear 2nd lowest byte");
-                    out.ins("CLR", "3,X", "clear low byte");
-                    break;
-                default:
-                    assert(false);
-                    return false;
-                }
-            }
-            else
-            {
-                switch (numBits)
-                {
-                case 8:
-                    out.ins("LDD", "1,X", "load middle word of unsigned long");
-                    out.ins("STD", "2,X", "store in low word of unsigned long");
-                    out.ins("LDB", ",X", "load high byte of unsigned long");
-                    out.ins("STB", "1,X", "store in 2nd highest byte of unsigned long");
-                    out.ins("CLR", ",X", "clear high byte");
-                    break;
-                case 16:
-                    out.ins("LDD", ",X", "load high word of unsigned long");
-                    out.ins("STD", "2,X", "store in low word of unsigned long");
-                    out.ins("CLR", ",X", "clear highest byte");
-                    out.ins("CLR", "1,X", "clear 2nd higest byte");
-                    break;
-                case 24:
-                    out.ins("LDB", ",X", "load high byte of unsigned long");
-                    out.ins("STB", "3,X", "store in low byte of unsigned long");
-                    out.ins("CLR", ",X", "clear highest byte");
-                    out.ins("CLR", "1,X", "clear 2nd higest byte");
-                    out.ins("CLR", "2,X", "clear 2nd lowest byte");
-                    break;
-                default:
-                    assert(false);
-                    return false;
-                }
-            }
-            return true;  // leave with address of unsigned long in X, since we are emitting an l-value
+            if (!changeLeftSide)
+                return emitCopied32BitLogicalShiftByBytes(out, isLeftShift, numBits);
+            return emitInPlace32BitLogicalShiftByBytes(out, isLeftShift, numBits);
         }
 
         // Evaluate the number of bits to shift by.
@@ -2094,17 +2437,36 @@ BinaryOpExpr::emitAssignmentIfNoFuncAddrExprInvolved(ASMText &out,
     if (ve1 && ve1->isFuncAddrExpr())
         return false;
 
+    //cout << "# emitAssignmentIfNoFuncAddrExprInvolved(_, lValue=" << lValue << ", _): line " << getLineNo() << "\n";
     uint16_t val = 0;
     bool isRightHandConst = subExpr1->evaluateConstantExpr(val);
+    //cout << "# emitAssignmentIfNoFuncAddrExprInvolved: isRightHandConst=" << isRightHandConst<< ", val=" << val << "\n";
 
     if (oper == ASSIGNMENT && isRightHandConst && !lValue)  // assign from a constant
     {
         if (getType() == BYTE_TYPE || subExpr1->getType() == BYTE_TYPE)
             val &= 0xFF;
         assignedValueArg = "#" + wordToString(val, true);
-        if (optimizeConstantAddressCase(out, assignedValueArg))
+        if (emitAssignmentOfConstantToDerefCastToPtr(out, assignedValueArg))
             return true;
-        return optimizeVariableCase(out, assignedValueArg);
+        
+        // If byte_variable = 8_bit_constant.
+        //
+        if (ve0 != NULL && getType() == BYTE_TYPE && subExpr1->fits8Bits())
+        {
+            string dest = ve0->getFrameDisplacementArg();
+            if (val == 0 && isYieldedValueNeeded())
+                out.ins("CLRB");
+            else if (val == 0 && ! isYieldedValueNeeded())
+                out.ins("CLR", dest, "assignment to variable " + ve0->getId());
+            else
+                out.ins("LDB", assignedValueArg);
+            if (val != 0 || isYieldedValueNeeded())
+                out.ins("STB", dest, "assignment to variable " + ve0->getId());
+            return true;
+        }
+        
+        return emitAssignmentToDerefCastToPtr(out, assignedValueArg);
     }
     if (oper == ASSIGNMENT && ve1 != NULL && !lValue)  // assign from variable
     {
@@ -2112,16 +2474,21 @@ BinaryOpExpr::emitAssignmentIfNoFuncAddrExprInvolved(ASMText &out,
             is a big endian processor:
         */
         assignedValueArg = ve1->getFrameDisplacementArg(getType() == BYTE_TYPE && ve1->getType() == WORD_TYPE);
-        return optimizeConstantAddressCase(out, assignedValueArg);
+        return emitAssignmentOfConstantToDerefCastToPtr(out, assignedValueArg);
     }
     if (!lValue && (oper == INC_ASSIGN || oper == DEC_ASSIGN) && ve0 && isRightHandConst)  // += or -= on variable with constant right-hand
     {
         if (getType() == BYTE_TYPE || subExpr1->getType() == BYTE_TYPE)
             val &= 0xFF;
         const TypeDesc *pointedTD = ve0->getTypeDesc()->getPointedTypeDesc();
+        //cout << "# emitAssignmentIfNoFuncAddrExprInvolved:   pointedTD=" << pointedTD << "\n";
         if (pointedTD)  // if applying += or -= on pointer/array, right side must be multiplied by array element type
+        {
+            //cout << "# emitAssignmentIfNoFuncAddrExprInvolved:     type size: " << TranslationUnit::instance().getTypeSize(*pointedTD) << endl;
             val *= TranslationUnit::instance().getTypeSize(*pointedTD);
+        }
         out.ins(getLoadInstruction(getType()), ve0->getFrameDisplacementArg(), "variable " + ve0->getId());
+        //cout << "# emitAssignmentIfNoFuncAddrExprInvolved:   val=" << val << "\n";
         if (val != 0)  // if nothing to inc/dec, we still need to load the variable in B or D, as per convention: needed for i = (j += 0);
         {
             string instr = (oper == INC_ASSIGN ? getAddInstruction(getType()) : getSubInstruction(getType()));
@@ -2170,6 +2537,61 @@ BinaryOpExpr::emitLeftSideAddressInX(ASMText &out, bool preserveD) const
 }
 
 
+CodeStatus
+BinaryOpExpr::emitPoke(ASMText &out) const
+{
+    // Look for * (Type *) Constant on the left side, i.e., unary of cast to byte, word or pointer.
+    //
+    const UnaryOpExpr *ue0 = dynamic_cast<const UnaryOpExpr *>(subExpr0);
+    if (!ue0 || ue0->getOperator() != UnaryOpExpr::INDIRECTION)
+        return false;
+    const CastExpr *ce0 = dynamic_cast<const CastExpr *>(ue0->getSubExpr());
+    if (!ce0|| !ce0->getTypeDesc()->isByteOrWordOrPointer())
+        return false;
+    const WordConstantExpr *wce0 = dynamic_cast<const WordConstantExpr *>(ce0->getSubExpr());
+    if (!wce0)
+        return false;
+    uint16_t destAddr = 0;
+    if (!wce0->evaluateConstantExpr(destAddr))
+        return false;
+
+    if (destAddr == 0)
+    {
+        // Do not apply this optimization to null pointer assignment,
+        // to avoid interfering with the null pointer handler (cf set_null_ptr_handler()).
+        return false;
+    }
+
+    const WordConstantExpr *wce1 = dynamic_cast<const WordConstantExpr *>(subExpr1);
+    if (!wce1)
+        return false;
+    uint16_t assignedValue = 0;
+    if (!wce1->evaluateConstantExpr(assignedValue))
+        return false;
+
+    // Process 8-bit case.
+    //
+    if (getType() == BYTE_TYPE)
+    {
+        // Even when assignedValue is zero, we emit LDB+STB instead of CLR,
+        // in case this assignment's value is used in another expression.
+        // Example: byte z = ((* (byte *) 0x3FFF) = 0);
+        //
+        out.ins("LDB", "#" + wordToString(assignedValue, true));
+        out.ins("STB", wordToString(destAddr, true));
+        return true;
+    }
+
+    // Value to assign is 16 bits.
+    //
+    wce1->emitCode(out, false);  // emit CLRA+CLRB or LDD
+    if (wce1->getType() == BYTE_TYPE)
+        out.ins(wce1->getConvToWordIns());
+    out.ins("STD", wordToString(destAddr, true));
+    return true;
+}
+
+
 // Applies to ASSIGNMENT, INC_ASSIGN, etc.
 //
 CodeStatus
@@ -2177,26 +2599,26 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
 {
     writeLineNoComment(out, "assignment: " + string(getOperatorToken(op)));
 
-    #if 0
-    cerr << "Assigning to " << subExpr0->getTypeDesc()
-            << " from " << subExpr1->getTypeDesc() << "\n";
-    #endif
+    //cout << "Assigning to " << subExpr0->getTypeDesc()->toString()
+    //            << " from " << subExpr1->getTypeDesc()->toString() << "\n";
 
     // Treat struct assignment specially.
     //
     if (op == ASSIGNMENT && getType() == CLASS_TYPE)
     {
-        if (subExpr0->isRealOrLong() && !subExpr1->isLong() && subExpr1->isIntegral())  // if assigning a short integral to a real or long
+        if (subExpr0->isRealOrLong() && !subExpr1->isLong() && (subExpr1->isIntegral() || subExpr1->getTypeDesc()->isPtrOrArray()))  // if assigning a short integral or pointer to a real or long
         {
-            if (!subExpr1->emitCode(out, false))  // load integral in B or D
+            if (!subExpr1->emitCode(out, false))  // load integral/pointer in B or D
                 return false;
 
             if (!emitLeftSideAddressInX(out, true))  // preserves D
                 return false;
             if (subExpr1->getType() == BYTE_TYPE)
-                out.ins(subExpr1->isSigned() ? "SEX" : "CLRA", "promote to word");
+                out.ins(subExpr1->getConvToWordIns(), "promote to word");
 
-            callUtility(out, "init" + string(subExpr0->isLong() ? "DWord" : (subExpr0->isSingle() ? "Single" : "Double"))
+            callUtility(out, "init" + string(subExpr0->isLong()
+                                                ? "DWord"
+                                                : (subExpr0->isSingle() ? "Single" : "Double"))
                              + "From" + (subExpr1->isSigned() ? "Signed" : "Unsigned") + "Word");
             return true;
         }
@@ -2213,14 +2635,9 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
             if (!emitLeftSideAddressInX(out, true))  // preserve D
                 return false;
 
-            if (subExpr1->isSigned())
-                out.ins("ORCC", "#$01", "C=1 means signed");
-            else
-                out.ins("ANDCC", "#$FE", "C=0 means unsigned");
-
             callUtility(out, "init" + string(isSingle() ? "Single" : "Double")
                              + "From" + (subExpr1->isLong()
-                                             ? "DWord"
+                                             ? (subExpr1->isSigned() ? "Signed" : "Unsigned") + string("DWord")
                                              : (subExpr1->isSingle() ? "Single" : "Double")));
             return true;
         }
@@ -2231,12 +2648,7 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
             if (!emitLeftSideAddressInX(out, true))  // preserve D
                 return false;
 
-            if (subExpr0->isSigned())
-                out.ins("ORCC", "#$01", "C=1 means signed");
-            else
-                out.ins("ANDCC", "#$FE", "C=0 means unsigned");
-
-            callUtility(out, "initDWordFrom" + string(subExpr1->isSingle() ? "Single" : "Double"));
+            callUtility(out, "init" + string(subExpr0->isSigned() ? "Signed" : "Unsigned") + "DWordFrom" + (subExpr1->isSingle() ? "Single" : "Double"));
             return true;
         }
 
@@ -2276,16 +2688,14 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
             return true;
         }
 
-        out.ins("LDD", "#" + wordToString(structSizeInBytes), "size of struct " + getTypeDesc()->className);
-        out.ins("PSHS", "B,A", "push size to _memcpy");
-        out.ins("PSHS", "X", "source struct");
+        out.ins("PSHS", "X", "source struct address, for copyMem call");
 
         if (!subExpr0->emitCode(out, true))  // get address of left-side struct in X
             return false;
 
-        out.ins("PSHS", "X");
-        callUtility(out, "memcpy", "copy struct (preserves X)");
-        out.ins("LEAS", "6,S");
+        out.ins("LDD", "#" + wordToString(structSizeInBytes), "size of struct " + getTypeDesc()->className);
+        callUtility(out, "copyMem", "preserves X");  // preserving X is necessary if lValue is true
+        out.ins("LEAS", "2,S", "dispose of source struct address");
 
         return true;
     }
@@ -2317,10 +2727,17 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
 
         callUtility(out, "init" + string(subExpr1->isLong() ? "" : (subExpr0->isSigned() ? "Signed" : "Unsigned"))
                                 + (subExpr0->getType() == BYTE_TYPE ? "Byte" : "Word")
-                                + "From" + (subExpr1->isLong() ? "DWord" : (subExpr1->isSingle() ? "Single" : "Double")),
+                                + "From" + (subExpr1->isLong()
+                                                ? "DWord"
+                                                : string(subExpr1->isSingle() ? "Single" : "Double")),
                          "assign real to l-value at X");
         return true;
     }
+
+    // Check for * (char/int/pointer *) const_address = const_value.
+    //
+    if (op == ASSIGNMENT && !lValue && emitPoke(out))
+        return true;
 
     // Process <real_or_long> += <integral> and <integral> += <real_or_long> (and also -=, *=, /=).
     //
@@ -2365,7 +2782,7 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
 
             out.ins("TFR", "X,D", "address of temporary");
             out.ins("PULS", "X", "address of integral left side");
-            callUtility(out, "initDWordFrom" + string(subExpr1->isSingle() ? "Single" : "Double"),
+            callUtility(out, "init" + string(isSigned() ? "Signed" : "Unsigned") + "DWordFrom" + string(subExpr1->isSingle() ? "Single" : "Double"),
                              "assign result to l-value at X");
             return true;
         }
@@ -2413,11 +2830,16 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
             out.ins("PULS", "X", "address of integral left side");
             callUtility(out, "init" + string(subExpr1->isLong() ? "" : (subExpr0->isSigned() ? "Signed" : "Unsigned"))
                                     + (subExpr0->getType() == BYTE_TYPE ? "Byte" : "Word")
-                                    + "From" + (subExpr1->isLong() ? "DWord" : (subExpr1->isSingle() ? "Single" : "Double")),
+                                    + "From" + (subExpr1->isLong()
+                                                    ? "DWord"
+                                                    : (subExpr1->isSingle() ? "Single" : "Double")),
                              "assign result to l-value at X");
             return true;
         }
     }
+    /*cout << "# " << getLineNo() << ": op=" << op
+            << "; subExpr0: " << subExpr0->getTypeDesc()->toString()
+            << "; subExpr1: " << subExpr1->getTypeDesc()->toString() << endl;*/
 
     // Process /= and %=.
     //
@@ -2488,6 +2910,7 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
         return emitLongBitwiseOpAssign(out);
     }
 
+    //cout << "# Calling emitAssignmentIfNoFuncAddrExprInvolved\n";
     /*  Prepare the assigned value argument, i.e., immediate, pushed,
         indexed, etc:
     */
@@ -2495,8 +2918,12 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
     if (emitAssignmentIfNoFuncAddrExprInvolved(out, lValue, assignedValueArg))
         return true;
 
+    if (emitAsterixPointerVarPlusPlusEquals(out, lValue, assignedValueArg))
+        return true;
+
     const VariableExpr *ve0 = subExpr0->asVariableExpr();
 
+    //cout << "# Emit code for the right side\n";
     // Emit code for the right side.
     //
     {
@@ -2512,9 +2939,12 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
         }
         else
         {
+            /*cout << "# getTypeDesc()=" << getTypeDesc()->toString()
+                        << "; subExpr1->getTypeDesc()=" << subExpr1->getTypeDesc()->toString()
+                        << "; fits8Bits=" << subExpr1->fits8Bits() << endl;*/
             if (getType() == BYTE_TYPE)
             {
-                out.ins("PSHS", "B");
+                out.ins("PSHS", "B", "right side of " + string(getOperatorName(op)));
                 assignedValueArg = ",S+";
             }
             else
@@ -2523,7 +2953,7 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
                 if (subExpr1->getType() == BYTE_TYPE)
                     out.ins(subExpr1->getConvToWordIns());
 
-                out.ins("PSHS", "B,A");
+                out.ins("PSHS", "B,A", "right side of " + string(getOperatorName(op)));
                 assignedValueArg = ",S++";
             }
         }
@@ -2618,17 +3048,61 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
             out.ins("LDB", destAddr);
             out.ins(op == INC_ASSIGN ? "ADDB" : "SUBB", assignedValueArg);
             out.ins("STB", destAddr);
-            out.ins("CLRA");
         }
-        else if (getType() == POINTER_TYPE && getTypeDesc()->getPointedType() == WORD_TYPE)
+        else if (getType() == POINTER_TYPE)
         {
-            // word *ptr = ...; ptr += argument;
-            // Load the argument and double it.
+            // T *ptr = ...; ptr += argument;
+            // Load the argument in D and multiply it by the size of the pointed type.
             //
-            out.ins("LDD", assignedValueArg);
-            out.ins("LSLB", "", "inc/dec on word pointer");
-            out.ins("ROLA");
+            uint16_t pointedTypeSize = TranslationUnit::instance().getTypeSize(*getTypeDesc()->getPointedTypeDesc());
+            assert(!assignedValueArg.empty());
+            switch (pointedTypeSize)
+            {
+            case 1:
+                out.ins("LDD", assignedValueArg);
+                break;
+            case 2:
+            case 4:
+            case 8:
+            case 16:
+            case 32:
+                out.ins("LDD", assignedValueArg);
+                for ( ; pointedTypeSize > 1; pointedTypeSize >>= 1)
+                {
+                    out.ins("LSLB");
+                    out.ins("ROLA");
+                }
+                break;
+            
+            case 3:
+                if (assignedValueArg == ",S++")
+                    out.ins("LDD", ",S");  // do not pop arg yet
+                else
+                {
+                    out.ins("LDD", assignedValueArg);
+                    out.ins("PSHS", "B,A");
+                }
+                out.ins("LSLB");
+                out.ins("ROLA");
+                out.ins("ADDD", ",S++", "D now 3 times original increment");
+                break;
 
+            default:
+                out.ins("LDX", assignedValueArg);
+                if (pointedTypeSize <= 255)
+                {
+                    out.ins("LDB", "#" + wordToString(pointedTypeSize), "size of pointed type");
+                    callUtility(out, "MUL168", "D = X * B");
+                }
+                else
+                {
+                    out.ins("LDD", "#" + wordToString(pointedTypeSize), "size of pointed type");
+                    callUtility(out, "MUL16", "D = X * D");
+                }
+            }
+
+            // Add destination pointer to D (the argument), then store the result in the destination.
+            //
             if (op == INC_ASSIGN)
                 out.ins("ADDD", destAddr);
             else
@@ -2641,9 +3115,13 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
         }
         else
         {
-            assert(getType() != BYTE_TYPE);  // left side is word
-            out.ins("LDD", destAddr);
+            assert(getTypeSize() == 2);  // left side is 2 bytes
             assert(assignedValueArg != ",S+");
+
+            // If we are incrementing/decrementing a pointer, it must point to single-byte elements.
+            assert(getType() != POINTER_TYPE || TranslationUnit::instance().getTypeSize(*getTypeDesc()->getPointedTypeDesc()) == 1);
+
+            out.ins("LDD", destAddr);
             out.ins(op == INC_ASSIGN ? "ADDD" : "SUBD", assignedValueArg);
             out.ins("STD", destAddr);
         }
@@ -2714,33 +3192,77 @@ BinaryOpExpr::emitAssignment(ASMText &out, bool lValue, Op op) const
 }
 
 
+// Emits for the byte case of *variable++ = ...;
+// Returns true if this expression fits that case, otherwise returns false and emits no instructions.
+//
+bool
+BinaryOpExpr::emitAsterixPointerVarPlusPlusEquals(ASMText &out, bool lValue, const std::string &assignedValueArg) const
+{
+    if (oper != ASSIGNMENT || lValue
+            || isYieldedValueNeeded() || assignedValueArg.empty())
+        return false;
+    size_t typeSize = getTypeSize();
+    if ((typeSize != 1 && typeSize != 2) || subExpr1->getType() != getType())
+        return false;
+
+    // Check that left side is *var++, i.e., a deref of a post-inc.
+    //
+    auto deref = dynamic_cast<const UnaryOpExpr *>(subExpr0);
+    if (!deref || deref->getOperator() != UnaryOpExpr::INDIRECTION)
+        return false;
+    auto postInc = dynamic_cast<const UnaryOpExpr *>(deref->getSubExpr());
+    if (!postInc || postInc->getOperator() != UnaryOpExpr::POSTINC)
+        return false;
+    const VariableExpr *ve = postInc->getSubExpr()->asVariableExpr();
+    if (!ve)
+        return false;
+
+    out.ins("LDX", ve->getFrameDisplacementArg(), "variable " + ve->getId());
+    out.ins(typeSize == 1 ? "LDB" : "LDD", assignedValueArg);
+    out.ins(typeSize == 1 ? "STB" : "STD", typeSize == 1 ? ",X+" : ",X++", "post-increment");
+    out.ins("STX", ve->getFrameDisplacementArg());
+    return true;
+}
+
+
 // Check for statement of this form: * (byte|word *) 0xXXXX = ...;
 // Emits a load and a store instruction (without using X) and returns true.
 // Returns false if this optimization is not applicable.
 //
 bool
-BinaryOpExpr::optimizeConstantAddressCase(ASMText &out, const string &assignedValueArg) const
+BinaryOpExpr::emitAssignmentOfConstantToDerefCastToPtr(ASMText &out, const string &assignedValueArg) const
 {
-    if (getType() != BYTE_TYPE || getType() != WORD_TYPE)
+    if (getType() != BYTE_TYPE && getType() != WORD_TYPE)
         return false;  // no optimization done
     if (getType() != getRight()->getType())
         return false;  // no optimization done
 
     const UnaryOpExpr *uo0 = dynamic_cast<UnaryOpExpr *>(subExpr0);
 
+    // Check if * (type *) constant = ___.
+    //
     if (uo0 != NULL && uo0->getOperator() == UnaryOpExpr::INDIRECTION)
     {
         const CastExpr *ce = dynamic_cast<const CastExpr *>(uo0->getSubExpr());
         if (ce != NULL && ce->getType() == POINTER_TYPE)
         {
-            uint16_t constValue = 0;
-            if (ce->getSubExpr()->evaluateConstantExpr(constValue))
+            uint16_t constDestAddr = 0;
+            if (ce->getSubExpr()->evaluateConstantExpr(constDestAddr))
             {
                 const char *load  = (getType() == BYTE_TYPE ? "LDB" : "LDD");
                 const char *store = (getType() == BYTE_TYPE ? "STB" : "STD");
 
                 out.ins(load, assignedValueArg);
-                out.ins(store, wordToString(constValue, true));
+                if (TranslationUnit::instance().isNullPointerCheckingEnabled())
+                {
+                    // Use X to point to the destination address, so that the usual utility routine
+                    // can be used to check if that address is null.
+                    out.ins("LDX", "#" + wordToString(constDestAddr, true));
+                    callUtility(out, "check_null_ptr_x");
+                    out.ins(store, ",X");
+                    return true;  // "optimization" done
+                }
+                out.ins(store, wordToString(constDestAddr, true));
 
                 return true;  // optimization done
             }
@@ -2756,7 +3278,7 @@ BinaryOpExpr::optimizeConstantAddressCase(ASMText &out, const string &assignedVa
 // Returns false if this optimization is not applicable.
 //
 bool
-BinaryOpExpr::optimizeVariableCase(ASMText &out, const string &assignedValueArg) const
+BinaryOpExpr::emitAssignmentToDerefCastToPtr(ASMText &out, const string &assignedValueArg) const
 {
     if (getType() != BYTE_TYPE && getType() != WORD_TYPE)
         return false;  // no optimization done
@@ -2784,7 +3306,17 @@ BinaryOpExpr::optimizeVariableCase(ASMText &out, const string &assignedValueArg)
                     out.ins(store, ",X");
                 }
                 else
-                    out.ins(store, "[" + ve->getFrameDisplacementArg() + "]", "store at address in " + ve->getId());
+                {
+                    bool checkNullPtr = TranslationUnit::instance().isNullPointerCheckingEnabled();
+                    if (checkNullPtr)
+                    {
+                        out.ins("LDX", ve->getFrameDisplacementArg(), "pointer " + ve->getId());
+                        callUtility(out, "check_null_ptr_x");
+                        out.ins(store, ",X", "store at address in " + ve->getId());
+                    }
+                    else
+                        out.ins(store, "[" + ve->getFrameDisplacementArg() + "]", "store at address in " + ve->getId());
+                }
 
                 return true;  // optimization done
             }
@@ -2837,6 +3369,7 @@ int16_t
 BinaryOpExpr::getNumBytesPerMultiDimArrayElement(const Tree *tree)
 {
     assert(tree);
+    assert(tree->getType() == ARRAY_TYPE || tree->getTypeDesc()->isPtrToArray());
 
     // We might have multiple indexes, as in v[i][j][k].
     // Look for the variable by traversing left subtrees, because the VariableExpr
@@ -2853,14 +3386,23 @@ BinaryOpExpr::getNumBytesPerMultiDimArrayElement(const Tree *tree)
             // Example: int v[4][3][5]. 've' designates 'v', and v[i] has 15 elements (3 * 5),
             // which means 30 bytes, because int is 2 bytes.
             //
-            const vector<uint16_t> &dims = ve->getDeclaration()->getArrayDimensions();
-            assert(dims.size() >= 1);
-            assert(dimIndex <= dims.size());
-            uint16_t rowSize = product(dims.begin() + dimIndex, dims.end());
-            assert(rowSize <= 0x7FFF);
-            uint16_t rowSizeInBytes = rowSize * ve->getFinalArrayElementTypeSize();
-            assert(rowSizeInBytes <= 0x7FFF);
-            return int16_t(rowSizeInBytes);
+            vector<uint16_t> dims = ve->getDeclaration()->getArrayDimensions();
+            
+            if (ve->getTypeDesc()->isPtrToArray() && ! ve->getDeclaration()->hasFunctionParameterFrameDisplacement())
+            {
+                // This supports pointer-to-array variables that are not a parameter of a function.
+                assert(dimIndex > 0);
+                vector<uint16_t> dimsFromVEPointedTypeDesc;
+                ve->getTypeDesc()->getPointedTypeDesc()->appendDimensions(dimsFromVEPointedTypeDesc);
+
+                dims = dimsFromVEPointedTypeDesc;
+                --dimIndex;
+            }
+
+            int16_t size = computeDimensionsProduct(dims, dimIndex, tree->getFinalArrayElementTypeSize());
+            if (size < 0)
+                return 0;
+            return size;
         }
 
         if (const ObjectMemberExpr *ome = dynamic_cast<const ObjectMemberExpr *>(tree))
@@ -2880,20 +3422,18 @@ BinaryOpExpr::getNumBytesPerMultiDimArrayElement(const Tree *tree)
 
             // Add dimensions due to type of member, e.g. A member[N] where A is a typedef for an array.
             member->getTypeDesc()->appendDimensions(dims);
-
-            assert(dims.size() >= 1);
-            assert(dimIndex <= dims.size());
-            uint16_t rowSize = product(dims.begin() + dimIndex, dims.end());
-            assert(rowSize <= 0x7FFF);
-            uint16_t rowSizeInBytes = rowSize * ome->getFinalArrayElementTypeSize();
-            assert(rowSizeInBytes <= 0x7FFF);
-            return int16_t(rowSizeInBytes);
+            if (dims.size() < 1)
+                return 0;  // error - message already issued
+            int16_t size = computeDimensionsProduct(dims, dimIndex, tree->getFinalArrayElementTypeSize());
+            if (size < 0)
+                return 0;
+            return size;
         }
 
         const BinaryOpExpr *bin = dynamic_cast<const BinaryOpExpr *>(tree);
         if (bin && bin->getOperator() == ARRAY_REF && isArrayOrPointerVariable(bin->subExpr0))
         {
-            tree = bin->subExpr0;
+            tree = bin->subExpr0;  // go down to the left sub-tree
             ++dimIndex;
             continue;
         }
@@ -2904,10 +3444,30 @@ BinaryOpExpr::getNumBytesPerMultiDimArrayElement(const Tree *tree)
 }
 
 
+// Get the address of the array in X from subExpr0, but only if it can be done without trashing D.
+// Emits false if no instruction emitted.
+//
+bool
+BinaryOpExpr::emitLoadArrayInXIfNotTrashingD(ASMText &out) const
+{
+    bool leftIsArray = (subExpr0->getType() == ARRAY_TYPE);
+    const VariableExpr *ve0 = subExpr0->asVariableExpr();
+    if (ve0 && leftIsArray)
+        out.ins("LEAX", ve0->getFrameDisplacementArg(), "address of array " + ve0->getId());
+    else if (ve0 && !leftIsArray)  // pointer
+        out.ins("LDX", ve0->getFrameDisplacementArg(), "pointer " + ve0->getId());
+    else if (const StringLiteralExpr *sle = dynamic_cast<const StringLiteralExpr *>(subExpr0))
+        out.ins("LEAX", sle->getArg());
+    else
+        return false;
+    return true;
+}
+
+
 CodeStatus
 BinaryOpExpr::emitArrayRef(ASMText &out, bool lValue) const
 {
-    assert(numBytesPerElement > 0);
+    assert(numBytesPerElement >= 0);
 
     bool checkNullPtr = TranslationUnit::instance().isNullPointerCheckingEnabled();
 
@@ -2926,7 +3486,7 @@ BinaryOpExpr::emitArrayRef(ASMText &out, bool lValue) const
 
         if (ve0->getType() == POINTER_TYPE)  // this must come first, to handle case of array formal parameter, which is a pointer
         {
-            out.ins("LDX", ve0->getFrameDisplacementArg(), "get pointer value");
+            out.ins("LDX", ve0->getFrameDisplacementArg(), "get pointer value from variable " + ve0->getId());
 
             if (checkNullPtr)
                 callUtility(out, "check_null_ptr_x");
@@ -2965,31 +3525,15 @@ BinaryOpExpr::emitArrayRef(ASMText &out, bool lValue) const
         return false;
     }
 
-    // Get the address of the array in X.
-    // If the array is a variable name, avoid asking for an r-value,
-    // which does not exist for an array (see VariableExpr::emitCode()).
-    //
-    bool leftIsArray = (subExpr0->getType() == ARRAY_TYPE);
-    if (ve0 && leftIsArray)
-        out.ins("LEAX", ve0->getFrameDisplacementArg(), "address of array " + ve0->getId());
-    else if (ve0 && !leftIsArray)  // pointer
-        out.ins("LDX", ve0->getFrameDisplacementArg(), "pointer " + ve0->getId());
-    else if (const StringLiteralExpr *sle = dynamic_cast<const StringLiteralExpr *>(subExpr0))
-        out.ins("LEAX", sle->getArg());
-    else
+    if (isRightConst)  // optimization: right side is a numerical constant
     {
-        if (!subExpr0->emitCode(out, false))
-            return false;
-        out.ins("TFR", "D,X");
-    }
-
-    if (checkNullPtr)
-        callUtility(out, "check_null_ptr_x");
-
-    // Optimization: right side is a numerical constant.
-    //
-    if (isRightConst)
-    {
+        if (! emitLoadArrayInXIfNotTrashingD(out))  // try to emit a single X-loading instruction
+        {
+            // Otherwise, general case.
+            if (!subExpr0->emitCode(out, false))  // get array address in D
+                return false;
+            out.ins("TFR", "D,X");
+        }
         uint16_t index = rightValue;
         if (index != 0)
         {
@@ -3002,13 +3546,6 @@ BinaryOpExpr::emitArrayRef(ASMText &out, bool lValue) const
     else
     {
         const VariableExpr *ve1 = subExpr1->asVariableExpr();
-
-        // If right side is variable (not of type long), no need to preserve X during evaluation of index,
-        // because we can load right side directly into D or B.
-        //
-        bool preserveX = subExpr1->isLong() || !ve1;
-        if (preserveX)
-            out.ins("PSHS", "X", "preserve array address, then eval array index");
 
         // Evaluate index into D or B.
         if (subExpr1->isLong())
@@ -3024,16 +3561,13 @@ BinaryOpExpr::emitArrayRef(ASMText &out, bool lValue) const
 
         const bool elementSizeAndIndexBothUnsignedByte = (numBytesPerElement <= 255
                                                           && subExpr1->getType() == BYTE_TYPE && ! subExpr1->isSigned());
-        const bool indexNeedsExtend = (subExpr1->getType() == BYTE_TYPE
-                                       && (   numBytesPerElement == 16
-                                           || numBytesPerElement == 8
-                                           || numBytesPerElement == 4
-                                           || numBytesPerElement == 2
-                                           || numBytesPerElement == 1
-                                           || ! elementSizeAndIndexBothUnsignedByte));
 
-        if (indexNeedsExtend)
+        bool extendedToD = false;
+        if (subExpr1->getType() == BYTE_TYPE && numBytesPerElement != 1)
+        {
             out.ins(subExpr1->getConvToWordIns(), "", "index expression is of byte type");
+            extendedToD = true;
+        }
 
         // Multiply the array index (in D) with the size in bytes of an array element.
         // For some sizes, try to get by with shifts.
@@ -3041,7 +3575,8 @@ BinaryOpExpr::emitArrayRef(ASMText &out, bool lValue) const
         switch (numBytesPerElement)
         {
         case 0:
-            assert(false);
+            out.ins("CLRA");
+            out.ins("CLRB");
             break;
         case 1:
             break;
@@ -3066,30 +3601,77 @@ BinaryOpExpr::emitArrayRef(ASMText &out, bool lValue) const
             {
                 // The index (in B) is an unsigned byte and so is the element size,
                 // so we can multiply with MUL.
-                out.ins("LDA", "#" + wordToString(numBytesPerElement), "size of array element");
-                out.ins("MUL", "", "get offset in bytes in D");
+                out.ins("LDA", "#" + wordToString(numBytesPerElement), "size of array element");  // 2 cycles
+                out.ins("MUL", "", "get offset in bytes in D");  // 11 cycles
             }
             else
             {
-                if (!preserveX)  // if X was not preserved earlier, we must preserve it here
-                    out.ins("PSHS", "X");
                 out.ins("LDX", "#" + wordToString(numBytesPerElement), "size of array element");
                 callUtility(out, "MUL16", "get offset in bytes in D");
-                if (!preserveX)
-                    out.ins("PULS", "X");
             }
         }
 
-        if (preserveX)  // if X was preserved
-            out.ins("PULS", "X", "retrieve array address");
-        out.ins("LEAX", "D,X", "add byte offset");
+        // Get the address of the array in X. D already contains the array index.
+        // If the array is a variable name, avoid asking for an r-value,
+        // which does not exist for an array (see VariableExpr::emitCode()).
+        //
+        if (emitLoadArrayInXIfNotTrashingD(out))
+        {
+            if (numBytesPerElement == 1 && subExpr1->getType() == BYTE_TYPE)
+            {
+                // Because numBytesPerElement == 1, we know that the index is entirely in B.
+                if (subExpr1->isSigned())
+                    out.ins("LEAX", "B,X", "add offset");  // 4+ cycles
+                else
+                    out.ins("ABX", "", "add unsigned 8-bit offset");
+            }
+            else if (numBytesPerElement > 0)
+                out.ins("LEAX", "D,X", "add offset");  // 4+ cycles
+        }
+        else
+        {
+            if (subExpr1->getType() == BYTE_TYPE && !extendedToD)
+            {
+                if (numBytesPerElement > 0)
+                    out.ins(subExpr1->getConvToWordIns(), "", "extend byte index expression");
+                extendedToD = true;
+            }
+            if (numBytesPerElement > 0)
+                out.ins("PSHS", "B,A", "preserve array index");
+            if (!subExpr0->emitCode(out, false))
+                return false;
+            if (numBytesPerElement > 0)
+                out.ins("ADDD", ",S++", "add stacked array index to array address in D");
+            out.ins("TFR", "D,X", "put resulting address in X");
+        }
     }
 
     // Result address in now in X.
     //
+    if (checkNullPtr)
+        callUtility(out, "check_null_ptr_x");
     if (!lValue)
         out.ins(getLoadInstruction(getType()), ",X", "get r-value");
     return true;
+}
+
+
+// If 'expr' is 'variable--', then return the tree of the variable,
+// otherwise return NULL.
+//
+static const VariableExpr *
+isPostDecrementOfWordVariable(const Tree &expr)
+{
+    if (expr.getType() != WORD_TYPE)
+        return NULL;
+    if (auto ue = dynamic_cast<const UnaryOpExpr *>(&expr))
+    {
+        if (ue->getOperator() != UnaryOpExpr::POSTDEC)
+            return NULL;
+        if (const VariableExpr *ve = ue->getSubExpr()->asVariableExpr())
+            return ve;
+    }
+    return NULL;
 }
 
 
@@ -3133,20 +3715,30 @@ BinaryOpExpr::emitBoolJumps(ASMText &out,
         }
         else if (be->isRelationalOperator())
         {
-            if ((be->getOperator() == EQUALITY || be->getOperator() == INEQUALITY) && be->subExpr1->isExpressionAlwaysFalse())
+            // Emit a sequence that sets CC.
+            //
+            bool leftAlwaysFalse = false, rightAlwaysFalse = false;
+            if ((be->getOperator() == EQUALITY || be->getOperator() == INEQUALITY)
+                    && (leftAlwaysFalse  = be->subExpr0->isExpressionAlwaysFalse(),
+                        rightAlwaysFalse = be->subExpr1->isExpressionAlwaysFalse(),
+                        leftAlwaysFalse || rightAlwaysFalse))
             {
+                const Tree *varyingSide = (leftAlwaysFalse ? be->subExpr1 : be->subExpr0);
+
                 // We have "if ({something} == 0)" or "if ({something} != 0)".
                 // Simplify to "if (!{something})" or "if ({something})" respectively.
                 //
-                if (be->subExpr0->isRealOrLong())
+                if (varyingSide->isRealOrLong())
                 {
-                    be->subExpr0->emitCode(out, true);  // get address of {something} in X
-                    callUtility(out, be->subExpr0->isReal() ? "isSingleZero" : "isDWordZero");
+                    if (!varyingSide->emitCode(out, true))  // get address of {something} in X
+                        return false;
+                    callUtility(out, varyingSide->isReal() ? "isSingleZero" : "isDWordZero");
                 }
                 else
                 {
-                    be->subExpr0->emitCode(out, false);  // {something}
-                    if (be->subExpr0->getType() == BYTE_TYPE)
+                    if (!varyingSide->emitCode(out, false))  // emit {something} in B or D
+                        return false;
+                    if (varyingSide->getType() == BYTE_TYPE)
                         out.ins("CMPB", "#0");    // TSTB does not affect C, which is needed for LBHI, etc.
                     else
                         out.emitCMPDImmediate(0);
@@ -3155,6 +3747,8 @@ BinaryOpExpr::emitBoolJumps(ASMText &out,
             else
                 if (!be->emitComparison(out, false, ""))
                     return false;
+
+            // Emit the branch instruction that will use CC.
 
             bool signedBranch = be->isSignedComparison();
 
@@ -3203,12 +3797,26 @@ BinaryOpExpr::emitBoolJumps(ASMText &out,
         return true;
     }
 
-    if (!condition->emitCode(out, false))
-        return false;
-    if (condition->getType() == BYTE_TYPE)
-        out.ins("TSTB");
-    else
-        out.emitCMPDImmediate(0);
+    // Check for var-- as the condition, where var is a word.
+    // Instead of LDD var; ADDD #-1; STD var; SUBD #-1; ADDD #0,
+    // emit this: LDD var; SUBD #1; STD var; CMPD #-1.
+    //
+    if (const VariableExpr *ve = isPostDecrementOfWordVariable(*condition))
+    {
+        out.ins("LDD", ve->getFrameDisplacementArg(0), ve->getId() + "--");
+        out.ins("SUBD", "#1");
+        out.ins("STD", ve->getFrameDisplacementArg(0));
+        out.ins("CMPD", "#-1", "was variable `" + ve->getId() + "' zero before decrement?");
+    }
+    else  // general case:
+    {
+        if (!condition->emitCode(out, false))
+            return false;
+        if (condition->getType() == BYTE_TYPE)
+            out.ins("TSTB");
+        else
+            out.emitCMPDImmediate(0);
+    }
     out.ins("LBNE", successLabel);
     out.ins("LBRA", failureLabel);
     return true;
@@ -3274,3 +3882,36 @@ BinaryOpExpr::replaceChild(Tree *existingChild, Tree *newChild)
     assert(!"child not found");
 }
 
+
+bool
+BinaryOpExpr::isAssignment() const
+{
+    switch (oper)
+    {
+        case ASSIGNMENT:
+        case INC_ASSIGN:
+        case DEC_ASSIGN:
+        case MUL_ASSIGN:
+        case DIV_ASSIGN:
+        case MOD_ASSIGN:
+        case XOR_ASSIGN:
+        case AND_ASSIGN:
+        case OR_ASSIGN:
+        case LEFT_ASSIGN:
+        case RIGHT_ASSIGN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+
+void
+BinaryOpExpr::warnIfAssignmentAsCondition() const
+{
+    if (!TranslationUnit::instance().warnAssignmentInCondition())
+        return;
+    if (!isAssignment())
+        return;
+    warnmsg("assignment used as condition");
+}

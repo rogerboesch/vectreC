@@ -286,7 +286,7 @@ improving naive instruction sequences, therefore making the program
 shorter and/or faster.
 
 After this phase, the main() function tells the ASMText object
-to write its contents to an actual .asm file on disk.
+to write its contents to an actual .s file on disk.
 
 
 Self tests

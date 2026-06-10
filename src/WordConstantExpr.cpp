@@ -1,7 +1,5 @@
-/*  $Id: WordConstantExpr.cpp,v 1.13 2019/10/14 23:27:33 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2023 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,7 +24,8 @@ using namespace std;
 
 WordConstantExpr::WordConstantExpr(double value, bool isWord, bool isSigned)
   : Tree(TranslationUnit::getTypeManager().getIntType(isWord ? WORD_TYPE : BYTE_TYPE, isSigned)),
-    wordValue(value)
+    wordValue(value),
+    forcedAsByte(false)
 {
 }
 
@@ -51,7 +50,8 @@ WordConstantExpr::hasLongSuffix(const char *tokenText)
 
 WordConstantExpr::WordConstantExpr(double value, const char *tokenText)
   : Tree(TranslationUnit::getTypeManager().getIntType(WORD_TYPE, !hasUnsignedSuffix(tokenText) && value <= 0x7FFF)),
-    wordValue(value)
+    wordValue(value),
+    forcedAsByte(false)
 {
     if (hasLongSuffix(tokenText))
         warnmsg("long constant is not supported (`%s')", tokenText);
@@ -87,7 +87,44 @@ WordConstantExpr::checkSemantics(Functor &)
 }
 
 
-/*virtual*/
+CodeStatus
+WordConstantExpr::emitRValue(ASMText &out, bool emitByte) const
+{
+    uint16_t uValue = getWordValue();
+    if (uValue == 0)
+    {
+        if (!emitByte)
+            out.ins("CLRA");
+        out.ins("CLRB");
+    }
+    else
+    {
+        if (emitByte)
+            uValue &= 0x00FF;
+        out.ins(emitByte ? "LDB" : "LDD",
+                "#" + wordToString(uValue, true),
+                "decimal " + (isSigned()
+                               ? intToString(int16_t(uValue), false) + " signed"
+                               : wordToString(uValue, false) + " unsigned"));
+    }
+    return true;
+}
+
+
+CodeStatus
+WordConstantExpr::emitCodeToLoadByte(ASMText &out) const
+{
+    return emitRValue(out, true);
+}
+
+
+void
+WordConstantExpr::forceAsByte()
+{
+    forcedAsByte = true;
+}
+
+
 CodeStatus
 WordConstantExpr::emitCode(ASMText &out, bool lValue) const
 {
@@ -97,16 +134,5 @@ WordConstantExpr::emitCode(ASMText &out, bool lValue) const
         return false;
     }
 
-    uint16_t uValue = getWordValue();
-    if (uValue == 0)
-    {
-        out.ins("CLRA");
-        out.ins("CLRB");
-    }
-    else
-        out.ins("LDD", "#" + wordToString(uValue, true),
-               "decimal " + (isSigned()
-                               ? intToString(int16_t(uValue), false) + " signed"
-                               : wordToString(uValue, false) + " unsigned"));
-    return true;
+    return emitRValue(out, forcedAsByte || getType() == BYTE_TYPE);
 }

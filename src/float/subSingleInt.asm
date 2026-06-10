@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 subSingleInt	EXPORT
@@ -10,13 +12,13 @@ subSingleInt
 	clra
 	clrb
 	subd	10,s		; load right operand, negated
-	jsr	$B4F4		; load D (signed) into FPA0
+	flt_loadSignedDIntoFPA0
 
-	; The left operand must be loaded second because $B4F4
+	; The left operand must be loaded second because GIVABF
 	; appears to trash FPA1.
 
 	ldx	8,s		; left (single)
-	jsr	$BB2F		; unpack from X to FPA1
+	flt_unpackFromXToFPA1
 
 	lbra	subSingle_common_add
 

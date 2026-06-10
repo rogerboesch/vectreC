@@ -1,7 +1,5 @@
-/*  $Id: FunctionCallExpr.h,v 1.24 2020/05/07 00:26:10 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -61,13 +59,13 @@ public:
 
     bool hasFunctionPointerVariableDeclaration() const { return funcPtrVarDecl != NULL; }
 
-    virtual void checkSemantics(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
     enum Diagnostic
     {
@@ -75,28 +73,35 @@ public:
         ERROR_MSG,
         WARN_CONST_INCORRECT,
         WARN_NON_PTR_ARRAY_FOR_PTR,
-        WARN_PASSING_CONSTANT_FOR_PTR,
+        WARN_PASSING_CHAR_CONSTANT_FOR_PTR,
+        WARN_PASSING_NON_ZERO_CONSTANT_FOR_PTR,
         WARN_ARGUMENT_TOO_LARGE,
         WARN_REAL_FOR_INTEGRAL,
         WARN_FUNC_PTR_FOR_PTR,
         WARN_DIFFERENT_SIGNEDNESS,
         WARNING_VOID_POINTER,
+        WARN_PTR_FOR_INTEGRAL,
     };
     static Diagnostic paramAcceptsArg(const TypeDesc &paramTD, const Tree &argTree);
 
 private:
 
+    const TypeDesc *getCalledPrototypeTypeDesc() const;
+
     void checkCallArguments(const std::string &functionId,
                             class Contraption &contraption,
                             const TreeSequence &args) const;
     void checkPrintfArguments(const TreeSequence &args, const std::string &functionId) const;
-    bool emitPushSingleArg(ASMText &out, bool passInReg, bool isArgInRegX, uint16_t &numBytesPushed,
-                           const char *pshsArg, const std::string &pshsComment) const;
+    bool emitPushSingleArg(ASMText &out, bool passInReg, bool gccCall,
+                           Register regContainingArg, uint16_t &numBytesPushed,
+                           const std::string &pshsComment,
+                           const TypeDesc *paramTypeDesc) const;
     bool emitArgumentPushCode(ASMText &out,
                               const std::string &functionId,
+                              CallConvention callConv,
                               uint16_t &numBytesPushed) const;
     bool passesHiddenParam() const;
-    bool isFunctionReceivingFirstParamInReg() const;
+    bool isCallToConstantAddress(std::string &jsrArg) const;
 
     // Forbidden:
     FunctionCallExpr(const FunctionCallExpr &);
@@ -106,8 +111,14 @@ private:
 
     Tree *function;  // IdentifierExpr for f() and for ptrToF(); UnaryOpExpr or ObjectMemberExpr (typically) for (*expr)(); owns the pointed object
     Declaration *funcPtrVarDecl;  // non null when calling through function pointer variable
-    TreeSequence *arguments;  // owns the pointed object
+    TreeSequence *arguments;  // visible (non-hidden) arguments; owns the pointed object
     Declaration *returnValueDeclaration;  // used when return type is struct/union; owns the pointed object
+    
+    // __gcccall:
+    std::unique_ptr<Declaration> tempDeclarationForFirstByteParam;
+    uint8_t firstByteParamImmedValue;  // used if tempDeclarationForFirstByteParam is null
+    std::unique_ptr<Declaration> tempDeclarationForFirstWordParam;
+    uint16_t firstWordParamImmedValue;  // used if tempDeclarationForFirstWordParam is null
 
 };
 

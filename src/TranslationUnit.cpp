@@ -1,7 +1,5 @@
-/*  $Id: TranslationUnit.cpp,v 1.166 2020/05/07 01:12:36 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2018 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,10 +17,12 @@
 
 #include "TranslationUnit.h"
 
+#include "Parameters.h"
 #include "TreeSequence.h"
 #include "DeclarationSequence.h"
 #include "FunctionDef.h"
 #include "SemanticsChecker.h"
+#include "AncestorFunctor.h"
 #include "FunctionCallExpr.h"
 #include "Scope.h"
 #include "StringLiteralExpr.h"
@@ -34,11 +34,13 @@
 #include "VariableExpr.h"
 #include "SwitchStmt.h"
 #include "LabeledStmt.h"
+#include "AssemblerStmt.h"
+#include "WhileStmt.h"
+#include "ForStmt.h"
+#include "JumpStmt.h"
 #include "ExpressionTypeSetter.h"
 
-#include <assert.h>
 #include <errno.h>
-#include <fstream>
 
 using namespace std;
 
@@ -46,47 +48,9 @@ using namespace std;
 /*static*/ TranslationUnit *TranslationUnit::theInstance = NULL;
 
 
-void
-TranslationUnit::createInstance(TargetPlatform targetPlatform,
-                                bool callToUndefinedFunctionAllowed,
-                                bool warnSignCompare,
-                                bool warnPassingConstForFuncPtr,
-                                bool isConstIncorrectWarningEnabled,
-                                bool isBinaryOpGivingByteWarningEnabled,
-                                bool isLocalVariableHidingAnotherWarningEnabled,
-                                bool relocatabilitySupported)
-{
-    assert(theInstance == NULL);
-    new TranslationUnit(targetPlatform,
-                        callToUndefinedFunctionAllowed,
-                        warnSignCompare,
-                        warnPassingConstForFuncPtr,
-                        isConstIncorrectWarningEnabled,
-                        isBinaryOpGivingByteWarningEnabled,
-                        isLocalVariableHidingAnotherWarningEnabled,
-                        relocatabilitySupported);
-    assert(theInstance);
-}
-
-
-void
-TranslationUnit::destroyInstance()
-{
-    assert(theInstance);
-    delete theInstance;
-    theInstance = NULL;
-}
-
-
-TranslationUnit::TranslationUnit(TargetPlatform _targetPlatform,
-                                 bool _callToUndefinedFunctionAllowed,
-                                 bool _warnSignCompare,
-                                 bool _warnPassingConstForFuncPtr,
-                                 bool _isConstIncorrectWarningEnabled,
-                                 bool _isBinaryOpGivingByteWarningEnabled,
-                                 bool _isLocalVariableHidingAnotherWarningEnabled,
-                                 bool _relocatabilitySupported)
-  : typeManager(),
+TranslationUnit::TranslationUnit(const Parameters &_params)
+  : params(_params),
+    typeManager(),
     globalScope(NULL),
     definitionList(NULL),
     functionDefs(),
@@ -96,6 +60,7 @@ TranslationUnit::TranslationUnit(TargetPlatform _targetPlatform,
     breakableStack(),
     functionEndLabel(),
     labelGeneratorIndex(0),
+    callConventionStack(),
     stringLiteralLabelToValue(),
     stringLiteralValueToLabel(),
     realConstantLabelToValue(),
@@ -103,20 +68,9 @@ TranslationUnit::TranslationUnit(TargetPlatform _targetPlatform,
     dwordConstantLabelToValue(),
     dwordConstantValueToLabel(),
     builtInFunctionDescs(),
-    relocatabilitySupported(_relocatabilitySupported),
-    isProgramExecutableOnlyOnce(false),
-    nullPointerCheckingEnabled(false),
-    stackOverflowCheckingEnabled(false),
-    callToUndefinedFunctionAllowed(_callToUndefinedFunctionAllowed),
-    warnSignCompare(_warnSignCompare),
-    warnPassingConstForFuncPtr(_warnPassingConstForFuncPtr),
     warnedAboutUnsupportedFloats(false),
-    isConstIncorrectWarningEnabled(_isConstIncorrectWarningEnabled),
-    isBinaryOpGivingByteWarningEnabled(_isBinaryOpGivingByteWarningEnabled),
-    isLocalVariableHidingAnotherWarningEnabled(_isLocalVariableHidingAnotherWarningEnabled),
     warnedAboutVolatile(false),
     neededUtilitySubRoutines(),
-    targetPlatform(_targetPlatform),
     vxTitle("CMOC"),
     vxMusic("vx_music_1"),
     vxTitleSizeWidth(80),
@@ -124,12 +78,13 @@ TranslationUnit::TranslationUnit(TargetPlatform _targetPlatform,
     vxTitlePosX(-0x56),
     vxTitlePosY(0x20),
     vxCopyright("2015"),
-    sourceFilenamesSeen()
+    prerequisiteFilenamesSeen()
 {
+    assert(theInstance == NULL);
     theInstance = this;  // instance() needed by Scope constructor
     typeManager.createBasicTypes();
     globalScope = new Scope(NULL, string());  // requires 'void', i.e., must come after createBasicTypes()
-    typeManager.createInternalStructs(*globalScope, targetPlatform);  // global scope must be created; receives internal structs
+    typeManager.createInternalStructs(*globalScope, params.targetPlatform, params.floatingPointLibrary);  // global scope receives internal structs
 
     //typeManager.dumpTypes(cout); // dumps all predefined types in C notation
 }
@@ -148,7 +103,7 @@ TranslationUnit::addFunctionDef(FunctionDef *fd)
 {
     if (fd == NULL)
         return;
-    assert(fd->getTypeDesc()->isPtrToFunction() || fd->getTypeDesc()->isTypeWithoutCallingConventionFlags());
+    assert(fd->getTypeDesc()->isPtrToFunction() || ! fd->getTypeDesc()->isTypeWithCallingConventionFlags());
     functionDefs[fd->getId()] = fd;
 }
 
@@ -162,6 +117,47 @@ TranslationUnit::removeFunctionDef(FunctionDef *fd)
 }
 
 
+// Adjusts 'fd' so that it has the same interrupt and calling convention as 'preexistingFD'.
+// They are assumed to have the same formal parameters.
+// Returns true if the return type of 'fd' becomes equal to that of 'preexistingFD'
+// after making this adjustment.
+//
+bool
+TranslationUnit::adjustFunctionDefReturnTypeFromPrototype(FunctionDef &fd,
+                                                          FunctionDef &preexistingFD)
+{
+    int result = TypeDesc::compare(*preexistingFD.getTypeDesc(), *fd.getTypeDesc());
+    if (result == -1)
+        return false;  // difference other than interrupt or call conv.: reject
+
+    // Difference, but only on interrupt or call conv. modifiers.
+    // Give each FunctionDef the attributes that the other has.
+    // However, reject if there are two non-default calling conventions.
+    //
+    if (fd.isInterruptServiceRoutine() != preexistingFD.isInterruptServiceRoutine())
+    {
+        fd.setInterruptServiceRoutine(true);
+        preexistingFD.setInterruptServiceRoutine(true);
+    }
+    if (fd.getCallConvention() != preexistingFD.getCallConvention())
+    {
+        if (fd.getCallConvention() != DEFAULT_CMOC_CALL_CONV
+                && preexistingFD.getCallConvention() != DEFAULT_CMOC_CALL_CONV)
+            return false;
+
+        if (fd.getCallConvention() == DEFAULT_CMOC_CALL_CONV)
+            fd.setCallConvention(preexistingFD.getCallConvention());
+        else
+            preexistingFD.setCallConvention(fd.getCallConvention());
+    }
+
+    assert(preexistingFD.hasSameReturnTypeAndModifiers(fd));
+    return true;
+}
+
+
+// The FunctionDef may be modified.
+//
 void
 TranslationUnit::registerFunction(FunctionDef *fd)
 {
@@ -177,7 +173,7 @@ TranslationUnit::registerFunction(FunctionDef *fd)
     FunctionDef *preexisting = getFunctionDef(fd->getId());
     if (preexisting != NULL)
     {
-        bool sameRetType = preexisting->hasSameReturnType(*fd);
+        bool sameRetType = preexisting->hasSameReturnTypeAndModifiers(*fd);
         bool sameParams  = preexisting->hasSameFormalParams(*fd);
         if (!sameRetType || !sameParams)
         {
@@ -185,17 +181,34 @@ TranslationUnit::registerFunction(FunctionDef *fd)
             if (!sameRetType && !sameParams)
                 msg = "return type and formal parameters";
             else if (!sameRetType)
-                msg = "return type", be = "is";
+            {
+                if (!adjustFunctionDefReturnTypeFromPrototype(*fd, *preexisting))
+                    msg = "return type", be = "is";
+            }
             else if (!sameParams)
-                msg = "formal parameters";
+            {
+                const FormalParamList *preexistingFPList = preexisting->getFormalParamList();
+                if (preexistingFPList && preexistingFPList->size() == 0)
+                {
+                    // No error because we tolerate this, to compile old K&R programs:
+                    // int foo();
+                    // int foo(int x) { ... }
+                }
+                else
+                    msg = "formal parameters";
+            }
 
-            fd->errormsg("%s for %s() %s different from previously declared at %s",
-                         msg, fd->getId().c_str(), be, preexisting->getLineNo().c_str());
+            if (msg)
+                fd->errormsg("%s for %s() %s different from previously declared at %s: `%s' vs `%s'",
+                         msg, fd->getId().c_str(), be, preexisting->getLineNo().c_str(),
+                         fd->getPrototypeWithFunctionId().c_str(),
+                         preexisting->getPrototypeWithFunctionId().c_str());
+
         }
         if (preexisting->getBody() != NULL && fd->getBody() != NULL)
             fd->errormsg("%s() already has a body at %s",
                          fd->getId().c_str(), preexisting->getLineNo().c_str());
-        if (preexisting->getBody() == NULL && fd->getBody() != NULL)
+        if (preexisting->getBody() == NULL && fd->getBody() != NULL)  // if have prototype but now have body
         {
             removeFunctionDef(preexisting);
             addFunctionDef(fd);
@@ -211,8 +224,9 @@ TranslationUnit::registerFunction(FunctionDef *fd)
             fd->warnmsg("return type of main() must be int");
         if (fd->getNumFormalParams() != 0)
         {
-            if (targetPlatform == OS9)
+            if (params.targetPlatform == OS9 || params.targetPlatform == FLEX)
             {
+                // Check that main() receives the expected parameters.
                 bool ok = true;
                 if (fd->getNumFormalParams() != 2)
                     ok = false;
@@ -233,7 +247,7 @@ TranslationUnit::registerFunction(FunctionDef *fd)
                     }
                 }
                 if (!ok)
-                    fd->errormsg("main() must receive (int, char **) or no parameters");
+                    fd->errormsg("main() must receive (int, char **)");
             }
             else
                 fd->warnmsg("main() does not receive parameters when targeting this platform");
@@ -262,7 +276,7 @@ public:
         isCallToUndefinedFunctionAllowed(_isCallToUndefinedFunctionAllowed)
     {
     }
-    virtual bool open(Tree *t)
+    virtual bool open(Tree *t) override
     {
         if (FunctionDef *fd = dynamic_cast<FunctionDef *>(t))
         {
@@ -275,12 +289,12 @@ public:
                 string funcId = fc->getIdentifier();
                 calledFunctions.insert(funcId);
                 if (declaredFunctions.find(funcId) == declaredFunctions.end())  // if unknown ID
-                    fc->errormsg("calling undeclared function %s()", funcId.c_str());
+                    fc->warnmsg("calling undeclared function %s()", funcId.c_str());
             }
         }
         return true;
     }
-    virtual bool close(Tree * /*t*/)
+    virtual bool close(Tree * /*t*/) override
     {
         return true;
     }
@@ -326,6 +340,39 @@ private:
 };
 
 
+Register
+TranslationUnit::getFirstParameterRegister(bool isParam8Bits) const
+{
+    return isParam8Bits ? B : X;
+}
+
+void
+TranslationUnit::pushCurrentDefaultCallConvention(CallConvention callConv)
+{
+    callConventionStack.push_back(callConv);
+}
+
+
+CallConvention
+TranslationUnit::popCurrentDefaultCallConvention()
+{
+    if (callConventionStack.size() == 0)
+        return DEFAULT_CMOC_CALL_CONV;
+    CallConvention result = callConventionStack.back();
+    callConventionStack.pop_back();
+    return result;
+}
+
+
+CallConvention
+TranslationUnit::getCurrentDefaultCallConvention() const
+{
+    if (callConventionStack.size() == 0)
+        return DEFAULT_CMOC_CALL_CONV;
+    return callConventionStack.back();
+}
+
+
 // Checks for labeled statements used outside of a switch() statement.
 //
 class LabeledStmtChecker : public Tree::Functor
@@ -336,7 +383,7 @@ public:
         switchLevel(0)
     {
     }
-    virtual bool open(Tree *t)
+    virtual bool open(Tree *t) override
     {
         if (dynamic_cast<SwitchStmt *>(t))
             ++switchLevel;
@@ -345,13 +392,66 @@ public:
             t->errormsg("%s label not within a switch statement", ls->isCase() ? "case" : "default");
         return true;
     }
-    virtual bool close(Tree *t)
+    virtual bool close(Tree *t) override
     {
         if (dynamic_cast<SwitchStmt *>(t))
             --switchLevel;
         return true;
     }
 private:
+    size_t switchLevel;
+};
+
+
+// Checks that 'continue' is only used in a loop and that 'break'
+// is only used in a loop or a switch.
+//
+class BreakAndContinueChecker : public Tree::Functor
+{
+public:
+    BreakAndContinueChecker()
+    :   Tree::Functor(),
+        loopLevel(0),
+        switchLevel(0)
+    {
+    }
+
+    bool open(Tree *t) override
+    {
+        if (dynamic_cast<WhileStmt *>(t) || dynamic_cast<ForStmt *>(t))  // if while, do-while or for
+            ++loopLevel;
+        else if (dynamic_cast<SwitchStmt *>(t))
+            ++switchLevel;
+        else if (auto *js = dynamic_cast<JumpStmt *>(t))
+        {
+            switch (js->getJumpType())
+            {
+            case JumpStmt::CONT:
+                if (loopLevel == 0)
+                    t->errormsg("continue statement not within a loop");
+                break;
+            case JumpStmt::BRK:
+                if (loopLevel == 0 && switchLevel == 0)
+                    t->errormsg("break statement not within loop or switch");
+                break;
+            default:
+                ;
+            }
+        }
+        return true;
+    }
+
+    bool close(Tree *t) override
+    {
+        if (dynamic_cast<WhileStmt *>(t) || dynamic_cast<ForStmt *>(t))
+            --loopLevel;
+        else if (dynamic_cast<SwitchStmt *>(t))
+            --switchLevel;
+        return true;
+    }
+
+private:
+    size_t loopLevel;
     size_t switchLevel;
 };
 
@@ -388,7 +488,7 @@ class UndeclaredGlobalVariableChecker : public Tree::Functor
 public:
     UndeclaredGlobalVariableChecker() : globalsEncountered() {}
 
-    virtual bool open(Tree *t)
+    virtual bool open(Tree *t) override
     {
         if (const Declaration *decl = dynamic_cast<Declaration *>(t))
         {
@@ -430,7 +530,7 @@ class StringLiteralRegistererererer : public Tree::Functor
 {
 public:
     StringLiteralRegistererererer() : currentFunctionDef(NULL) {}
-    virtual bool open(Tree *t)
+    virtual bool open(Tree *t) override
     {
         if (StringLiteralExpr *sle = dynamic_cast<StringLiteralExpr *>(t))
         {
@@ -457,7 +557,7 @@ public:
         }
         return true;
     }
-    virtual bool close(Tree *t)
+    virtual bool close(Tree *t) override
     {
         if (currentFunctionDef == t)
             currentFunctionDef = NULL;
@@ -475,7 +575,7 @@ class DeclarationFinisher : public Tree::Functor
 {
 public:
     DeclarationFinisher() {}
-    virtual bool open(Tree *t)
+    virtual bool open(Tree *t) override
     {
         DeclarationSequence *declSeq = dynamic_cast<DeclarationSequence *>(t);
         if (declSeq)
@@ -511,7 +611,8 @@ public:
         if (!decl)
             return true;
         /*cout << "# DeclarationFinisher: decl " << decl << ": '" << decl->getVariableId()
-             << "', isGlobal=" << decl->isGlobal() << ", needsFinish=" << decl->needsFinish << ", line " << decl->getLineNo() << endl;*/
+             << "', isGlobal=" << decl->isGlobal() << ", needsFinish=" << decl->needsFinish
+             << ", line " << decl->getLineNo() << endl;*/
         if (!decl->needsFinish)
             return true;
 
@@ -539,7 +640,8 @@ public:
         }
 
         size_t numDimsDueToDeclarator = arrayDimensions.size();
-        //cout << "# DeclarationFinisher:   arrayDimensions=[" << arrayDimensions << "], " << numDimsDueToDeclarator << endl;
+        /*cout << "# DeclarationFinisher:   arrayDimensions=[" << vectorToString(arrayDimensions)
+                                << "], numDimsDueToDeclarator=" << numDimsDueToDeclarator << endl;*/
 
         if (varTypeDesc->type == ARRAY_TYPE)
         {
@@ -572,6 +674,16 @@ public:
             TranslationUnit::instance().declareGlobal(decl);
         }
 
+        if (finalTypeDesc->type == VOID_TYPE)
+            decl->errormsg("variable `%s` is declared with type void", decl->getVariableId().c_str());
+
+        uint16_t sizeInBytes = uint16_t(-1);
+        if (TranslationUnit::instance().warnArraySizeZero()
+                    && finalTypeDesc->type == ARRAY_TYPE
+                    && decl->getVariableSizeInBytes(sizeInBytes)
+                    && sizeInBytes == 0)
+            decl->warnmsg("array variable `%s` has size zero", decl->getVariableId().c_str());
+
         return true;
     }
 private:
@@ -586,6 +698,7 @@ void
 TranslationUnit::markGlobalDeclarations()
 {
     assert(scopeStack.size() == 0);  // ensure current scope is global one
+    assert(definitionList);
     for (vector<Tree *>::iterator it = definitionList->begin();
                                  it != definitionList->end(); it++)
     {
@@ -608,6 +721,7 @@ void
 TranslationUnit::setTypeDescOfGlobalDeclarationClasses()
 {
     assert(scopeStack.size() == 0);  // ensure current scope is global one
+    assert(definitionList);
     for (vector<Tree *>::iterator it = definitionList->begin();
                                  it != definitionList->end(); it++)
     {
@@ -621,7 +735,10 @@ TranslationUnit::setTypeDescOfGlobalDeclarationClasses()
         assert(!className.empty());
         ClassDef *cl = getClassDef(className);
         if (cl)  // cl will be null in case like: struct T *f(); where struct T is left undefined
+        {
             cl->setTypeDesc(declSeq->getTypeDesc());
+            cl->check();  // do more checks on this struct
+        }
     }
 }
 
@@ -662,6 +779,7 @@ TranslationUnit::setGlobalDeclarationLabels()
         Example: int a = 42; int b = a;
     */
     assert(scopeStack.size() == 0);  // ensure current scope is global one
+    assert(definitionList);
     for (vector<Tree *>::iterator it = definitionList->begin();
                                  it != definitionList->end(); it++)
     {
@@ -691,6 +809,7 @@ void
 TranslationUnit::declareFunctions()
 {
     assert(scopeStack.size() == 0);  // ensure current scope is global one
+    assert(definitionList);
     for (vector<Tree *>::iterator it = definitionList->begin();
                                  it != definitionList->end(); it++)
     {
@@ -719,6 +838,59 @@ TranslationUnit::declareFunctions()
         }
     }
 }
+
+
+// Functions that have a body must have received their Scope object.
+//
+void
+TranslationUnit::declareFunctionLocalStaticVariables()
+{
+    if (definitionList == NULL)
+        return;
+
+    class SetLocalStaticLabelFunctor : public Scope::DeclarationFunctor
+    {
+        string currentFunctionId;
+    public:
+        SetLocalStaticLabelFunctor() : currentFunctionId() {}
+
+        virtual bool operator()(Declaration &decl) override
+        {
+            if (decl.isLocalStatic())
+            {
+                if (decl.initializationExpr != NULL
+                        && ! decl.initializationExpr->isStaticallyInitializable(*decl.getTypeDesc()))
+                {
+                    if (decl.initializationExpr->isStaticallyInitializable(*decl.getTypeDesc(), true))
+                        decl.forceDynamicInitializer();  // string literals require run-time init; see Declaration::emitCode()
+                    else
+                        decl.errormsg("initializer for local static variable `%s' is not constant", decl.getVariableId().c_str());
+                }
+                
+                decl.setLocalStaticLabel(currentFunctionId);
+            }
+            return true;
+        }
+
+        virtual ~SetLocalStaticLabelFunctor() {}
+
+        void setCurrentFunctionId(const string &functionId) { currentFunctionId = functionId; }
+    } functor;
+
+    for (vector<Tree *>::iterator it = definitionList->begin();
+                                 it != definitionList->end(); it++)
+        if (FunctionDef *fd = dynamic_cast<FunctionDef *>(*it))
+        {
+            functor.setCurrentFunctionId(fd->getId());
+            Scope *topFuncScope = fd->getScope();
+            if (topFuncScope && ! topFuncScope->iterateDeclarations(functor, true))
+            {
+                assert(!"unexpected stop");
+                break;
+            }
+        }
+}
+
 
 
 // This is the method where global variables get declared, with a call to Scope::declareVariable().
@@ -759,13 +931,24 @@ TranslationUnit::checkSemantics()
     StringLiteralRegistererererer r;
     definitionList->iterate(r);
 
-    // Among other things, the ExpressionTypeSetter is run over the function bodies
-    // during the following step.
-    //
+    // Among other things:
+    // - The ExpressionTypeSetter is run over the function bodies during the following step.
+    // - For each FunctionDef encountered, this creates a Scope for it and calls setScope() on the FunctionDef.
     {
         SemanticsChecker sc;
         definitionList->iterate(sc);
     }  // destroy ScopeCreator here so that it pops all scopes it pushed onto the TranslationUnit's stack
+
+    // Detect expression statements whose final value is not needed in B or D, e.g., void f() { n++; }
+    {
+        AncestorFunctor af;
+        definitionList->iterate(af);
+    }
+
+    // This sets the assembly language label of the local static variables of the functions.
+    // This must be done after the functions scopes have been created.
+    //
+    declareFunctionLocalStaticVariables();
 
 
     {
@@ -788,18 +971,29 @@ TranslationUnit::checkSemantics()
             Declaration *decl = dynamic_cast<Declaration *>(*it);
             if (decl == NULL)
                 continue;
-
-            // Determine if this global goes into the 'rodata' section, which may be in ROM,
-            // in the case of a cartridge program.
-            // This must be done after the SemanticsChecker pass, i.e., after the ExpressionTypeSetter.
-            //
-            bool typeCanGoInRO = decl->getTypeDesc()->canGoInReadOnlySection(relocatabilitySupported);
-            bool initializerAllowsRO = (decl->isExtern && decl->isConst()) || decl->hasOnlyNumericalLiteralInitValues();
-            decl->setReadOnly(typeCanGoInRO && initializerAllowsRO);
-
-            if (decl->isReadOnly())
-                checkConstDataDeclarationInitializer(*decl);  // do check after ExpressionTypeSetter
+            determineIfGlobalIsReadOnly(*decl);
         }
+    }
+
+    // Same for local static declarations.
+    {
+        class DetermineIfLocalStaticIsReadOnlyFunctor : public Scope::DeclarationFunctor
+        {
+        public:
+            virtual bool operator()(Declaration &decl) override
+            {
+                if (decl.isLocalStatic())
+                    TranslationUnit::instance().determineIfGlobalIsReadOnly(decl);
+                return true;
+            }
+
+            virtual ~DetermineIfLocalStaticIsReadOnlyFunctor() {}
+        } functor;
+
+        for (vector<Tree *>::iterator it = definitionList->begin();
+                                      it != definitionList->end(); it++)
+            if (FunctionDef *fd = dynamic_cast<FunctionDef *>(*it))
+                fd->getScope()->iterateDeclarations(functor, true);
     }
 
 
@@ -808,13 +1002,34 @@ TranslationUnit::checkSemantics()
     // over the function bodies, so that function calls that use a function pointer
     // can be differentiated from standard calls.
     //
-    FunctionChecker ufc(*this, callToUndefinedFunctionAllowed);
+    FunctionChecker ufc(*this, params.callToUndefinedFunctionAllowed);
     definitionList->iterate(ufc);
     ufc.reportErrors();
 
 
     LabeledStmtChecker lsc;
     definitionList->iterate(lsc);
+
+
+    BreakAndContinueChecker bcc;
+    definitionList->iterate(bcc);
+}
+
+
+void
+TranslationUnit::determineIfGlobalIsReadOnly(Declaration &decl) const
+{
+    // Determine if this declaration goes into the 'rodata' section, which may be in ROM,
+    // in the case of a cartridge program.
+    // This must be done after the SemanticsChecker pass, i.e., after the ExpressionTypeSetter.
+    //
+    bool typeCanGoInRO = decl.getTypeDesc()->canGoInReadOnlySection(isRelocatabilitySupported());
+    bool initializerAllowsRO = (decl.isExtern || decl.hasOnlyNumericalLiteralInitValues())
+                               && decl.getTypeDesc()->isConstant();
+    decl.setReadOnly(typeCanGoInRO && initializerAllowsRO);
+
+    if (decl.isReadOnly())
+        checkConstDataDeclarationInitializer(decl);  // do check after ExpressionTypeSetter
 }
 
 
@@ -834,17 +1049,31 @@ TranslationUnit::checkConstDataDeclarationInitializer(const Declaration &decl) c
 }
 
 
-void
-TranslationUnit::setTargetPlatform(TargetPlatform platform)
-{
-    targetPlatform = platform;
-}
-
-
 TargetPlatform
 TranslationUnit::getTargetPlatform() const
 {
-    return targetPlatform;
+    return params.targetPlatform;
+}
+
+
+FloatingPointLibrary
+TranslationUnit::getFloatingPointLibrary() const
+{
+    return params.floatingPointLibrary;
+}
+
+
+bool
+TranslationUnit::isCharSignedByDefault() const
+{
+    return params.isCharSignedByDefault;
+}
+
+
+bool
+TranslationUnit::targetPlatformUsesY() const
+{
+    return getTargetPlatform() == OS9;
 }
 
 
@@ -854,7 +1083,7 @@ TranslationUnit::getTargetPlatform() const
 const char *
 TranslationUnit::getDataIndexRegister(bool prefixWithComma, bool readOnly) const
 {
-    return (getTargetPlatform() == OS9 && !readOnly ? ",Y" : ",PCR") + (prefixWithComma ? 0 : 1);
+    return (targetPlatformUsesY() && !readOnly ? ",Y" : ",PCR") + (prefixWithComma ? 0 : 1);
 }
 
 
@@ -875,6 +1104,7 @@ void TranslationUnit::detectCalledFunctions()
     // any function that has external linkage.
     //
     StringVector calledFunctionIds;
+    calledFunctionIds.push_back("main");
     for (FunctionDefTable::const_iterator it = functionDefs.begin(); it != functionDefs.end(); ++it)
     {
         const FunctionDef *fd = it->second;
@@ -892,7 +1122,7 @@ void TranslationUnit::detectCalledFunctions()
 
         for ( ; index < initSize; ++index)  // for each caller to process
         {
-            const string &callerId = calledFunctionIds[index];
+            const string callerId = calledFunctionIds[index];  // copied instead of using reference, b/c calledFunctionIds gets modified by this loop
 
             // Get the list of functions called by 'callerId'.
             //
@@ -941,11 +1171,11 @@ TranslationUnit::allocateLocalVariables()
 }
 
 
-// setTargetPlatform() must have been called before calling this method.
-// Stops short if an error is detected.
-//
 void
-TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stackSpace, bool emitBootLoaderMarker)
+TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress,
+                               int32_t initialStackRegValue,
+                               uint16_t stackSpace, uint16_t extraStackSpace,
+                               bool emitBootLoaderMarker)
 {
     detectCalledFunctions();
 
@@ -964,7 +1194,7 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
         out.startSection("start");
     }
 
-    if (targetPlatform == VECTREX && needStartSection)
+    if (params.targetPlatform == VECTREX && needStartSection)
     {
         out.emitComment("Vectrex header, positioned at address 0.");
 
@@ -993,21 +1223,21 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
         out.emitImport("_exit");
         out.emitLabel("program_start");
 
-        if (emitBootLoaderMarker)
+        if (params.targetPlatform == COCO_BASIC && emitBootLoaderMarker)
             out.ins("FCC", "\"OS\"", "marker for CoCo DECB DOS command");
     }
 
-    if (false || mainFunctionDef != NULL)
+    if (mainFunctionDef != NULL)
     {
         // Start the program by initializing the global variables, then
         // jumping to the main() function's label.
 
-        if (targetPlatform == OS9)
+        if (params.targetPlatform == OS9)
         {
             // OS-9 launches a process by passing it the start and end addresses of
             // its data segment in U and Y respectively. The OS9PREP transfers U (the start)
-            // to Y because CMOC uses U to point to the stack frame. Every reference
-            // to a writable global variable under OS-9 and CMOC thus has the form FOO,Y.
+            // to Y because CMOC uses U to point to the current C function's stack frame.
+            // Every reference to a writable global variable under OS-9 and CMOC thus has the form FOO,Y.
             // Variable FOO must have been declared with an RMB directive in a section
             // that starts with ORG 0. This way, FOO represents an offset from the
             // start of the data segment of the current process.
@@ -1022,18 +1252,24 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
             out.ins("PSHS", "X,B,A", "argc, argv for main()");
         }
         else
+        {
+            if (initialStackRegValue >= 0 && initialStackRegValue <= 0xFFFF)
+                out.ins("LDS", "#" + wordToString(uint16_t(initialStackRegValue), true));
             out.ins("LDD", "#-" + wordToString(stackSpace, false), "stack space in bytes");
+        }
 
         out.ins("LBSR", "INILIB", "initialize standard library and global variables");  // inits INISTK, for exit()
         if (mainFunctionDef != NULL)
         {
             out.ins("LBSR", mainFunctionDef->getLabel(), "call main()");
 
-            if (targetPlatform == OS9)
+            out.emitLabel("main_return_address");  // useful when determining the call stack
+
+            if (params.targetPlatform == OS9)
                 out.ins("LEAS", "4,S", "discard argc, argv");
         }
 
-        if (targetPlatform != VECTREX)
+        if (params.targetPlatform != VECTREX)
         {
             if (mainFunctionDef == NULL)
             {
@@ -1047,6 +1283,13 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
 
     if (needStartSection)
     {
+        out.endSection();
+    }
+
+    if (mainFunctionDef != NULL && params.targetPlatform == OS9 && extraStackSpace != 0)
+    {
+        out.startSection("__os9");
+        out.emitInlineAssembly("stack\tEQU\t" + wordToString(extraStackSpace) + "\t""extra stack space");
         out.endSection();
     }
 
@@ -1068,7 +1311,7 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
                             assert(!decl->getLabel().empty());
                             out.emitImport(decl->getLabel().c_str());
                         }
-                        else if (!decl->isStatic)
+                        else if (!decl->hasStaticKeyword)
                         {
                             assert(!decl->getLabel().empty());
                             out.emitExport(decl->getLabel().c_str());
@@ -1081,51 +1324,83 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
     // Generate code for each function that is called at least once
     // or has its address taken at least once (see calls to FunctionDef::setCalled()).
 
-    set<string> emittedFunctions;
-    for (kt = functionDefs.begin(); kt != functionDefs.end(); kt++)
+    if (definitionList)
     {
-        const FunctionDef *fd = kt->second;
-        if (fd->getBody() == NULL)
+        // Import label of each non-static function prototype.
+        for (auto it : functionDefs)
         {
-            // Function prototype, so import its label.
-            if (!fd->hasInternalLinkage())
+            const FunctionDef *fd = it.second;
+            if (fd->getBody() == NULL && !fd->hasInternalLinkage())
                 out.emitImport(fd->getLabel());
-            continue;
         }
 
-        bool emit = fd->isCalled() || !fd->hasInternalLinkage();
+        set<string> emittedFunctions;
 
-        if (emit)
+        // This iterator will point to the first AssemblerStmt in definitionList
+        // that precedes by NO FunctionDef.
+        vector<Tree *>::const_iterator postFuncAsmIter = definitionList->end();
+
+        for (vector<Tree *>::const_iterator it = definitionList->begin(); it != definitionList->end(); ++it)
         {
-            if (!fd->hasInternalLinkage())
-                out.emitExport(fd->getLabel());
-            if (!fd->emitCode(out, false))
-                errormsg("failed to emit code for function %s()", fd->getId().c_str());
-            emittedFunctions.insert(fd->getId());  // remember that this func has been emitted
-        }
-    }
-    // Second pass in case some inline assembly has referred to a C function.
-    for (kt = functionDefs.begin(); kt != functionDefs.end(); kt++)
-    {
-        const FunctionDef *fd = kt->second;
-        if (fd->getBody() == NULL)
-            continue;
+            if (const FunctionDef *fd = dynamic_cast<const FunctionDef *>(*it))
+            {
+                postFuncAsmIter = definitionList->end();
 
-        if (fd->isCalled() && emittedFunctions.find(fd->getId()) == emittedFunctions.end())
-        {
-            if (!fd->hasInternalLinkage())
-                out.emitExport(fd->getLabel());
-            if (!fd->emitCode(out, false))
-                errormsg("failed to emit code for function %s() in 2nd pass", fd->getId().c_str());
-            emittedFunctions.insert(fd->getId());  // remember that this func has been emitted
+                if (fd->getBody() == NULL)
+                    continue;
+
+                bool emit = fd->isCalled() || !fd->hasInternalLinkage();
+
+                if (emit)
+                {
+                    if (!emitPrecedingVerbatimAssemblyBlocks(out, it))
+                        errormsg("failed to emit assembler statements that precede function %s()", fd->getId().c_str());
+
+                    if (!fd->hasInternalLinkage())
+                        out.emitExport(fd->getLabel());
+                    if (!fd->emitCode(out, false))
+                        errormsg("failed to emit code for function %s()", fd->getId().c_str());
+                    emittedFunctions.insert(fd->getId());  // remember that this func has been emitted
+                }
+            }
+            else if (dynamic_cast<const AssemblerStmt *>(*it))
+                postFuncAsmIter = it;
         }
+
+        // Second pass in case some inline assembly has referred to a C function.
+        // This means that functions are not necessarily emitted in the order in which they are defined.
+
+        for (vector<Tree *>::const_iterator it = definitionList->begin(); it != definitionList->end(); ++it)
+        {
+            if (const FunctionDef *fd = dynamic_cast<const FunctionDef *>(*it))
+            {
+                if (fd->getBody() == NULL)
+                    continue;
+
+                if (fd->isCalled() && emittedFunctions.find(fd->getId()) == emittedFunctions.end())
+                {
+                    if (!emitPrecedingVerbatimAssemblyBlocks(out, it))
+                        errormsg("failed to emit assembler statements that precede function %s()", fd->getId().c_str());
+
+                    if (!fd->hasInternalLinkage())
+                        out.emitExport(fd->getLabel());
+                    if (!fd->emitCode(out, false))
+                        errormsg("failed to emit code for function %s() in 2nd pass", fd->getId().c_str());
+                    emittedFunctions.insert(fd->getId());  // remember that this func has been emitted
+                }
+            }
+        }
+
+        // Emit the AssemblerStmts that precede no FunctionDefs, if any.
+        if (!emitAssemblerStmts(out, postFuncAsmIter, definitionList->end()))
+            errormsg("failed to emit assembler statements at end of translation unit");
     }
 
     // Issue a warning for uncalled static functions.
     for (kt = functionDefs.begin(); kt != functionDefs.end(); kt++)
     {
         const FunctionDef *fd = kt->second;
-        if (fd->getBody() && !fd->isCalled() && fd->hasInternalLinkage())
+        if (params.isUncalledStaticFunctionWarningEnabled && fd->getBody() && !fd->isCalled() && fd->hasInternalLinkage())
             fd->warnmsg("static function %s() is not called", fd->getId().c_str());
     }
 
@@ -1134,18 +1409,8 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
     if (mainFunctionDef != NULL)
     {
         out.startSection("initgl_start");
-
-        // Initial program break, for use by sbrk().
-        // INITGL is placed just before or after the break.
-        // If #pragma exec_once was given, then after INITGL has been executed,
-        // its memory can be made available to sbrk().
-        //
-        if (isProgramExecutableOnlyOnce)
-            emitProgramEnd(out);
-
         out.emitExport("INITGL");  // called by INILIB
         out.emitLabel("INITGL");
-
         out.endSection();
     }
 
@@ -1162,7 +1427,9 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
         {
             Declaration *decl = *jt;
             assert(decl);
-            if (! decl->isArrayWithOnlyNumericalLiteralInitValues() && ! decl->isStructWithOnlyNumericalLiteralInitValues())
+            if (!decl->initializationExpr)
+                continue;
+            if (!decl->initializationExpr->isStaticallyInitializable(*decl->getTypeDesc()))
             {
                 if (!decl->emitCode(out, false))
                     errormsg("failed to emit code for declaration of %s", decl->getVariableId().c_str());
@@ -1226,17 +1493,17 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
         out.emitLabel("dword_constants_end");
     }
 
-    // Generate global variables.
-    //
     out.emitSeparatorComment();
     out.emitComment("READ-ONLY GLOBAL VARIABLES");
 
     if (!emitGlobalVariables(out, true, true))
         return;
+    if (!emitLocalStaticVariables(out, true, true))
+        return;
 
     out.endSection();
 
-    // If no data section, then emit the writable globals after the code.
+    // If no separate data section, then emit the writable globals after the code.
     // In this case, nothing other than INITGL should come after
     // the 'program_end' label, because sbrk() uses the memory
     // that starts at that label.
@@ -1249,18 +1516,15 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
     if (mainFunctionDef != NULL)
     {
         out.startSection("initgl_end");
-
         out.ins("RTS", "", "end of global variable initialization");
-
-        if (! isProgramExecutableOnlyOnce)
-            emitProgramEnd(out);
-
         out.endSection();
+
+        emitProgramEnd(out);
     }
 
     // Here, we are not in any section.
 
-    if (dataAddress != 0xFFFF)
+    if (dataAddress != 0xFFFF)  // if data section is separate from the code/read-only section
     {
         // Start of data section, if separate from code.
         //
@@ -1268,7 +1532,12 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
         out.emitComment("WRITABLE DATA SECTION");
         emitWritableGlobals(out);
     }
+}
 
+
+void
+TranslationUnit::finishEmittingAssembler(ASMText &out)
+{
     // Import all needed utility routines.
     //
     out.emitSeparatorComment();
@@ -1280,6 +1549,60 @@ TranslationUnit::emitAssembler(ASMText &out, uint16_t dataAddress, uint16_t stac
     out.emitSeparatorComment();
 
     out.emitEnd();
+}
+
+
+// it: Must refer to a FunctionDef pointer in the definitionList sequence.
+// Emits code for the AssemblerStmts that precedes 'it' in definitionList
+// but after any FunctionDef that may precede 'it'.
+// Example: asm { clra }  void f() {}  asm { nop }  asm { rts }  void g() {}
+//          In this case, if 'it' designates g(), then nop and rts are emitted,
+//          but not clra, because the search backwards stops at f().
+//
+CodeStatus
+TranslationUnit::emitPrecedingVerbatimAssemblyBlocks(ASMText &out,
+                                                     vector<Tree *>::const_iterator it)
+{
+    if (definitionList == NULL)
+        return true;
+
+    assert(dynamic_cast<const FunctionDef *>(*it));
+
+    // Iterate backwards as long as AssemblerStmt are found before 'it',
+    // but stop at the function that precedes 'it'.
+    vector<Tree *>::const_iterator jt;
+    for (jt = it; jt != definitionList->begin(); )
+    {
+        --jt;
+        if (dynamic_cast<const FunctionDef *>(*jt))
+        {
+            ++jt;
+            break;
+        }
+    }
+
+    return emitAssemblerStmts(out, jt, it);
+}
+
+
+// Emits code for each AssemblerStmt found in the [begin, end) range, in order of appearance.
+// The AssemblerStmts are allowed to refer to global C variables.
+//
+CodeStatus
+TranslationUnit::emitAssemblerStmts(ASMText &out,
+                                    vector<Tree *>::const_iterator begin,
+                                    vector<Tree *>::const_iterator end)
+{
+    // Allow the inline assembly to refer to global variables.
+    pushScope(&getGlobalScope());  // const_cast should be removed...
+
+    for (auto it = begin; it != end; ++it)
+        if (const AssemblerStmt *as = dynamic_cast<const AssemblerStmt *>(*it))
+            if (!as->emitCode(out, false))
+                return false;
+
+    popScope();
+    return true;
 }
 
 
@@ -1309,12 +1632,17 @@ TranslationUnit::resolveVectrexMusicAddress(const string &symbol)
 }
 
 
+// Emits the program_end label in an assembler section also called program_end.
+// This section name is used by createLinkScript().
+//
 void
 TranslationUnit::emitProgramEnd(ASMText &out) const
 {
     out.emitSeparatorComment();
+    out.startSection("program_end");
     out.emitExport("program_end");  // needed by INILIB
     out.emitLabel("program_end");
+    out.endSection();
 }
 
 
@@ -1325,18 +1653,25 @@ TranslationUnit::emitWritableGlobals(ASMText &out) const
 {
     out.startSection("rwdata");
 
-    out.emitComment("Globals with static initializers");
+    out.emitComment("Statically-initialized global variables");
     if (!emitGlobalVariables(out, false, true))
+        return false;
+    out.emitComment("Statically-initialized local static variables");
+    if (!emitLocalStaticVariables(out, false, true))
         return false;
 
     out.endSection();
 
     out.startSection("bss");
 
-    out.emitComment("Uninitialized globals");
     out.emitLabel("bss_start");
+    out.emitComment("Uninitialized global variables");
     if (!emitGlobalVariables(out, false, false))
         return false;
+    out.emitComment("Uninitialized local static variables");
+    if (!emitLocalStaticVariables(out, false, false))
+        return false;
+
     out.emitLabel("bss_end");
 
     out.endSection();
@@ -1361,48 +1696,58 @@ TranslationUnit::emitGlobalVariables(ASMText &out, bool readOnlySection, bool wi
     {
         Declaration *decl = *jt;
         assert(decl);
-        uint16_t size = 0;
-        if (!decl->getVariableSizeInBytes(size))
-        {
+        if (! decl->emitGlobalVariables(out, readOnlySection, withStaticInitializer))
             success = false;
-            continue;
-        }
-
-        if (decl->isReadOnly() != readOnlySection)
-            continue;
-
-        if (decl->isArrayWithOnlyNumericalLiteralInitValues())
-        {
-            if (withStaticInitializer)  // if selecting FCB/FDB globals
-                decl->emitStaticArrayInitializer(out);
-        }
-        else if (readOnlySection)
-        {
-            if (withStaticInitializer)
-            {
-                out.emitLabel(decl->getLabel(), decl->getVariableId() + ": " + decl->getTypeDesc()->toString());
-                decl->emitStaticValues(out, decl->initializationExpr, decl->getTypeDesc());
-            }
-        }
-        else if (!withStaticInitializer)  // if selecting RMB globals
-        {
-            // We do not emit an FCB or FDB because these globals are initialized
-            // at run-time by INITGL, so that they are re-initialized every time
-            // the program is run.
-            // This re-initialization does not happen for constant integer arrays,
-            // for space saving purposes.
-            //
-            out.emitLabel(decl->getLabel());
-            out.ins("RMB", wordToString(size), decl->getVariableId());
-        }
     }
+
 
     return success;
 }
 
 
+// Emits assembly directives that define compile-time initial values,
+// or run-time initialization code, for all the local static variables.
+//
+CodeStatus
+TranslationUnit::emitLocalStaticVariables(ASMText &out, bool readOnlySection, bool withStaticInitializer) const
+{
+    if (definitionList == NULL)
+        return true;
+
+    class EmitLocalStaticVariableFunctor : public Scope::DeclarationFunctor
+    {
+        ASMText &out;
+        bool readOnlySection;
+        bool withStaticInitializer;
+    public:
+        EmitLocalStaticVariableFunctor(ASMText &_out, bool _readOnlySection, bool _withStaticInitializer)
+            : out(_out), readOnlySection(_readOnlySection), withStaticInitializer(_withStaticInitializer) {}
+
+        virtual bool operator()(Declaration &decl) override
+        {
+            if (!decl.isLocalStatic())
+                return true;
+
+            return decl.emitGlobalVariables(out, readOnlySection, withStaticInitializer);
+        }
+
+        virtual ~EmitLocalStaticVariableFunctor() {}
+    } functor(out, readOnlySection, withStaticInitializer);
+
+    // Emit local static variables, which reside in the heap like globals.
+    for (vector<Tree *>::iterator it = definitionList->begin();
+                                    it != definitionList->end(); it++)
+        if (FunctionDef *fd = dynamic_cast<FunctionDef *>(*it))
+            if (! fd->getScope()->iterateDeclarations(functor, true))
+                return false;
+
+    return true;
+}
+
+
 TranslationUnit::~TranslationUnit()
 {
+    assert(theInstance != NULL);
     assert(scopeStack.size() == 0);
 
     // Scope tree must be destroyed after the TreeSequences in definitionList.
@@ -1416,7 +1761,6 @@ TranslationUnit::~TranslationUnit()
 void
 TranslationUnit::pushScope(Scope *scope)
 {
-    //cout << "# TU::pushScope(" << scope << ")\n";
     assert(scope != NULL);
     scopeStack.push_back(scope);
 }
@@ -1433,7 +1777,6 @@ void
 TranslationUnit::popScope()
 {
     assert(scopeStack.size() > 0);
-    //cout << "# TU::popScope: " << scopeStack.back() << "\n";
     scopeStack.pop_back();
 }
 
@@ -1563,7 +1906,10 @@ TranslationUnit::getEscapedStringLiteral(const string &stringLabel)
 string
 TranslationUnit::registerRealConstant(const RealConstantExpr &rce)
 {
-    vector<uint8_t> rep = rce.getRepresentation();  // length depends on single or double precision
+    const vector<uint8_t> rep = rce.getRepresentation();  // length depends on single or double precision
+    if (rep.size() == 0)
+        return string();  // constant cannot be represented
+
     std::map< std::vector<uint8_t>, std::string >::iterator it = realConstantValueToLabel.find(rep);
     if (it != realConstantValueToLabel.end())
         return it->second;
@@ -1578,7 +1924,7 @@ TranslationUnit::registerRealConstant(const RealConstantExpr &rce)
 string
 TranslationUnit::registerDWordConstant(const DWordConstantExpr &dwce)
 {
-    vector<uint8_t> rep = dwce.getRepresentation();
+    const vector<uint8_t> rep = dwce.getRepresentation();
     std::map< std::vector<uint8_t>, std::string >::iterator it = dwordConstantValueToLabel.find(rep);
     if (it != dwordConstantValueToLabel.end())
         return it->second;
@@ -1605,8 +1951,10 @@ TranslationUnit::getTypeSize(const TypeDesc &typeDesc) const
 
     if (typeDesc.type == ARRAY_TYPE)
     {
-        assert(typeDesc.numArrayElements != uint16_t(-1));
-        return typeDesc.numArrayElements * getTypeSize(*typeDesc.pointedTypeDesc);
+        assert(typeDesc.numArrayElements != TypeDesc::NO_DIMENSION);
+        size_t size = typeDesc.numArrayElements * (size_t) getTypeSize(*typeDesc.pointedTypeDesc);
+        assert(size <= INT16_MAX);
+        return int16_t(size);
     }
 
     return ::getTypeSize(typeDesc.type);
@@ -1658,20 +2006,35 @@ TranslationUnit::getNeededUtilitySubRoutines() const
 bool
 TranslationUnit::isRelocatabilitySupported() const
 {
-    return relocatabilitySupported;
+    return params.relocatabilitySupported;
 }
 
 
-// Processes #pragma directives that need to be processed right after parsing.
-//
-// Changes 'codeAddress' iff a '#pragma org' directive is seen.
-// codeAddressSetBySwitch: Indicates if the code address was set by a command-line argument.
-//
-// Changes 'codeLimitAddress' iff a '#pragma limit' directive is seen.
-// codeLimitAddressSetBySwitch: Indicates if the code limit address was set by a command-line argument.
-//
-// Changes 'dataAddress' iff a '#pragma data' directive is seen.
-//
+FramePointerOption
+TranslationUnit::getFramePointerOption() const
+{
+    return params.framePointerOption;
+}
+
+
+void
+TranslationUnit::processParseTimePragma(Pragma &pragma)
+{
+    bool processed = true;
+    CallConvention callConv = DEFAULT_CMOC_CALL_CONV;
+
+    if (pragma.isPushCallConvention(callConv))
+        pushCurrentDefaultCallConvention(callConv);
+    else if (pragma.isPopCallConvention())
+        popCurrentDefaultCallConvention();
+    else
+        processed = false;
+    
+    if (processed)
+        pragma.setProcessed();  // so that processPragmas() won't see it as invalid
+}
+
+
 void
 TranslationUnit::processPragmas(uint16_t &codeAddress, bool codeAddressSetBySwitch,
                                 uint16_t &codeLimitAddress, bool codeLimitAddressSetBySwitch,
@@ -1681,13 +2044,14 @@ TranslationUnit::processPragmas(uint16_t &codeAddress, bool codeAddressSetBySwit
 {
     if (! definitionList)
         return;
+
     for (vector<Tree *>::iterator it = definitionList->begin();
                                  it != definitionList->end(); ++it)
-        if (Pragma *pragma = dynamic_cast<Pragma *>(*it))
+        if (const Pragma *pragma = dynamic_cast<Pragma *>(*it))
         {
             if (pragma->isCodeOrg(codeAddress))  // if #pragma org ADDRESS
             {
-                if (targetPlatform == VECTREX)
+                if (params.targetPlatform == VECTREX)
                     pragma->errormsg("#pragma org is not permitted for Vectrex");
                 else if (compileOnly)
                     pragma->errormsg("#pragma org is not permitted with -c (use --org)");
@@ -1703,16 +2067,12 @@ TranslationUnit::processPragmas(uint16_t &codeAddress, bool codeAddressSetBySwit
             }
             else if (pragma->isDataOrg(dataAddress))  // if #pragma data ADDRESS
             {
-                if (targetPlatform == VECTREX)
+                if (params.targetPlatform == VECTREX)
                     pragma->errormsg("#pragma data is not permitted for Vectrex");
                 else if (compileOnly)
                     pragma->errormsg("#pragma data is not permitted with -c (use --data)");
                 else if (dataAddressSetBySwitch)
                     pragma->warnmsg("#pragma data and --data both used");
-            }
-            else if (pragma->isExecOnce())
-            {
-                isProgramExecutableOnlyOnce = true;  // see emitAssembler()
             }
             else if (pragma->isVxTitle(vxTitle))
             {
@@ -1731,40 +2091,26 @@ TranslationUnit::processPragmas(uint16_t &codeAddress, bool codeAddressSetBySwit
             }
             else if (pragma->isStackSpace(stackSpace))
             {
-                if (targetPlatform == VECTREX)
+                if (params.targetPlatform == VECTREX)
                     pragma->errormsg("#pragma stack_space is not permitted for Vectrex");
             }
-            else
-                pragma->errormsg("invalid pragma directive: %s", pragma->getDirective().c_str());
+            else if (! pragma->wasProcessed())
+                pragma->warnmsg("invalid pragma directive: %s", pragma->getDirective().c_str());
         }
-}
-
-
-void
-TranslationUnit::enableNullPointerChecking(bool enable)
-{
-    nullPointerCheckingEnabled = enable;
 }
 
 
 bool
 TranslationUnit::isNullPointerCheckingEnabled() const
 {
-    return nullPointerCheckingEnabled;
-}
-
-
-void
-TranslationUnit::enableStackOverflowChecking(bool enable)
-{
-    stackOverflowCheckingEnabled = enable;
+    return params.nullPointerCheckingEnabled;
 }
 
 
 bool
 TranslationUnit::isStackOverflowCheckingEnabled() const
 {
-    return stackOverflowCheckingEnabled;
+    return params.stackOverflowCheckingEnabled;
 }
 
 
@@ -1810,21 +2156,20 @@ TranslationUnit::createDeclarationSequence(DeclarationSpecifierList *dsl,
         //
         ds = new DeclarationSequence(td, enumeratorList);
     }
-    else if (!callToUndefinedFunctionAllowed && dsl->isExternDeclaration())
+    else if (!params.callToUndefinedFunctionAllowed && dsl->isExternDeclaration())
     {
         // Ignore the declarators in an 'extern' declaration because
         // separate compilation is not supported.
         if (! declarators || declarators->size() == 0)
             errormsg("extern declaration defines no names");
         else
-            for (vector<Declarator *>::iterator it = declarators->begin(); it != declarators->end(); ++it)
-                delete *it;
+            deleteVectorElements(*declarators);
         ds = NULL;
     }
     else
     {
         bool isEnumType = dsl->hasEnumeratorList();
-        ds = new DeclarationSequence(td, dsl->detachEnumeratorList());  // don't detach enumerator list from dsl yet
+        ds = new DeclarationSequence(td, dsl->detachEnumeratorList());
 
         bool undefClass = (td->type == CLASS_TYPE && getClassDef(td->className) == NULL);
 
@@ -1842,7 +2187,7 @@ TranslationUnit::createDeclarationSequence(DeclarationSpecifierList *dsl,
                 errormsg("enum with enumerated names is not supported in a function prototype's return type");
             }
 
-            ds->processDeclarator(d, *dsl);  // destroys the Declarator object; may need to check dsl's enumerator list
+            ds->processDeclarator(d, *dsl);  // destroys the Declarator object
         }
     }
 
@@ -1857,29 +2202,29 @@ TranslationUnit::createDeclarationSequence(DeclarationSpecifierList *dsl,
 void
 TranslationUnit::checkForEllipsisWithoutNamedArgument(const FormalParamList *formalParamList)
 {
-    if (formalParamList && formalParamList->endsWithEllipsis() && formalParamList->size() == 0)
+    if (formalParamList && formalParamList->endsWithEllipsis() && ! formalParamList->isEllipsisImplied() && formalParamList->size() == 0)
         errormsg("named argument is required before `...'");  // as in GCC
 }
 
 
 bool
-TranslationUnit::isCallToUndefinedFunctionAllowed() const
+TranslationUnit::areAllWarningMessagesInhibited() const
 {
-    return callToUndefinedFunctionAllowed;
+    return params.inhibitAllWarningMessages;
 }
 
 
 bool
 TranslationUnit::isWarningOnSignCompareEnabled() const
 {
-    return warnSignCompare;
+    return params.warnSignCompare;
 }
 
 
 bool
 TranslationUnit::isWarningOnPassingConstForFuncPtr() const
 {
-    return warnPassingConstForFuncPtr;
+    return params.warnPassingConstForFuncPtr;
 }
 
 
@@ -1888,9 +2233,9 @@ TranslationUnit::addPrerequisiteFilename(const char *filename)
 {
     if (filename[0] == '<')  // if preprocessor-generated filename, e.g., "<command-line>"
         return;
-    if (find(sourceFilenamesSeen.begin(), sourceFilenamesSeen.end(), filename) != sourceFilenamesSeen.end())
+    if (find(prerequisiteFilenamesSeen.begin(), prerequisiteFilenamesSeen.end(), filename) != prerequisiteFilenamesSeen.end())
         return;  // already seen
-    sourceFilenamesSeen.push_back(filename);
+    prerequisiteFilenamesSeen.push_back(filename);
 }
 
 
@@ -1900,7 +2245,7 @@ TranslationUnit::writePrerequisites(ostream &out,
                                     const string &outputFilename,
                                     const string &pkgdatadir) const
 {
-    if (sourceFilenamesSeen.size() == 0)
+    if (prerequisiteFilenamesSeen.size() == 0)  // if no files are depended on
         return;
 
     out << outputFilename;
@@ -1908,8 +2253,8 @@ TranslationUnit::writePrerequisites(ostream &out,
         out << ' ' << dependenciesFilename;
     out << " :";
 
-    for (vector<string>::const_iterator it = sourceFilenamesSeen.begin();
-                                       it != sourceFilenamesSeen.end(); ++it)
+    for (vector<string>::const_iterator it = prerequisiteFilenamesSeen.begin();
+                                       it != prerequisiteFilenamesSeen.end(); ++it)
     {
         const string &fn = *it;
         if (!strncmp(fn.c_str(), pkgdatadir.c_str(), pkgdatadir.length()))  // exclude system header files
@@ -1924,29 +2269,249 @@ TranslationUnit::writePrerequisites(ostream &out,
 bool
 TranslationUnit::warnOnConstIncorrect() const
 {
-    return isConstIncorrectWarningEnabled;
+    return params.isConstIncorrectWarningEnabled;
+}
+
+
+void
+TranslationUnit::warnIfFloatUnsupported()
+{
+    if (warnedAboutUnsupportedFloats)
+        return;
+    if (!isFloatingPointSupported())
+        warnmsg("floating-point arithmetic is not supported on the targeted platform");
+    warnedAboutUnsupportedFloats = true;
 }
 
 
 bool
 TranslationUnit::warnOnBinaryOpGivingByte() const
 {
-    return isBinaryOpGivingByteWarningEnabled;
+    return params.isBinaryOpGivingByteWarningEnabled;
 }
 
 
 bool
 TranslationUnit::warnOnLocalVariableHidingAnother() const
 {
-    return isLocalVariableHidingAnotherWarningEnabled;
+    return params.isLocalVariableHidingAnotherWarningEnabled;
+}
+
+
+bool
+TranslationUnit::warnOnNonLiteralPrintfFormat() const
+{
+    return params.isNonLiteralPrintfFormatWarningEnabled;
+}
+
+
+bool
+TranslationUnit::warnOnUncalledStaticFunction() const
+{
+    return params.isUncalledStaticFunctionWarningEnabled;
+}
+
+
+bool
+TranslationUnit::warnOnMissingFieldInitializers() const
+{
+    return params.isMissingFieldInitializersWarningEnabled;
+}
+
+
+bool
+TranslationUnit::warnAboutInlineAsmArrayIndexes() const
+{
+    return params.inlineAsmArrayIndexesWarningEnabled;
 }
 
 
 void
-TranslationUnit::warnAboutVolatile()
+TranslationUnit::enableVolatileWarning()
 {
     if (warnedAboutVolatile)
         return;
     warnmsg("the `volatile' keyword is not supported by this compiler");
     warnedAboutVolatile = true;
+}
+
+
+bool
+TranslationUnit::warnIfForConditionComparesDifferentSizes() const
+{
+    return params.forConditionComparesDifferentSizesWarningEnabled;
+}
+
+
+bool
+TranslationUnit::warnArrayWithUnknownFirstDimension() const
+{
+    return params.warnArrayWithUnknownFirstDimension;
+}
+
+
+bool
+TranslationUnit::warnArraySizeZero() const
+{
+    return params.warnArraySizeZero;
+}
+
+
+bool
+TranslationUnit::warnTooManyElementsInInitializer() const
+{
+    return params.warnTooManyElementsInInitializer;
+}
+
+
+bool
+TranslationUnit::warnShiftAlwaysZero() const
+{
+    return params.warnShiftAlwaysZero;
+}
+
+
+bool
+TranslationUnit::warnLabelOnDeclaration() const
+{
+    return params.warnLabelOnDeclaration;
+}
+
+
+bool
+TranslationUnit::warnAssignmentInCondition() const
+{
+    return params.warnAssignmentInCondition;
+}
+
+
+bool
+TranslationUnit::onlyWarningOnWordSizedReturnTypeMismatch() const
+{
+    return params.onlyWarningOnWordSizedReturnTypeMismatch;
+}
+
+
+bool
+TranslationUnit::isFloatingPointSupported() const
+{
+    return    params.floatingPointLibrary == FloatingPointLibrary::NATIVE_LIB
+           || params.floatingPointLibrary == FloatingPointLibrary::MC6839_LIB
+           || params.targetPlatform == COCO_BASIC
+           || params.targetPlatform == DRAGON;
+}
+
+
+bool
+TranslationUnit::isProgramMultiThreaded() const
+{
+    return true;
+}
+
+
+string
+removeLeadingDigits(const string &s)
+{
+    string result;
+    result.reserve(s.length());
+    bool inPrefix = true;
+    for (char c : s)
+    {
+        if (!isdigit(c))
+            inPrefix = false;
+        if (!inPrefix)
+            result += c;
+    }
+    return result;
+}
+
+
+static const char *
+getJSONBool(bool value)
+{
+    return value ? "true" : "false";
+}
+
+
+static bool
+emitTypeDescIR(ostream &irFile, const TypeDesc &td)
+{
+    if (td.type == SIZELESS_TYPE)
+        return false;  // unexpected
+    irFile << "{\n";
+
+    const char *type = NULL;
+    if (td.type == VOID_TYPE)
+        type = "void";
+    else if (td.type == POINTER_TYPE)
+        type = "pointer";
+    else if (td.type == ARRAY_TYPE)
+        type = "array";
+    else if (td.type == CLASS_TYPE)
+        type = "struct";
+    else if (td.type == FUNCTION_TYPE)
+        type = "function";
+    else if (td.isIntegral())
+        type = "integral";
+    else if (td.isReal())
+        type = "float";
+    else
+        return false;
+    irFile << "\"type\": \"" << type << "\"";
+
+    if (td.isIntegral())
+        irFile << ",\n\"signed\": " << getJSONBool(td.isSigned) << "\n";
+    else if (td.type != VOID_TYPE)
+        return false;  // TODO: dump addition info about this type
+
+    if (td.type != VOID_TYPE)
+        irFile << ",\n\"size\": " << TranslationUnit::instance().getTypeSize(td) << "\n";
+    irFile << "\n}";
+    return true;
+}
+
+
+static bool
+emitTreeIR(ostream &irFile, const Tree *tree)
+{
+    if (const FunctionDef *fd = dynamic_cast<const FunctionDef *>(tree))
+    {
+        irFile << ",\n\"id\": \"" << fd->getId() << "\"\n";
+        irFile << ",\n\"returnType\": ";
+        if (!emitTypeDescIR(irFile, *fd->getTypeDesc()))
+            return false;
+        irFile << "\n";
+    }
+    // TODO: Support other tree types.
+    return true;
+}
+
+
+bool
+TranslationUnit::emitInternalRepresentation(ostream &irFile)
+{
+    irFile << "{\n";
+    irFile << "\"cmocVersion\": \"" VERSION "\",\n";
+    irFile << "\"definitionList\": [\n";
+
+    if (definitionList)
+    {
+        const char *punct = "";
+        for (const Tree *tree : *definitionList)
+        {
+            if (tree)
+            {
+                irFile << punct << "{\n";
+                irFile << "\"type\": \"" << removeLeadingDigits(typeid(*tree).name()) << "\"";
+                if (!emitTreeIR(irFile, tree))
+                    return false;  // stop on failure
+                irFile << "}";
+                punct = ",\n";
+            }
+        }
+    }
+
+    irFile << "]\n";  // definitionList
+    irFile << "}\n";  // main JSON object
+    return true;
 }

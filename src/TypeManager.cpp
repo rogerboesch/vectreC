@@ -1,7 +1,5 @@
-/*  $Id: TypeManager.cpp,v 1.54 2020/04/05 02:57:21 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2016 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2026 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,7 +17,6 @@
 
 #include "TypeManager.h"
 
-#include "util.h"
 #include "Declarator.h"
 #include "WordConstantExpr.h"
 #include "ClassDef.h"
@@ -58,7 +55,7 @@ TypeManager::createBasicTypes()
 
 
 void
-TypeManager::createInternalStructs(Scope &globalScope, TargetPlatform targetPlatform)
+TypeManager::createInternalStructs(Scope &globalScope, TargetPlatform targetPlatform, FloatingPointLibrary floatLib)
 {
     // Internal structs that represent 'float', 'double', 'long' and 'unsigned long', e.g.,
     // struct _Float { unsigned char bytes[N]; };
@@ -69,8 +66,8 @@ TypeManager::createInternalStructs(Scope &globalScope, TargetPlatform targetPlat
     //
     createStructWithPairOfWords(globalScope, "_Long",   true);
     createStructWithPairOfWords(globalScope, "_ULong", false);
-    createStructWithArrayOfBytes(globalScope, "_Float",  getFloatingPointFormatSize(targetPlatform, false));
-    createStructWithArrayOfBytes(globalScope, "_Double", getFloatingPointFormatSize(targetPlatform, true));
+    createStructWithArrayOfBytes(globalScope, "_Float",  getFloatingPointFormat(targetPlatform, floatLib, false).sizeInBytes);
+    createStructWithArrayOfBytes(globalScope, "_Double", getFloatingPointFormat(targetPlatform, floatLib, true).sizeInBytes);
 }
 
 
@@ -81,7 +78,7 @@ TypeManager::createStructWithArrayOfBytes(Scope &globalScope, const char *struct
     ClassDef *theStruct = new ClassDef();
     theStruct->setName(structName);  // use same name as TypeDesc
     const TypeDesc *memberTypeDesc = getIntType(BYTE_TYPE, false);
-    Declarator *memberDeclarator = new Declarator("bytes", "<internal>", 0);  // no source filename and line no
+    Declarator *memberDeclarator = new Declarator("bytes", 0, "<internal>", 0);  // no source filename and line no
     memberDeclarator->addArraySizeExpr(new WordConstantExpr(numBytesInArray, true, false));  // make the declarator an array
     assert(memberDeclarator->isArray());
     ClassDef::ClassMember *structMember = new ClassDef::ClassMember(memberTypeDesc, memberDeclarator);  // this appends 'unsigned char[]' to types[]
@@ -100,8 +97,8 @@ TypeManager::createStructWithPairOfWords(Scope &globalScope, const char *structN
     const TypeDesc *highWordTypeDesc = getIntType(WORD_TYPE, isHighWordSigned);
     const TypeDesc *lowWordTypeDesc  = getIntType(WORD_TYPE, false);
 
-    Declarator *highMemberDeclarator = new Declarator("hi", "<internal>", 0);  // no source filename and line no
-    Declarator *lowMemberDeclarator  = new Declarator("lo", "<internal>", 0);
+    Declarator *highMemberDeclarator = new Declarator("hi", 0, "<internal>", 0);  // no source filename and line no
+    Declarator *lowMemberDeclarator  = new Declarator("lo", 0, "<internal>", 0);
 
     ClassDef::ClassMember *highStructMember = new ClassDef::ClassMember(highWordTypeDesc, highMemberDeclarator);
     ClassDef::ClassMember *lowStructMember  = new ClassDef::ClassMember(lowWordTypeDesc,  lowMemberDeclarator);
@@ -116,8 +113,7 @@ TypeManager::createStructWithPairOfWords(Scope &globalScope, const char *structN
 
 TypeManager::~TypeManager()
 {
-    for (vector<TypeDesc *>::iterator it = types.begin(); it != types.end(); ++it)
-        delete *it;
+    deleteVectorElements(types);
 
     // Destroy the Enumerator objects.
     for (EnumeratorList::iterator it = enumerators.begin(); it != enumerators.end(); ++it)
@@ -214,6 +210,16 @@ TypeManager::getPointerTo(const TypeDesc *typeDesc, const TypeQualifierBitFieldV
 }
 
 
+const TypeDesc *
+TypeManager::getPointerTo(const TypeDesc *typeDesc, size_t pointerLevel) const
+{
+    assert(pointerLevel < 100);  // sanity check
+    for (size_t i = 0; i < pointerLevel; ++i)
+        typeDesc = getPointerTo(typeDesc);
+    return typeDesc;
+}
+
+
 // Returns a type that is equivalent to 'typeDesc' but whose isConst field is true.
 //
 const TypeDesc *
@@ -248,16 +254,9 @@ TypeManager::getPointerToIntegral(BasicType byteOrWordType, bool isSigned) const
 
 
 const TypeDesc *
-TypeManager::getArrayOfChar() const
-{
-    return getArrayOf(getIntType(BYTE_TYPE, true), 1);
-}
-
-
-const TypeDesc *
 TypeManager::getArrayOfConstChar() const
 {
-    return getArrayOf(getConst(getIntType(BYTE_TYPE, true)), 1);
+    return getArrayOf(getConst(getIntType(BYTE_TYPE, TranslationUnit::instance().isCharSignedByDefault())), 1);
 }
 
 
@@ -286,7 +285,9 @@ TypeManager::getArrayOf(const TypeDesc *pointedTypeDesc, size_t numArrayDimensio
         {
             const TypeDesc *td = *it;
             assert(td && td->isValid());
-            if (td->type == ARRAY_TYPE && td->pointedTypeDesc == pointedTypeDesc && td->numArrayElements == uint16_t(-1))
+            if (td->type == ARRAY_TYPE
+                            && td->pointedTypeDesc == pointedTypeDesc
+                            && td->numArrayElements == TypeDesc::NO_DIMENSION)
                 return td;
         }
 
@@ -365,7 +366,7 @@ const TypeDesc *
 TypeManager::getFunctionPointerType(const FunctionDef &fd) const
 {
     assert(fd.getFormalParamList());
-    return getFunctionPointerType(fd.getTypeDesc(), *fd.getFormalParamList(), fd.isInterruptServiceRoutine(), fd.isFunctionReceivingFirstParamInReg());
+    return getFunctionPointerType(fd.getTypeDesc(), *fd.getFormalParamList(), fd.isInterruptServiceRoutine(), fd.getCallConvention());
 }
 
 
@@ -376,7 +377,7 @@ const TypeDesc *
 TypeManager::findFunctionPointerType(const TypeDesc *returnTypeDesc,
                                      const FormalParamList &params,
                                      bool isISR,
-                                     bool receivesFirstParamInReg) const
+                                     CallConvention callConvention) const
 {
     for (vector<TypeDesc *>::const_iterator it = types.begin(); it != types.end(); ++it)
     {
@@ -387,7 +388,7 @@ TypeManager::findFunctionPointerType(const TypeDesc *returnTypeDesc,
         const TypeDesc *funcTD = td->pointedTypeDesc;
         if (funcTD->type != FUNCTION_TYPE)
             continue;
-        if (funcTD->isISR != isISR || funcTD->receivesFirstParamInReg != receivesFirstParamInReg || funcTD->ellipsis != params.endsWithEllipsis())
+        if (funcTD->isISR != isISR || funcTD->callConvention != callConvention || funcTD->ellipsis != params.endsWithEllipsis())
             continue;
         if (*funcTD->returnTypeDesc != *returnTypeDesc)
             continue;
@@ -414,17 +415,17 @@ TypeManager::findFunctionPointerType(const TypeDesc *returnTypeDesc,
 
 
 const TypeDesc *
-TypeManager::getFunctionPointerType(const TypeDesc *returnTypeDesc, const FormalParamList &params, bool isISR, bool receivesFirstParamInReg) const
+TypeManager::getFunctionPointerType(const TypeDesc *returnTypeDesc, const FormalParamList &params, bool isISR, CallConvention callConvention) const
 {
     //cout << "# TypeManager::getFunctionPointerType({" << returnTypeDesc->toString() << "}, ell=" << params.endsWithEllipsis() << ")\n";
 
     const TypeDesc *fixedReturnTypeDesc = getTypeWithoutCallingConventionFlags(returnTypeDesc);
 
-    const TypeDesc *preexistingTD = findFunctionPointerType(fixedReturnTypeDesc, params, isISR, receivesFirstParamInReg);
+    const TypeDesc *preexistingTD = findFunctionPointerType(fixedReturnTypeDesc, params, isISR, callConvention);
     if (preexistingTD)
         return preexistingTD;
 
-    TypeDesc *funcTD = new TypeDesc(fixedReturnTypeDesc, isISR, params.endsWithEllipsis(), receivesFirstParamInReg);
+    TypeDesc *funcTD = new TypeDesc(fixedReturnTypeDesc, isISR, params.endsWithEllipsis(), callConvention);
     assert(funcTD->type == FUNCTION_TYPE);
     types.push_back(funcTD);
 
@@ -460,20 +461,20 @@ TypeManager::getInterruptType(const TypeDesc *existingType) const
 
 
 const TypeDesc *
-TypeManager::getFPIRType(const TypeDesc *existingType) const
+TypeManager::getTypeWithCallConvention(const TypeDesc *existingType, CallConvention callConvention) const
 {
-    if (existingType->receivesFirstParamInReg)
+    if (existingType->callConvention == callConvention)
         return existingType;
 
     for (vector<TypeDesc *>::const_iterator it = types.begin(); it != types.end(); ++it)
     {
         const TypeDesc *td = *it;
-        if (((- TypeDesc::compare(*existingType, *td)) & 4) && td->receivesFirstParamInReg)
+        if (((- TypeDesc::compare(*existingType, *td)) & 4) && td->callConvention == callConvention)
             return td;
     }
 
     TypeDesc *newTD = new TypeDesc(*existingType);
-    newTD->receivesFirstParamInReg = true;
+    newTD->callConvention = callConvention;
     types.push_back(newTD);
     return newTD;
 }
@@ -482,20 +483,20 @@ TypeManager::getFPIRType(const TypeDesc *existingType) const
 const TypeDesc *
 TypeManager::getTypeWithoutCallingConventionFlags(const TypeDesc *existingType) const
 {
-    if (! existingType->isISR && ! existingType->receivesFirstParamInReg)
+    if (! existingType->isTypeWithCallingConventionFlags())
         return existingType;
 
     for (vector<TypeDesc *>::const_iterator it = types.begin(); it != types.end(); ++it)
     {
         const TypeDesc *td = *it;
         // If td has no calling convention flags and differs from existingType only by such flags, then td is it.
-        if (!td->isISR && !td->receivesFirstParamInReg && ((- TypeDesc::compare(*existingType, *td)) & (2 | 4)))
+        if (! td->isTypeWithCallingConventionFlags() && ((- TypeDesc::compare(*existingType, *td)) & (2 | 4)))
             return td;
     }
 
     TypeDesc *newTD = new TypeDesc(*existingType);
     newTD->isISR = false;
-    newTD->receivesFirstParamInReg = false;
+    newTD->callConvention = DEFAULT_CMOC_CALL_CONV;
     types.push_back(newTD);
     return newTD;
 }
@@ -503,7 +504,7 @@ TypeManager::getTypeWithoutCallingConventionFlags(const TypeDesc *existingType) 
 
 // Ends by calling delete on 'declarator'.
 //
-// Note: In the cast of a function pointer, 'declSpecTypeDef' is only the return type.
+// Note: In the case of a function pointer, 'declSpecTypeDef' is only the return type.
 //       For example, with typedef int (*f)(), declSpecTypeDef will represent int,
 //       and declarator->isFunctionPointer() will be true.
 //
@@ -523,6 +524,8 @@ TypeManager::addTypeDef(const TypeDesc *declSpecTypeDef, Declarator *declarator)
         errormsg("cannot redefine typedef `%s'", id.c_str());
     else if (declSpecTypeDef->isInterruptServiceRoutine() && ! declarator->isFunctionPointer())
         errormsg("modifier `interrupt' cannot be used on typedef");
+    else if (declarator->getInitExpr() != NULL)
+        errormsg("typedef `%s' is initialized", id.c_str());
     else
     {
         if (! declarator->isFunctionPointer() && ! declarator->isArrayOfFunctionPointers() && declarator->getFormalParamList() != NULL)
@@ -545,14 +548,32 @@ TypeManager::addTypeDef(const TypeDesc *declSpecTypeDef, Declarator *declarator)
             specificTypeDesc = getFunctionPointerType(specificTypeDesc,
                                                       *declarator->getFormalParamList(),
                                                       specificTypeDesc->isInterruptServiceRoutine(),
-                                                      specificTypeDesc->receivesFirstParamInReg);
+                                                      specificTypeDesc->callConvention);
 
         // Now, check for array dimensions, e.g., a[5][7].
         vector<uint16_t> arrayDimensions;
         if (declarator->computeArrayDimensions(arrayDimensions, false, NULL))  // arrayDimensions will be empty if non-array
         {
             if (arrayDimensions.size() > 0)
+            {
+                // Detect negative array dimension. Helps implement static_assert().
+                int16_t product = computeDimensionsProduct(arrayDimensions, 0, 1);
+                if (product < 0)
+                    errormsg("invalid size for array typedef `%s'", id.c_str());
+
                 specificTypeDesc = getSizedArrayOf(specificTypeDesc, arrayDimensions, arrayDimensions.size() - 1);
+            }
+            else if (declarator->isFunctionPointer())
+            {
+                // Apply the current call conv. to the function type.
+                const TypeDesc *funcTypeDesc = specificTypeDesc->getFinalPointerType(); // function type pointed to
+                if (funcTypeDesc->getCallConvention() == DEFAULT_CMOC_CALL_CONV)  // if no explicit call conv. keyword on typedef
+                {
+                    // Construct the same function pointer type, but with the current default call conv. on it.
+                    CallConvention defaultConv = TranslationUnit::instance().getCurrentDefaultCallConvention();
+                    specificTypeDesc = getPointerTo(getTypeWithCallConvention(funcTypeDesc, defaultConv));
+                }
+            }
 
             typeDefs[id] = specificTypeDesc;
             success = true;
@@ -731,18 +752,47 @@ TypeManager::dumpTypes(std::ostream &out) const
 }
 
 
-size_t
-TypeManager::getFloatingPointFormatSize(TargetPlatform platform, bool isDoublePrecision)
+TypeManager::FloatingPointFormat
+TypeManager::getFloatingPointFormat(TargetPlatform platform, FloatingPointLibrary floatLib, bool isDoublePrecision)
 {
-    switch (platform)
+    FloatingPointFormat fmt;
+
+    if (floatLib == FloatingPointLibrary::MC6839_LIB)
     {
-    case COCO_BASIC:
-        return 5;
-    case OS9:
-        return isDoublePrecision ? 8 : 4;
-    default:
-        return 0;
+        fmt.minExponent = isDoublePrecision ? -1022 : -126;
+        fmt.maxExponent = isDoublePrecision ? +1024 : +128;
+        fmt.exponentBias = isDoublePrecision ? 1023 : 127;
     }
+    else
+    {
+        fmt.minExponent = -127;
+        fmt.maxExponent = +128;
+        fmt.exponentBias = 128;
+    }
+
+    if (floatLib == FloatingPointLibrary::MC6839_LIB)
+        fmt.sizeInBytes = isDoublePrecision ? 8 : 4;
+    else if (floatLib == FloatingPointLibrary::NATIVE_LIB)
+        fmt.sizeInBytes = 5;
+    else
+    {
+        switch (platform)
+        {
+        case COCO_BASIC:
+        case DRAGON:
+            fmt.sizeInBytes = 5;
+            break;
+        case OS9:
+            fmt.sizeInBytes = isDoublePrecision ? 8 : 4;
+            break;
+        case USIM:
+        case VOID_TARGET:
+        default:
+            fmt.sizeInBytes = 4;  // avoid zero-length array in struct _Float
+        }
+    }
+
+    return fmt;
 }
 
 

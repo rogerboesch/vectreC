@@ -10,6 +10,10 @@ my $generateCoCoBinary = 0;
 my $testCCompilability = 0;
 my $hexLoadOffset = 0;  # passed to usim
 my $optimLevel = 2;
+my $omitFramePointer = 0;
+my $noOmitFramePointer = 0;
+my $isCharUnsigned = 0;
+my $noRelocate = 0;
 
 
 my @testCaseList =
@@ -38,6 +42,8 @@ program => q`
         printf("A%sB\n", "\n");
         putstr("C\nD\n", 4);
         putchar('\n');
+        assert_ne(strchr("ABC\aDEF", (char) 7), 0);
+        assert_eq('\a', 7);
         return 0;
     }
     `,
@@ -46,21 +52,83 @@ expected => "Hello, world.\nA\nB\nC\nD\n\n"
 
 
 {
+title => q{vprintf()},
+program => q`
+    void p(const char *fmt, ...)
+    {
+        va_list ap;
+        va_start(ap, fmt);
+        vprintf(fmt, ap);
+        va_end(ap);
+    }
+    int main()
+    {
+        p("Hello, world.\n");
+        p("A%sB\n", "\n");
+        p("%c\n%c\n", 'C', 'D');
+        p("%d-%d=%d\n", 100, 25, 75);
+        assert_ne(strchr("ABC\aDEF", (char) 7), 0);
+        assert_eq('\a', 7);
+        return 0;
+    }
+    `,
+expected => "Hello, world.\nA\nB\nC\nD\n100-25=75\n"
+},
+
+
+{
+title => q{vsprintf()},
+program => q`
+    void p(char *dest, const char *fmt, ...)
+    {
+        va_list ap;
+        va_start(ap, fmt);
+        vsprintf(dest, fmt, ap);
+        va_end(ap);
+    }
+    int main()
+    {
+        char buf[256];
+        p(buf, "Hello, world.\n");
+        assert_eq(strcmp(buf, "Hello, world.\n"), 0);
+        p(buf, "A%sB\n", "\n");
+        assert_eq(strcmp(buf, "A\nB\n"), 0);
+        p(buf, "%c\n%c\n", 'C', 'D');
+        assert_eq(strcmp(buf, "C\nD\n"), 0);
+        p(buf, "%d-%d=%d\n", 100, 25, 75);
+        assert_eq(strcmp(buf, "100-25=75\n"), 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
 title => q{Conversions between byte and word},
 program => '
     byte f(byte x);
+    byte g(byte x);
     int main()
     {
         printf("%u\n", (byte) f((byte) 1000));
         assert_eq((byte) f((byte) 1000), 208);
         byte boolean = ((byte) f((byte) 1000)) == 208;
         assert(boolean);
+        boolean = ((byte) g((byte) 500)) == 0xDC;
+        assert(boolean);
         word oneByteUnsignedWord = 208;
         assert_eq(oneByteUnsignedWord, 208);
         byte eightBitUnsignedByte = 208;
         assert_eq(oneByteUnsignedWord, eightBitUnsignedByte);
+
+        #ifdef _CMOC_unsigned_char_
+        char eightBitSignedByte = 208;  // seen as 208
+        assert_eq(oneByteUnsignedWord, eightBitSignedByte);
+        #else
         char eightBitSignedByte = 208;  // seen as -48
-        assert_ne(oneByteUnsignedWord, eightBitSignedByte);  // as words, 208  != -48
+        assert_ne(oneByteUnsignedWord, eightBitSignedByte);  // as words, 208 != -48
+        #endif
 
         word w = 0x1200 + 42;
         byte b = (byte) w;
@@ -75,12 +143,14 @@ program => '
         return 0;
     }
     byte f(byte x) { return (byte) (x + 1000); }
+    byte g(byte x) { return (byte) (1000 + x); }
     ',
 expected => (((1000 % 256) + 1000) % 256) . "\n42\n214\n8\n"
 },
 
 {
 title => q{Shifts},
+compilerOptions => "-Wno-shift-always-zero",
 program => '
     void checkLeftConst();
     void checkLeftVar();
@@ -105,8 +175,8 @@ program => '
         asm { sts initStackPtr };
         assert_eq(((int)  0xFFFF) >> 16, -1);
         assert_eq(((int)  0xFFFF) >> 15, -1);
-        assert_eq(((char) 0xFF)   >> 8,  -1);
-        assert_eq(((char) 0xFF)   >> 7,  -1);
+        assert_eq(((signed char) 0xFF)   >> 8,  -1);
+        assert_eq(((signed char) 0xFF)   >> 7,  -1);
         checkLeftConst();
         checkLeftVar();
         checkRightConst();
@@ -238,7 +308,7 @@ program => '
         // Signed cases: sign must be preserved.
         // When shifting all bits, result must be all ones.
 
-        char sb = 0x55;
+        signed char sb = 0x55;
         scheck(sb >> 0, 0x55);
         scheck(sb >> 1, 0x2A);
         scheck(sb >> 4, 0x05);
@@ -331,7 +401,7 @@ program => '
         // Signed cases: sign must be preserved.
         // When shifting all bits, result must be all ones.
 
-        char sb = 0x55;
+        signed char sb = 0x55;
         checkRightVarSB(sb, 0, 0x55);
         checkRightVarSB(sb, 1, 0x2A);
         checkRightVarSB(sb, 4, 0x05);
@@ -612,7 +682,7 @@ program => '
     }
     int fi()
     {
-        char a = 255;
+        signed char a = 255;
         return a; 
     }
     int main()
@@ -621,9 +691,12 @@ program => '
         assert_eq(g(), 0x12);
         assert_eq(getPtr(), 0);
         assert_eq(fi(), -1);
-        assert_eq((int) ((char) 255), -1);
-        char a = 255;
-        assert_eq((int) ((char) a), -1);
+        assert_eq((int) ((signed char) 255), -1);  // no code maybe generated, b/c always true at compile time
+        unsigned left = (int) ((signed char) 255), right = -1;
+        asm { nop }
+        assert_eq(left, right);  // same test, but not expected to be resolved at compile time
+        signed char a = 255;
+        assert_eq((int) ((signed char) a), -1);
         return 0;
     }
     ',
@@ -820,17 +893,18 @@ expected => ""
 
 
 {
-title => q{byte *memcpy(byte *, byte *, word)},
+title => q{memcpy()},
 program => '
     char globalBuffer[7];
 
     void check(char *buffer)
     {
         buffer[0] = 42;
-        memcpy(buffer, "____", 0);  // must do nothing
+        void *out = memcpy(buffer, "____", 0);  // must do nothing
+        assert_eq(out, buffer);
         assert_eq(buffer[0], 42);
 
-        void *out = memcpy(buffer, "foobar", 7);
+        out = memcpy(buffer, "foobar", 7);
         assert_eq(out, buffer);
         assert_eq(strcmp(buffer, "foobar"), 0);
     }
@@ -850,9 +924,37 @@ expected => ""
 
 
 {
-title => q{byte *memset(byte *s, byte c, word n)},
+title => q{memmove()},
 program => '
-    char globalBuffer[300];
+    char buf[8 + 6 + 8 + 1];
+    void check(unsigned destOffset, unsigned srcOffset, unsigned len, const char *expectedResult)
+    {
+        strcpy(buf, "01234567ABCDEFabcdefgh");  // "ABCDEF" is the affected region; rest is padding
+        void *ret = memmove(buf + 8 + destOffset, buf + 8 + srcOffset, len);  // change the "ABCDEF" region
+        assert_eq(memcmp(buf + 8, expectedResult, 6), 0);
+        assert_eq(ret, buf + 8 + destOffset);  // check return value
+
+        // Check that padding was not corrupted.
+        assert_eq(memcmp(buf, "01234567", 8), 0);
+        assert_eq(memcmp(buf + 8 + 6, "abcdefgh", 8), 0);
+    }
+    int main()
+    {
+        check(2, 0, 4, "ABABCD");  // copy "ABCD" over "CDEF"
+        check(0, 2, 4, "CDEFEF");  // copy "CDEF" over "ABCD"
+        check(0, 2, 0, "ABCDEF");  // nothing to do
+        return 0;
+    }
+    ',
+expected => ""
+},
+
+
+{
+title => q{memset()},
+program => '
+    enum { NUM_BYTES = 300 };
+    char globalBuffer[NUM_BYTES + 2];
 
     void check(char *buffer)
     {
@@ -864,11 +966,77 @@ program => '
 
     int main()
     {
-        char localBuffer[300];
-        check(localBuffer);
-        check(globalBuffer);
-        check(localBuffer);
-        check(globalBuffer);
+        char localBuffer[NUM_BYTES + 2];
+
+        // Add markers that must not be changed by memset16().
+        globalBuffer[0] = 42;
+        globalBuffer[NUM_BYTES + 1] = 71;
+        localBuffer[0] = 42;
+        localBuffer[NUM_BYTES + 1] = 71;
+
+        check(localBuffer + 1);
+        assert_eq(localBuffer[0], 42);
+        assert_eq(localBuffer[NUM_BYTES + 1], 71);
+
+        check(globalBuffer + 1);
+        assert_eq(globalBuffer[0], 42);
+        assert_eq(globalBuffer[NUM_BYTES + 1], 71);
+
+        check(localBuffer + 1);
+        assert_eq(localBuffer[0], 42);
+        assert_eq(localBuffer[NUM_BYTES + 1], 71);
+
+        check(globalBuffer + 1);
+        assert_eq(globalBuffer[0], 42);
+        assert_eq(globalBuffer[NUM_BYTES + 1], 71);
+
+        return 0;
+    }
+    ',
+expected => ""
+},
+
+
+{
+title => q{memset16()},
+program => '
+    enum { NUM_WORDS = 150 };
+    word globalBuffer[NUM_WORDS + 2];
+
+    void check(word *buffer)
+    {
+        void *ret = memset16(buffer, 0x4142, NUM_WORDS);
+        assert_eq(ret, buffer);
+        for (int i = 0; i < NUM_WORDS; ++i)
+            assert_eq(buffer[i], 0x4142);
+    }
+
+    int main()
+    {
+        word localBuffer[NUM_WORDS + 2];
+
+        // Add markers that must not be changed by memset16().
+        globalBuffer[0] = 0xAABB;
+        globalBuffer[NUM_WORDS + 1] = 0xCCDD;
+        localBuffer[0] = 0xAABB;
+        localBuffer[NUM_WORDS + 1] = 0xCCDD;
+
+        check(localBuffer + 1);
+        assert_eq(localBuffer[0], 0xAABB);
+        assert_eq(localBuffer[NUM_WORDS + 1], 0xCCDD);
+
+        check(globalBuffer + 1);
+        assert_eq(globalBuffer[0], 0xAABB);
+        assert_eq(globalBuffer[NUM_WORDS + 1], 0xCCDD);
+
+        check(localBuffer + 1);
+        assert_eq(localBuffer[0], 0xAABB);
+        assert_eq(localBuffer[NUM_WORDS + 1], 0xCCDD);
+
+        check(globalBuffer + 1);
+        assert_eq(globalBuffer[0], 0xAABB);
+        assert_eq(globalBuffer[NUM_WORDS + 1], 0xCCDD);
+
         return 0;
     }
     ',
@@ -907,23 +1075,27 @@ program => q{
         strcat(buffer, "quux");
         assert_eq(strlen(buffer), 4);
         
-        strncpy(buffer, "foo", BUFSIZ);
+        out = strncpy(buffer, "foo", BUFSIZ);
+        assert_eq(out, buffer);
         assert(!strcmp(buffer, "foo"));
         for (char i = 3; i < BUFSIZ; ++i)
             assert_eq(buffer[i], 0);
         
-        strncpy(buffer, "abcdefghij", BUFSIZ);
+        out = strncpy(buffer, "abcdefghij", BUFSIZ);
+        assert_eq(out, buffer);
         assert(!strcmp(buffer, "abcdefghij"));
 
-        strncpy(buffer, "Now is the time", 3);
-        assert_eq(buffer[0], 'N');
-        assert_eq(buffer[1], 'o');
-        assert_eq(buffer[2], 'w');
+        out = (char *) memset(buffer, 'X', BUFSIZ);
+        assert_eq(out, buffer);
+        out = strncpy(buffer, "Now is the time", 3);  // source string longer than destination
+        assert_eq(out, buffer);
+        assert_eq(memcmp(buffer, "NowXXXXXXXX", BUFSIZ), 0);
 
-        strncpy(buffer, "ABCDEFGHIJKLMNOP", BUFSIZ);
+        out = strncpy(buffer, "ABCDEFGHIJKLMNOP", BUFSIZ);
+        assert_eq(out, buffer);
         assert_eq(buffer[BUFSIZ - 1], 'K');
         buffer[BUFSIZ - 1] = 0;
-        assert(!strcmp(buffer, "ABCDEFGHIJ"));
+        assert_eq(strcmp(buffer, "ABCDEFGHIJ"), 0);
     }
 
     int main()
@@ -941,7 +1113,7 @@ expected => ""
 
 
 {
-title => q{char *strchr(char *, int)},
+title => q{strchr()},
 program => q!
     int main()
     {
@@ -955,6 +1127,87 @@ program => q!
         const char *empty = "";
         assert_eq(strchr(empty, 0), empty);
         assert_eq(strchr(empty, '_'), 0);
+        const char *s1 = "abXcdXefXgh";
+        assert_eq(strchr(s1, 'X'), s1 + 2);
+        return 0;
+    }
+    !,
+expected => ""
+},
+
+
+{
+title => q{strrchr()},
+program => q!
+    int main()
+    {
+        const char *s0 = "foobar";
+        char *foundAt = strrchr(s0, 'b');
+        assert_eq(foundAt, s0 + 3);
+        assert_eq(strrchr(s0, 'f'), s0);
+        assert_eq(strrchr(s0, 'o'), s0 + 2);
+        assert_eq(strrchr(s0, '_'), 0);
+        assert_eq(strrchr(s0, 0), s0 + 6);
+        const char *empty = "";
+        assert_eq(strrchr(empty, 0), empty);
+        assert_eq(strrchr(empty, '_'), 0);
+        const char *s1 = "abXcdXefXgh";
+        assert_eq(strrchr(s1, 'X'), s1 + 8);
+        return 0;
+    }
+    !,
+expected => ""
+},
+
+
+{
+title => q{memchr()},
+program => q!
+    int main()
+    {
+        const char *s0 = "foobar";
+        void *foundAt = memchr(s0, 'b', 6);
+        assert_eq(foundAt, s0 + 3);
+        assert_eq(memchr(s0, 'f', 6), s0);
+        assert_eq(memchr(s0, 'o', 6), s0 + 1);
+        assert_eq(memchr(s0, '_', 6), 0);
+        assert_eq(memchr(s0, 0, 6), 0);
+        const char *empty = "";
+        assert_eq(memchr(empty, 0, 0), 0);
+        assert_eq(memchr(empty, '_', 0), 0);
+        return 0;
+    }
+    !,
+expected => ""
+},
+
+
+{
+title => q{memichr()},
+program => q!
+    int main()
+    {
+        const char *s0 = "foobar";
+        assert_eq(memichr(s0, 'b', 6), s0 + 3);
+        assert_eq(memichr(s0, 'f', 6), s0);
+        assert_eq(memichr(s0, 'o', 6), s0 + 1);
+        assert_eq(memichr(s0, 'B', 6), s0 + 3);
+        assert_eq(memichr(s0, 'F', 6), s0);
+        assert_eq(memichr(s0, 'O', 6), s0 + 1);
+        assert_eq(memichr(s0, '_', 6), 0);
+        assert_eq(memichr(s0, 0, 6), 0);
+
+        const char *s1 = "FOOBAR";
+        assert_eq(memichr(s1, 'b', 6), s1 + 3);
+        assert_eq(memichr(s1, 'f', 6), s1);
+        assert_eq(memichr(s1, 'o', 6), s1 + 1);
+        assert_eq(memichr(s1, 'B', 6), s1 + 3);
+        assert_eq(memichr(s1, 'F', 6), s1);
+        assert_eq(memichr(s1, 'O', 6), s1 + 1);
+
+        const char *empty = "";
+        assert_eq(memichr(empty, 0, 0), 0);
+        assert_eq(memichr(empty, '_', 0), 0);
         return 0;
     }
     !,
@@ -1004,28 +1257,41 @@ expected => ""
 {
 title => q{char *strlwr(char *)},
 program => q!
-    char globalBuffer[7];
+    char globalBuffer[64];
 
     void check(char *buffer)
     {
-        strcpy(buffer, "");
-        strlwr(buffer);
+        char *ret = strcpy(buffer, "");
+        assert_eq(ret, buffer);
+        ret = strlwr(buffer);
+        assert_eq(ret, buffer);
         assert_eq(strlen(buffer), 0);
 
-        strcpy(buffer, "FOOBAR");
-        strlwr(buffer);
+        ret = strcpy(buffer, "FOOBAR");
+        assert_eq(ret, buffer);
+        ret = strlwr(buffer);
+        assert_eq(ret, buffer);
         assert_eq(strlen(buffer), 6);
         assert_eq(strcmp(buffer, "foobar"), 0);
 
-        strcpy(buffer, "foobar");
-        strlwr(buffer);
+        ret = strcpy(buffer, "foobar");
+        assert_eq(ret, buffer);
+        ret = strlwr(buffer);
+        assert_eq(ret, buffer);
         assert_eq(strlen(buffer), 6);
         assert_eq(strcmp(buffer, "foobar"), 0);
+
+        ret = strcpy(buffer, "FOO-BAR.");
+        assert_eq(ret, buffer);
+        ret = strlwr(buffer);
+        assert_eq(ret, buffer);
+        assert_eq(strlen(buffer), 8);
+        assert_eq(strcmp(buffer, "foo-bar."), 0);
     }
 
     int main()
     {
-        char localBuffer[7];
+        char localBuffer[64];
         check(localBuffer);
         check(globalBuffer);
         check(localBuffer);
@@ -1040,28 +1306,41 @@ expected => ""
 {
 title => q{char *strupr(char *)},
 program => q!
-    char globalBuffer[7];
+    char globalBuffer[9];
 
     void check(char *buffer)
     {
-        strcpy(buffer, "");
-        strupr(buffer);
+        char *ret = strcpy(buffer, "");
+        assert_eq(ret, buffer);
+        ret = strupr(buffer);
+        assert_eq(ret, buffer);
         assert_eq(strlen(buffer), 0);
 
-        strcpy(buffer, "FOOBAR");
-        strupr(buffer);
+        ret = strcpy(buffer, "FOOBAR");
+        assert_eq(ret, buffer);
+        ret = strupr(buffer);
+        assert_eq(ret, buffer);
         assert_eq(strlen(buffer), 6);
         assert_eq(strcmp(buffer, "FOOBAR"), 0);
 
-        strcpy(buffer, "foobar");
-        strupr(buffer);
+        ret = strcpy(buffer, "foobar");
+        assert_eq(ret, buffer);
+        ret = strupr(buffer);
+        assert_eq(ret, buffer);
         assert_eq(strlen(buffer), 6);
         assert_eq(strcmp(buffer, "FOOBAR"), 0);
+
+        ret = strcpy(buffer, "foo-bar.");
+        assert_eq(ret, buffer);
+        ret = strupr(buffer);
+        assert_eq(ret, buffer);
+        assert_eq(strlen(buffer), 8);
+        assert_eq(strcmp(buffer, "FOO-BAR."), 0);
     }
  
     int main()
     {
-        char localBuffer[7];
+        char localBuffer[9];
         check(localBuffer);
         check(globalBuffer);
         return 0;
@@ -1081,7 +1360,7 @@ program => q`
 
         byte counter = 0;
         word w = 1;
-        asm("orcc", "#1");  // force carry
+        asm("orcc", "#""1");  // force carry; use two string literals for 2nd argument
         while (w > 0)  // this comparison assumed to reset carry, for LBHI
         {
             ++counter;
@@ -1090,7 +1369,7 @@ program => q`
         assert_eq(counter, 1);
 
         byte b = 1;
-        asm("orcc", "#1");  // force carry
+        asm("orcc", "#" "1");  // force carry; use two string literals for 2nd argument
         while (b > 0)  // this comparison assumed to reset carry, for LBHI
         {
             ++counter;
@@ -1488,22 +1767,81 @@ title => q{sqrt16()},
 program => q`
     int main()
     {
+        // Test all possible arguments of sqrt16().
+        byte expectedRoot = (byte) 0;
+        for (word x = 0; ; ++x)
+        {
+            //printf("x=%u\n", x);
+            byte root = sqrt16(x);
+            //printf("sqrt16(%u) gives %u, expecting %u\n", x, root, expectedRoot);
+            assert_eq(root, expectedRoot);
+            if (x == 65535)
+                break;
+            if (root < 255)
+            {
+                byte t = root + 1;
+                if ((word) t * t == x + 1)
+                {
+                    ++expectedRoot;
+                    //printf("expectedRoot now %u\n", expectedRoot);
+                }
+            }
+        }
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{sqrt32()},
+program => q`
+    int main()
+    {
         for (byte i = 0; ; ++i)
         {
             word square = (word) i * i;
-            assert_eq(sqrt16(square), i);
+            assert_eq(sqrt32(square), i);
             if (i > 0)
             {
-                assert_eq(sqrt16(square + 1), i);
-                assert_eq(sqrt16(square + 2), i);
+                assert_eq(sqrt32(square + 1), i);
+                assert_eq(sqrt32(square + 2), i);
                 if (i < 255)
                 {
                     word nextSquare = (word) (i + 1) * (i + 1);
-                    assert_eq(sqrt16(nextSquare - 1), i);
+                    assert_eq(sqrt32(nextSquare - 1), i);
                 }
             }
             if (i == 255)
                 break;
+        }
+
+        for (word i = 256; i != 0; i <<= 1)
+        {
+            unsigned long square = (unsigned long) i * i;
+            assert(sqrt32(square) == i);
+
+            word n = i - 1;  // string of ones
+            square = (unsigned long) n * n;
+            assert(sqrt32(square) == n);
+        }
+
+        srand(1);
+        for (word i = 300; i--; )
+        {
+            word n = (word) rand();  // 0..0x7FFF
+            //printf("n=%u\n", n);
+            unsigned long square = (unsigned long) n * n;
+            assert(sqrt32(square) == n);
+
+            n |= 0x8000;
+            square = (unsigned long) n * n;
+            assert(sqrt32(square) == n);
+
+            n = ~n;
+            square = (unsigned long) n * n;
+            assert(sqrt32(square) == n);
         }
         return 0;
     }
@@ -1571,59 +1909,263 @@ expected => ""
 {
 title => q{printf's number and string field padding},
 program => q`
-    void asm hook()
+    char buffer[600];
+    char *writer;  // index into buffer[]
+    void asm hook()  // should be hook(void), but accepted by setConsoleOutHook()
     {
         asm {
-            sta     $ff00    // assumes USim
+            pshs    x
+            ldx     :writer
+            sta     ,x+
+            stx     :writer
+            puls    x
             lda     #'?'     // trash A to test printf() (re: zero-padding)
         }
     }
     int main()
     {
         sbyte m1 = -1;
-        printf("[%2d]\n", m1);
-        printf("[%5d]\n", m1);
-        
-        printf("[%1x]\n", 10);
-        printf("[%2x]\n", 10);
-        printf("[%5x]\n", 10);
-        printf("[%12x]\n", 10);
+        long l1 = -2;
+        sprintf(buffer, "[%2d]", m1);
+        assert_str_eq(buffer, "[-1]");
+        sprintf(buffer, "[%5d]", m1);
+        assert_str_eq(buffer, "[   -1]");
+        sprintf(buffer, "[%05d]", m1);
+        assert_str_eq(buffer, "[-0001]");
+        sprintf(buffer, "[%05d]", -m1);
+        assert_str_eq(buffer, "[00001]");
 
-        printf("[%1x]\n", 0xFED);
-        printf("[%2x]\n", 0xFED);
-        printf("[%5x]\n", 0xFED);
-        printf("[%12x]\n", 0xFED);
+        sprintf(buffer, "[%2ld]", l1);
+        assert_str_eq(buffer, "[-2]");
+        sprintf(buffer, "[%5ld]", l1);
+        assert_str_eq(buffer, "[   -2]");
+        sprintf(buffer, "[%05ld]", l1);
+        assert_str_eq(buffer, "[-0002]");
+        sprintf(buffer, "[%05ld]", -l1);
+        assert_str_eq(buffer, "[00002]");
 
-        printf("[%1x]\n", 0xABCD);
-        printf("[%2x]\n", 0xABCD);
-        printf("[%5x]\n", 0xABCD);
-        printf("[%12x]\n", 0xABCD);
+        // Left justified number:
+        sprintf(buffer, "[%-5d]", m1);
+        assert_str_eq(buffer, "[-1   ]");
+        sprintf(buffer, "[%-05d]", m1);
+        assert_str_eq(buffer, "[-1   ]");  // the 0 has no effect when left padding
+        sprintf(buffer, "[%-05d]", -m1);
+        assert_str_eq(buffer, "[1    ]");
+        sprintf(buffer, "[%-5ld]", l1);
+        assert_str_eq(buffer, "[-2   ]");
+        sprintf(buffer, "[%-5ld]", -l1);
+        assert_str_eq(buffer, "[2    ]");
+        sprintf(buffer, "[%-05ld]", l1);
+        assert_str_eq(buffer, "[-2   ]");
+        sprintf(buffer, "[%-05ld]", -l1);
+        assert_str_eq(buffer, "[2    ]");
 
+        byte u1 = 213;
+        sprintf(buffer, "[%2u]", u1);
+        assert_str_eq(buffer, "[213]");
+        sprintf(buffer, "[%5u]", u1);
+        assert_str_eq(buffer, "[  213]");
+        sprintf(buffer, "[%05u]", u1);
+        assert_str_eq(buffer, "[00213]");
+
+        unsigned long ul1 = 70000lu;
+        sprintf(buffer, "[%2lu]", ul1);
+        assert_str_eq(buffer, "[70000]");
+        sprintf(buffer, "[%7lu]", ul1);
+        assert_str_eq(buffer, "[  70000]");
+        sprintf(buffer, "[%07lu]", ul1);
+        assert_str_eq(buffer, "[0070000]");
+
+        // Left justified number:
+        sprintf(buffer, "[%-5u]", u1);
+        assert_str_eq(buffer, "[213  ]");
+        sprintf(buffer, "[%-05u]", u1);
+        assert_str_eq(buffer, "[213  ]");  // 0 has no effect when left padding
+
+        sprintf(buffer, "[%-7lu]", ul1);
+        assert_str_eq(buffer, "[70000  ]");
+        sprintf(buffer, "[%-07lu]", ul1);
+        assert_str_eq(buffer, "[70000  ]");
+
+        sprintf(buffer, "[%1x]", 10);
+        assert_str_eq(buffer, "[A]");
+        sprintf(buffer, "[%2x]", 10);
+        assert_str_eq(buffer, "[ A]");
+        sprintf(buffer, "[%5x]", 10);
+        assert_str_eq(buffer, "[    A]");
+        sprintf(buffer, "[%05x]", 10);
+        assert_str_eq(buffer, "[0000A]");
+        sprintf(buffer, "[%12x]", 10);
+        assert_str_eq(buffer, "[           A]");
+
+        sprintf(buffer, "[%1x]", 0xFED);
+        assert_str_eq(buffer, "[FED]");
+        sprintf(buffer, "[%2x]", 0xFED);
+        assert_str_eq(buffer, "[FED]");
+        sprintf(buffer, "[%5x]", 0xFED);
+        assert_str_eq(buffer, "[  FED]");
+        sprintf(buffer, "[%12x]", 0xFED);
+        assert_str_eq(buffer, "[         FED]");
+
+        sprintf(buffer, "[%1x]", 0xABCD);
+        assert_str_eq(buffer, "[ABCD]");
+        sprintf(buffer, "[%2x]", 0xABCD);
+        assert_str_eq(buffer, "[ABCD]");
+        sprintf(buffer, "[%5x]", 0xABCD);
+        assert_str_eq(buffer, "[ ABCD]");
+        sprintf(buffer, "[%12x]", 0xABCD);
+        assert_str_eq(buffer, "[        ABCD]");
+        sprintf(buffer, "[%12X]", 0xABCD);
+        assert_str_eq(buffer, "[        ABCD]");
+        sprintf(buffer, "[%12X]", (unsigned short) -3);
+        assert_str_eq(buffer, "[        FFFD]");
+
+        sprintf(buffer, "[%1lx]", 0xABCDEul);
+        assert_str_eq(buffer, "[ABCDE]");
+        sprintf(buffer, "[%2lx]", 0xABCDEul);
+        assert_str_eq(buffer, "[ABCDE]");
+        sprintf(buffer, "[%7lx]", 0xABCDEul);
+        assert_str_eq(buffer, "[  ABCDE]");
+        sprintf(buffer, "[%12lx]", 0xABCDEul);
+        assert_str_eq(buffer, "[       ABCDE]");
+        sprintf(buffer, "[%12lX]", 0xABCDEul);
+        assert_str_eq(buffer, "[       ABCDE]");
+        sprintf(buffer, "[%12lX]", (unsigned long) -3);
+        assert_str_eq(buffer, "[    FFFFFFFD]");
+
+        // Left justified number:
+        sprintf(buffer, "[%-12x]", 0xABCD);
+        assert_str_eq(buffer, "[ABCD        ]");
+        sprintf(buffer, "[%-012x]", 0xABCD);
+        assert_str_eq(buffer, "[ABCD        ]");
+        sprintf(buffer, "[%-12X]", 0xABCD);
+        assert_str_eq(buffer, "[ABCD        ]");
+        sprintf(buffer, "[%-012X]", 0xABCD);
+        assert_str_eq(buffer, "[ABCD        ]");
+
+        sprintf(buffer, "[%-12lx]", 0xABCDEul);
+        assert_str_eq(buffer, "[ABCDE       ]");
+        sprintf(buffer, "[%-012lx]", 0xABCDEul);
+        assert_str_eq(buffer, "[ABCDE       ]");
+        sprintf(buffer, "[%-12lX]", 0xABCDEul);
+        assert_str_eq(buffer, "[ABCDE       ]");
+        sprintf(buffer, "[%-012lX]", 0xABCDEul);
+        assert_str_eq(buffer, "[ABCDE       ]");
+
+        // Many cases in a single statement.
+        sprintf(buffer,
+            "[%2d] [%5d] [%05d] [%05d] [%2ld] [%5ld] [%05ld] [%05ld]"
+            " [%-5d] [%-05d] [%-05d] [%-5ld] [%-5ld] [%-05ld] [%-05ld] [%2u]"
+            " [%5u] [%05u] [%2lu] [%7lu] [%07lu] [%-5u] [%-05u] [%-7lu]"
+            " [%-07lu] [%1x] [%2x] [%5x] [%05x] [%12x] [%1x] [%2x]"
+            " [%5x] [%12x] [%1x] [%2x] [%5x] [%12x] [%12X] [%12X]"
+            " [%1lx] [%2lx] [%7lx] [%12lx] [%12lX] [%12lX] [%-12x] [%-012x]"
+            " [%-12X] [%-012X] [%-12lx] [%-012lx] [%-12lX] [%-012lX]\n",
+                m1, m1, m1, -m1, l1, l1, l1, -l1, 
+                m1, m1, -m1, l1, -l1, l1, -l1, u1, 
+                u1, u1, ul1, ul1, ul1, u1, u1, ul1, 
+                ul1, 10, 10, 10, 10, 10, 0xFED, 0xFED, 
+                0xFED, 0xFED, 0xABCD, 0xABCD, 0xABCD, 0xABCD, 0xABCD, (unsigned short) -3, 
+                0xABCDEul, 0xABCDEul, 0xABCDEul, 0xABCDEul, 0xABCDEul, (unsigned long) -3, 0xABCD, 0xABCD, 
+                0xABCD, 0xABCD, 0xABCDEul, 0xABCDEul, 0xABCDEul, 0xABCDEul);
+        const char *expected =
+            "[-1] [   -1] [-0001] [00001] [-2] [   -2] [-0002] [00002]"
+            " [-1   ] [-1   ] [1    ] [-2   ] [2    ] [-2   ] [2    ] [213]"
+            " [  213] [00213] [70000] [  70000] [0070000] [213  ] [213  ] [70000  ]"
+            " [70000  ] [A] [ A] [    A] [0000A] [           A] [FED] [FED]"
+            " [  FED] [         FED] [ABCD] [ABCD] [ ABCD] [        ABCD] [        ABCD] [        FFFD]"
+            " [ABCDE] [ABCDE] [  ABCDE] [       ABCDE] [       ABCDE] [    FFFFFFFD] [ABCD        ] [ABCD        ]"
+            " [ABCD        ] [ABCD        ] [ABCDE       ] [ABCDE       ] [ABCDE       ] [ABCDE       ]\n";
+        //printf("expected: %u chars\n", strlen(expected));
+        assert(strlen(buffer) < sizeof(buffer));
+        assert_str_eq(buffer, expected);
+
+        // Runtime width, e.g., %*d.
+
+        sprintf(buffer, "[%*d]",   1, -1);
+        assert_str_eq(buffer, "[-1]");
+        sprintf(buffer, "[%*d]",   5, -1);
+        assert_str_eq(buffer, "[   -1]");
+        sprintf(buffer, "[%*d]",  -5, -1);
+        assert_str_eq(buffer, "[-1   ]");
+        sprintf(buffer, "[%-*d]",  5, -1);
+        assert_str_eq(buffer, "[-1   ]");
+        sprintf(buffer, "[%-*d]", -5, -1);
+        assert_str_eq(buffer, "[-1   ]");
+
+        sprintf(buffer, "[%*u]",   5, 42);
+        assert_str_eq(buffer, "[   42]");
+        sprintf(buffer, "[%*u]",  -5, 42);
+        assert_str_eq(buffer, "[42   ]");
+        sprintf(buffer, "[%-*u]",  5, 42);
+        assert_str_eq(buffer, "[42   ]");
+        sprintf(buffer, "[%-*u]", -5, 42);
+        assert_str_eq(buffer, "[42   ]");
+
+        sprintf(buffer, "[%*ld]",   12, -2l);
+        assert_str_eq(buffer, "[          -2]");
+        sprintf(buffer, "[%*ld]",  -12, -2l);
+        assert_str_eq(buffer, "[-2          ]");
+        sprintf(buffer, "[%-*ld]",  12, -2l);
+        assert_str_eq(buffer, "[-2          ]");
+        sprintf(buffer, "[%-*ld]", -12, -2l);
+        assert_str_eq(buffer, "[-2          ]");
+
+        sprintf(buffer, "[%*lu]",   5, 42ul);
+        assert_str_eq(buffer, "[   42]");
+        sprintf(buffer, "[%*lu]",  -5, 42ul);
+        assert_str_eq(buffer, "[42   ]");
+        sprintf(buffer, "[%-*lu]",  5, 42ul);
+        assert_str_eq(buffer, "[42   ]");
+        sprintf(buffer, "[%-*lu]", -5, 42ul);
+        assert_str_eq(buffer, "[42   ]");
+
+        sprintf(buffer, "[%*s]",   5, "xy");
+        assert_str_eq(buffer, "[   xy]");
+        sprintf(buffer, "[%*s]",  -5, "xy");
+        assert_str_eq(buffer, "[xy   ]");
+        sprintf(buffer, "[%-*s]",  5, "xy");
+        assert_str_eq(buffer, "[xy   ]");
+        sprintf(buffer, "[%-*s]", -5, "xy");
+        assert_str_eq(buffer, "[xy   ]");
+
+        // Left-justified string.
         const char *eightChars = "abcdefgh";
-        printf("[%-8s]\n", eightChars);
+        sprintf(buffer, "[%-8s]", eightChars);
+        assert_str_eq(buffer, "[abcdefgh]");
 
-        printf("%s", "");
+        sprintf(buffer, "%s", "");
+        assert_str_eq(buffer, "");
         byte a[2];
         a[0] = 'A'; a[1] = 0;
         byte b[2];
         b[0] = 'B'; b[1] = 0;
-        printf("%s %s\n", a, b);
-        printf("[%12s]\n", "foo");
-        printf("[%-12s]\n", "foo");
-        printf("[%s]\n", "foo");
-        printf("%03u %3u\n", 5, 6);
+        sprintf(buffer, "%s %s", a, b);
+        assert_str_eq(buffer, "A B");
+        sprintf(buffer, "[%12s]", "foo");
+        assert_str_eq(buffer, "[         foo]");
+        sprintf(buffer, "[%-12s]", "foo");
+        assert_str_eq(buffer, "[foo         ]");
+        sprintf(buffer, "[%s]", "foo");
+        assert_str_eq(buffer, "[foo]");
+        sprintf(buffer, "%03u %3u", 5, 6);
+        assert_str_eq(buffer, "005   6");
         word w = 65535;
-        printf("%d\n", (sword) w);
+        sprintf(buffer, "%d", (sword) w);
+        assert_str_eq(buffer, "-1");
         
         // With redirected character output.
+        writer = buffer;
         ConsoleOutHook oldCHROOT = setConsoleOutHook(hook);
-        printf("0x%04X,%06u\n", 1, 2);
+        printf("0x%04X,%06u", 1, 2);
         setConsoleOutHook(oldCHROOT);
+        *writer = '\0';  // finish string written via hook()
+        assert_str_eq(buffer, "0x0001,000002");
 
         return 0;
     }
     `,
-expected => "[-1]\n[   -1]\n[A]\n[ A]\n[    A]\n[           A]\n[FED]\n[FED]\n[  FED]\n[         FED]\n[ABCD]\n[ABCD]\n[ ABCD]\n[        ABCD]\n[abcdefgh]\nA B\n[         foo]\n[foo         ]\n[foo]\n005   6\n-1\n0x0001,000002\n"
+expected => ""
 },
 
 
@@ -1952,7 +2494,7 @@ program => q`
 
         assert_eq(pf(16), 16400);
 
-        asm("ldd", "#0");  // to check that D gets loaded correctly
+        asm("ld" "d", "#0");  // to check that D gets loaded correctly; use two literals for 1st arg
         asm("ldx", "#0");  // same for X if needed
         pf = add;
         if (pf != add)
@@ -2159,6 +2701,14 @@ program => q`
         while (0);
         assert_eq(n, 9);
 
+        unsigned unsignedExpr = 42;
+        asm("nop");  // bloc optimizations
+        while (unsignedExpr < 0)  // optimizer should see that unsignedExpr < 0 is always false
+        {
+            assert(0);
+            return 0;  // avoid infinite loop if buggy compiler fails to eliminate the while(){}
+        }
+
         // Test always-true condition.
         byte counter = 0;
         while (1)
@@ -2171,6 +2721,15 @@ program => q`
                 break;
         while (1);
         assert_eq(counter, 3);
+
+        counter = 0;
+        while (unsignedExpr >= 0)  // optimizer should see that unsignedExpr >= 0 is always true
+        {
+            counter = 1;  // if buggy compiler fails to keep the while(){}, this line won't be executed
+            break;
+        }
+        assert_eq(counter, 1);
+
         return 0;
     }
     `,
@@ -2363,7 +2922,7 @@ program => q`
     char d[7];
     char e[4] = "baz";
     char buffer[] = "HELLO";
-    int sc[] = { (char) 255 };
+    int sc[] = { (signed char) 255 };
 
     void local()
     {
@@ -2393,7 +2952,7 @@ program => q`
         char buffer_[] = "PIZZA";
         assert_eq(strcmp(buffer_, "PIZZA"), 0);
         
-        int sc_[] = { (char) 255 };
+        int sc_[] = { (signed char) 255 };
         assert_eq(sc_[0], -1);
     }
     int main()
@@ -2681,7 +3240,30 @@ expected => ""
 
 
 {
+title => q{Decrement assignment on a function pointer variable},
+program => q`
+    void func(void) {}
+    int main()
+    {
+        void (*pf)(void) = func;
+        pf -= 1000;
+        assert_eq((unsigned) pf, (unsigned) func - 1000);
+
+        pf = func;
+        unsigned n = 2000;
+        pf -= n;
+        assert_eq((unsigned) pf, (unsigned) func - 2000);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
 title => q{Verbatim assembly language},
+tolerateWarnings => 1,
 program => q`
     void f(int *p)
     {
@@ -2703,6 +3285,10 @@ program => q`
             bra @localLabel
 ; Next line tests that a colon in a semi-colon comment is not processed as a variableNameEscapeChar.
 ; foo bar:
+    ; foo bar:
+; Same for an asterisk-led comment:
+* foo bar:
+    * foo bar:
 ; Next label tests that semi-colon comment lines are sent to the assembler.
 ; @localLabel is local in LWASM. Semi-colon comment lines preserve the "local scope". 
 @localLabel
@@ -2731,7 +3317,7 @@ program => q`
             addb    :a[1]
             stb     :a[0]
             ldd     #$1234
-            std     :vi[30]      ; offset in bytes, not ints
+            std     :vi[15]      ; offset in array elements, not in bytes
         }
         assert_eq(m[0], 22 + 33);
         assert_eq(a[0], 44 + 55);
@@ -2951,8 +3537,29 @@ program => q`
                 ++i;
             }
             assert_eq(memcmp(buf, "xxxxxxxx", 8), 0);
+            for (dest = buf, i = 0; i < 8; ++i)
+                *dest++ = 'y';
+            assert_eq(memcmp(buf, "yyyyyyyy", 8), 0);
         }
-    
+
+        {
+            word origbuf[8], wbuf[8];
+            memset16(origbuf, 0xBEEF, 8);
+            memset16(wbuf, 0xBEEF, 8);
+            word *wdest = wbuf;
+            unsigned char ii = 0;
+            while (ii < 8)
+            {
+                *wdest++ = 0xBEEF;
+                ++ii;
+            }
+            assert_eq(memcmp(wbuf, origbuf, sizeof(wbuf)), 0);
+            for (wdest = wbuf, ii = 0; ii < 8; ++ii)
+                *wdest++ = 0xABCD;
+            for (ii = 0; ii < 8; ++ii)
+                assert_eq(wbuf[ii], 0xABCD);
+        }
+
         {
             char b = 10;
             b += 0;
@@ -3289,7 +3896,7 @@ expected => ""
 title => q{Interrupt handler},
 program => q`
     word global = 0;
-    interrupt void isr()
+    interrupt void isr(void)
     {
         global = 42;
     }
@@ -3358,6 +3965,13 @@ program => q`
         assert_eq(wa[1], 11000);
         assert_eq(wa[2], 17);
         assert_eq(ba[0], 0x23);
+
+        ++gb0;
+        assert_eq(gb0, 44);
+        gb0--;
+        assert_eq(gb0, 43);
+        --gb0;
+        assert_eq(gb0, 42);
         
         return 0;
     }
@@ -3437,6 +4051,10 @@ program => q`
     struct Empty
     {
     };
+    void foo(char a[10])
+    {
+        assert_eq(sizeof(a), sizeof(char *));  // 'a' is a pointer, not an array
+    }
     int main()
     {
         byte b;
@@ -3492,6 +4110,7 @@ program => q`
         char s[] = "quux";
         assert_eq(sizeof(s), 5);
 
+        foo(NULL);
         return 0;
     }
     `,
@@ -3663,9 +4282,9 @@ expected => ""
 title => q{No predictable bit in the rand() return value},
 linkerModeOnly => 1,
 program => q`
-    byte testRandBit(char bit, int seed)
+    byte testRandBit(int bit, int seed)
     {
-        word mask = 1 << bit;
+        word mask = 1 << (byte) bit;
         word previous = (word) rand();
         assert_eq(previous & 0x8000, 0);
         byte repetitions = 0;  // number of times the tested bit has been predicted
@@ -3694,7 +4313,7 @@ program => q`
     {
         for (int seed = 10000; seed > 0; seed /= 5)
         {
-            char bit;
+            int bit;
             for (bit = 15; bit >= 0; --bit)  // test each of the 15 bits returned by rand()
                 if (!testRandBit(bit, seed))
                     break;
@@ -3775,9 +4394,9 @@ expected => ""
 {
 title => q{Signed types},
 program => q`
-    char comparator(unsigned int w1, unsigned int w2)
+    signed char comparator(unsigned int w1, unsigned int w2)
     {
-        char result;
+        signed char result;
         if (w1 < w2)
             result = -1;
         else if (w1 > w2)
@@ -3940,9 +4559,12 @@ expected => "sb=-1\nsb < 0\nsb <= 0\nsw < 0\nsw <= 0\n!!(sb < 0)\n!!(sb <= 0)\n!
 title => q{sbrk(), sbrkmax()},
 program => q`
     int global1 = 0xAABB;
+    char bssStuff[10];
     int main()
     {
         assert_eq(global1, 0xAABB);
+        strcpy(bssStuff, "BSS STUFF");  // initialize array in BSS section (initially zeroes)
+
         unsigned initMax = sbrkmax();
         assert(initMax > 0);
 
@@ -3975,6 +4597,9 @@ program => q`
         assert_eq(initMax - counter * bufsiz, finalMax);
 
         //printf("%u; %u -> %u; %u\n", counter, initMax, finalMax, initMax / bufsiz);
+
+        assert_eq(strcmp(bssStuff, "BSS STUFF"), 0);  // check that BSS section untouched
+
         return 0;
     }
     `,
@@ -4028,7 +4653,7 @@ program => q`
         * (word *) buf = 4418;
         assert_eq(ps->n, 4418);
         
-        int i = (char) -42;
+        int i = (signed char) -42;
         assert_eq(i, -42);
         
         return 0;
@@ -4319,10 +4944,34 @@ expected => ""
 
 
 {
-title => q{Pointer to pointer, array of pointers},
+title => q{Initializer for struct local variable from const struct received as pointer parameter},
+program => q`
+    struct S { int x; };
+    int f(const struct S *ptr)
+    {
+        struct S local = *ptr;
+        return local.x;
+    }
+    int main()
+    {
+        struct S orig = { 5000 };
+        int result = f(&orig);
+        assert_eq(result, 5000);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Pointer to pointer, array of pointers, zero-padding for short initializers},
+tolerateWarnings => 1,
 program => q`
     const char *strings[] = { "foo", "bar", "baz", "abcdefghij" };
+    const char *blargh[7] = { "foo", "bar", "baz", "abcdefghij" };
     const char *moreStrings[][2] = { { "foo", "bar" }, { "baz", "abcdefghij" } };
+    const char *evenMoreStrings[][7] = { { "foo", "bar" }, { "baz", "abcdefghij", "xxx" } };
     struct S { char b[2]; };
     void check(const char **pba)
     {
@@ -4342,6 +4991,16 @@ program => q`
         assert(!strcmp(strings[3], "abcdefghij"));
         assert_eq(strings[3][7], 'h');
         
+        // Same as 'strings' but with 3 null pointers due to zero-padding.
+        assert(!strcmp(blargh[0], "foo"));
+        assert(!strcmp(blargh[1], "bar"));
+        assert(!strcmp(blargh[2], "baz"));
+        assert(!strcmp(blargh[3], "abcdefghij"));
+        assert_eq(blargh[3][7], 'h');
+        assert_eq(blargh[4], 0);
+        assert_eq(blargh[5], 0);
+        assert_eq(blargh[6], 0);
+
         const char **ptrToByteArray = strings;
         const char *s = ptrToByteArray[0];
         assert(!strcmp(s, "foo"));
@@ -4370,6 +5029,22 @@ program => q`
         assert(!strcmp(moreStrings[1][0], "baz"));
         assert(!strcmp(moreStrings[1][1], "abcdefghij"));
         assert_eq(moreStrings[1][1][9], 'j');
+        
+        assert(!strcmp(evenMoreStrings[0][0], "foo"));
+        assert(!strcmp(evenMoreStrings[0][1], "bar"));
+        assert_eq(evenMoreStrings[0][2], 0);  // zero-padding
+        assert_eq(evenMoreStrings[0][3], 0);
+        assert_eq(evenMoreStrings[0][4], 0);
+        assert_eq(evenMoreStrings[0][5], 0);
+        assert_eq(evenMoreStrings[0][6], 0);
+        assert(!strcmp(evenMoreStrings[1][0], "baz"));
+        assert(!strcmp(evenMoreStrings[1][1], "abcdefghij"));
+        assert_eq(evenMoreStrings[1][1][9], 'j');
+        assert(!strcmp(evenMoreStrings[1][2], "xxx"));
+        assert_eq(evenMoreStrings[1][3], 0);
+        assert_eq(evenMoreStrings[1][4], 0);
+        assert_eq(evenMoreStrings[1][5], 0);
+        assert_eq(evenMoreStrings[1][6], 0);
 
         return 0;
     }
@@ -4397,7 +5072,7 @@ expected => ""
 {
 title => q{char, short, signed, unsigned},
 program => q`
-    word f(char ch, short sh, signed si, unsigned un)
+    word f(signed char ch, short sh, signed si, unsigned un)
     {
         return ch + sh + si + un;
     }
@@ -4434,8 +5109,9 @@ expected => ""
 
 {
 title => q{typedef},
+tolerateWarnings => 1,
 program => q`
-    typedef unsigned short *Ptr, uint16_t;  // more than one declarator is allowed in a typedef
+    typedef unsigned short *Ptr, Foo16;  // more than one declarator is allowed in a typedef
     
     // Typedef for an array:
     typedef unsigned Addr[2];
@@ -4462,9 +5138,17 @@ program => q`
     void f2(int *a) {}
     unsigned diff(void *a, void *b) { return b - a; }
 
+    byte allBytesSame(const void *s, int c, size_t n)
+    {
+        for (int i = 0; i < c; ++i)
+            if (((char *) s)[i] != c)
+                return 0;
+        return 1;
+    }
+
     int main()
     {
-        uint16_t u = 2014;
+        Foo16 u = 2014;
         assert_eq(u, 2014);
         Ptr p = &u;
         assert_eq(*p, 2014);
@@ -4511,6 +5195,33 @@ program => q`
         assert_eq(diff(&test.str2,  test.str3), 10);
         assert_eq(diff( test.str2, &test.str3), 10);
 
+        test_t initTest1 = {
+            { 'A', 'B', 'C' },  // field str1: must be padded with 7 null bytes
+            { 'D', 'E' },  // field str2: must be padded with 8 null bytes
+            { 1000, 1001, 1002, 1003 },  // field str3: must be padded with 6*2=12 null bytes
+        };
+        assert_eq(memcmp(initTest1.str1, "ABC\0\0\0\0\0\0\0", 10), 0);
+        assert_eq(memcmp(initTest1.str2, "DE\0\0\0\0\0\0\0\0", 10), 0);
+        assert_eq(memcmp(initTest1.str3, "\x03\xE8\x03\xE9\x03\xEA\x03\xEB\0\0\0\0\0\0\0\0\0\0\0\0", 20), 0);
+
+        test_t initTest2 = {
+            "FGH",
+            "IJ",
+            {}
+        };
+        assert_eq(memcmp(initTest2.str1, "FGH\0\0\0\0\0\0\0", 10), 0);
+        assert_eq(memcmp(initTest2.str2, "IJ\0\0\0\0\0\0\0\0", 10), 0);
+        assert_eq(memcmp(initTest2.str3, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20), 0);
+
+        test_t initTest3 = {
+            "KLM",
+            "NO",
+            // Missing value for str3
+        };
+        assert_eq(memcmp(initTest3.str1, "KLM\0\0\0\0\0\0\0", 10), 0);
+        assert_eq(memcmp(initTest3.str2, "NO\0\0\0\0\0\0\0\0", 10), 0);
+        assert_eq(memcmp(initTest3.str3, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 20), 0);
+
         struct S s;
         assert_eq(sizeof(s.grid), 50);
         assert_eq(sizeof(s.grid[2]), 10);
@@ -4530,13 +5241,26 @@ program => q`
         string10_t str4 = "FOOBARBAZ"; 
         assert_eq(strcmp(str4, "FOOBARBAZ"), 0);
         assert_eq(strlen(str4), 9); 
+
+        string10_t str5 = { 'a', 'b', 'c' };  // str5 is array entirely b/c of TypeDesc, not b/c of Declarator
+        assert_eq(strcmp(str5, "abc"), 0);
+        assert(allBytesSame(str5 + 3, '\0', 7));  // rest of string10_t padded with NULs
         
         string10_t strArray1[] = { "A", "B" };
         assert_eq(strArray1, strArray1[0]);
         assert_ne(strArray1[0], strArray1[1]);
         assert_eq(strcmp(strArray1[0], "A"), 0);
         assert_eq(strcmp(strArray1[1], "B"), 0);
-        
+
+        string10_t strArray2[7] = { "A", "B" };  // 50 null bytes expected
+        assert_eq(strArray2, strArray2[0]);
+        assert_ne(strArray2[0], strArray2[1]);
+        assert_eq(strcmp(strArray2[0], "A"), 0);
+        assert_eq(strcmp(strArray2[1], "B"), 0);
+        assert_eq(strArray2[2], (char *) strArray2 + 2 * 10);
+        assert_eq(strArray2[6], (char *) strArray2 + 6 * 10);
+        assert(allBytesSame((void *) strArray2[2], '\0', 50));  // padding
+
         struct S s1 = { { "a", "b", "c", "d", "e" }, '$' };
         assert_eq(s1.grid, s1.grid[0]);
         assert_ne(s1.grid, s1.grid[1]);
@@ -4825,7 +5549,24 @@ expected => ""
 
 
 {
-title => q{switch()},
+title => q{General switch() tests with if-else sequences},
+compilerOptions => "--switch=ifelse",
+program => generalSwitchTests(),
+expected => ""
+},
+
+
+{
+title => q{General switch() tests with jump tables},
+compilerOptions => "--switch=jump",
+program => generalSwitchTests(),
+expected => ""
+},
+
+
+{
+title => q{switch() with jump tables},
+compilerOptions => "--switch=jump",
 program => q`
     int testSwitch1(int n)
     {
@@ -4869,7 +5610,7 @@ program => q`
         }
         return ret;
     }
-    int testSwitch3(char n)  // byte expression, default in the middle
+    int testSwitch3(signed char n)  // byte expression, default in the middle
     {
         int ret = 7777;
         switch (n)
@@ -4892,7 +5633,7 @@ program => q`
         
         return ret;
     }
-    char testSwitch4(char n)
+    char testSwitch4(signed char n)
     {
         switch (n)
         {
@@ -4903,27 +5644,6 @@ program => q`
             default:
                 return 1;
         }
-    }
-    int testSwitch5(unsigned n)  // default in the middle
-    {
-        int ret = 7777;
-        switch (n)
-        {
-        case 65533:
-            return 100;
-        default:
-            ret = 999;
-            break;
-        case 0:
-            ret = 101;
-            break;
-        case 5:
-            ret = 102;
-            // FALLTHROUGH
-        case 2:
-            ret = 103;
-        }
-        return ret;
     }
     int testSwitch6(unsigned n)
     {
@@ -5030,12 +5750,595 @@ expected => ""
 
 
 {
+title => q{switch() on a 32-bit expression},
+program => q`
+    int testSwitch1(long n)
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case -3:
+            return 100;
+        case 0:
+            ret = 101;
+            break;
+        case 5:
+            ret = 102;
+            // FALLTHROUGH
+        case 2:
+            ret = 103;
+            break;
+        case -999999:
+            ret = 104;
+            break;
+        default:
+            ret = 999;
+        }
+        return ret;
+    }
+    int testSwitch2(long n)  // default in the middle
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case -3:
+            return 100;
+        case -999999:
+            ret = 104;
+            break;
+        default:
+            ret = 999;
+            break;
+        case 0:
+            ret = 101;
+            break;
+        case 0xFFFFFFFF:
+            ret = 105;
+            break;
+        case 5:
+            ret = 102;
+            // FALLTHROUGH
+        case 2:
+            ret = 103;
+        }
+        return ret;
+    }
+
+    int testSwitch6(unsigned long n)
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case 5:
+        case 6:
+        case 7:
+        case 8:
+        case 9:
+        case 10:
+        case 11:
+        case 12:
+        case 13:
+        case 14:
+        case 15:
+        case 16:
+        case 17:
+        case 18:
+        case 19:
+        case 20:
+        case 21:
+        case 22:
+        case 23:
+        case 24:
+            return 100;
+        case 30:
+        case 31:
+        case 32:
+        case 33:
+        case 34:
+        case 35:
+        case 36:
+        case 37:
+        case 38:
+        case 39:
+            return 101;
+        case -17:
+            return 117;
+        case -100000:
+            return 118;
+        default:
+            return 102;
+        }
+        return ret;
+    }
+    
+    int testSwitch7(signed long n)
+    {
+        switch (n)
+        {
+        case -3:
+        case -2:
+        case -1:
+        case 0:
+        case 1:
+        case 2:
+        case 3:
+        case 4:
+        case 5:
+            return 100;
+        case 10:
+        case 11:
+        case 12:
+        case 13:
+        case 14:
+            return 101;
+        default:
+            return 102;
+        }
+        return 7777;
+    }
+    
+    int testSwitch8(signed long n)
+    {
+        switch (n)
+        {
+        case -300000:
+        case -300001:
+        case -300002:
+        case -300003:
+
+        case -300008:
+
+        case -300010:
+        case -300011:
+        case -300012:
+        case -300013:
+        case -300014:
+            return 100;
+        case -300020:
+        case -300021:
+        case -300022:
+            return 101;
+        default:
+            return 102;
+        }
+        return 7777;
+    }
+
+    int main()
+    {
+        assert_eq(testSwitch1(-3), 100);
+        assert_eq(testSwitch1( 0), 101);
+        assert_eq(testSwitch1( 5), 103);
+        assert_eq(testSwitch1( 2), 103);
+        assert_eq(testSwitch1(-9), 999);
+        assert_eq(testSwitch1(-999999), 104);
+
+        assert_eq(testSwitch2(-3), 100);
+        assert_eq(testSwitch2( 0), 101);
+        assert_eq(testSwitch2( 5), 103);
+        assert_eq(testSwitch2( 2), 103);
+        assert_eq(testSwitch2(-9), 999);
+        assert_eq(testSwitch2(-999999), 104);
+
+        assert_eq(testSwitch2(65533), 999);
+        assert_eq(testSwitch2(4294967293), 100);
+        assert_eq(testSwitch2(    0), 101);
+        assert_eq(testSwitch2(    5), 103);
+        assert_eq(testSwitch2(    2), 103);
+        assert_eq(testSwitch2(65527), 999);
+        assert_eq(testSwitch2(4294967287), 999);
+
+        assert_eq(testSwitch2((signed long) 4294967295), 105);  // 0xFFFFFFFF
+        
+        for (unsigned i = 3; i <= 41; ++i)
+        {
+            int expected = (i < 5 ? 102 : (i <= 24 ? 100 : (i <= 29 ? 102 : (i <= 39 ? 101 : 102)))); 
+            int actual = testSwitch6(i);
+            //printf("i=%2u: got %5d, expected %5d\n", i, actual, expected);
+            assert_eq(actual, expected);
+        }
+        assert_eq(testSwitch6(0xffffffefU), 117);  // -17 as unsigned 32 bits
+        assert_eq(testSwitch6(0xfffe7960U), 118);  // -100000 as unsigned 32 bits
+
+        for (signed i = -24; i <= +2; ++i)
+        {
+            int expected = (i < -22 ? 102
+                            : (i <= -20 ? 101
+                            : (i < -14 ? 102
+                            : (i <= -10 ? 100
+                            : (i < -8 ? 102
+                            : (i <= -8 ? 100
+                            : (i < -3 ? 102
+                            : (i <= 0 ? 100
+                            : 102)))))))); 
+            long arg = i - 300000L;
+            int actual = testSwitch8(arg);
+            //printf("arg=%ld: got %5d, expected %5d\n", arg, actual, expected);
+            assert_eq(actual, expected);
+        }
+
+        // break inside an if().
+        int n = 17;
+        switch (300000UL)
+        {
+        case 300000:
+            if (n == 17)
+            {
+                n = 88;
+                break;
+            }
+        case 4:
+            n = 99;
+            break;
+        }
+        assert_eq(n, 88);
+        
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{switch() on a 32-bit expression using a jump table},
+compilerOptions => "--switch=jump",
+program => q`
+    int testSwitch1(long n)
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case -3:
+            return 100;
+        case 0:
+            ret = 101;
+            break;
+        case 5:
+            ret = 102;
+            // FALLTHROUGH
+        case 2:
+            ret = 103;
+            break;
+        default:
+            ret = 999;
+        }
+        return ret;
+    }
+    int testSwitch2(long n)  // default in the middle
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case -3:
+            return 100;
+        default:
+            ret = 999;
+            break;
+        case 0:
+            ret = 101;
+            break;
+        case 0xFFFFFFFF:
+            ret = 105;
+            break;
+        case 5:
+            ret = 102;
+            // FALLTHROUGH
+        case 2:
+            ret = 103;
+        }
+        return ret;
+    }
+
+    int testSwitch6(unsigned long n)
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case 5:
+        case 6:
+        case 7:
+        case 8:
+        case 9:
+        case 10:
+        case 11:
+        case 12:
+        case 13:
+        case 14:
+        case 15:
+        case 16:
+        case 17:
+        case 18:
+        case 19:
+        case 20:
+        case 21:
+        case 22:
+        case 23:
+        case 24:
+            return 100;
+        case 30:
+        case 31:
+        case 32:
+        case 33:
+        case 34:
+        case 35:
+        case 36:
+        case 37:
+        case 38:
+        case 39:
+            return 101;
+        default:
+            return 102;
+        }
+        return ret;
+    }
+    
+    int testSwitch7(signed long n)
+    {
+        switch (n)
+        {
+        case -3:
+        case -2:
+        case -1:
+        case 0:
+        case 1:
+        case 2:
+        case 3:
+        case 4:
+        case 5:
+            return 100;
+        case 10:
+        case 11:
+        case 12:
+        case 13:
+        case 14:
+            return 101;
+        default:
+            return 102;
+        }
+        return 7777;
+    }
+    
+    int testSwitch8(signed long n)
+    {
+        switch (n)
+        {
+        case -300000:
+        case -300001:
+        case -300002:
+        case -300003:
+
+        case -300008:
+
+        case -300010:
+        case -300011:
+        case -300012:
+        case -300013:
+        case -300014:
+            return 100;
+        case -300020:
+        case -300021:
+        case -300022:
+            return 101;
+        default:
+            return 102;
+        }
+        return 7777;
+    }
+
+    int main()
+    {
+        assert_eq(testSwitch1(-3), 100);
+        assert_eq(testSwitch1( 0), 101);
+        assert_eq(testSwitch1( 5), 103);
+        assert_eq(testSwitch1( 2), 103);
+        assert_eq(testSwitch1(-9), 999);
+
+        assert_eq(testSwitch2(-3), 100);
+        assert_eq(testSwitch2( 0), 101);
+        assert_eq(testSwitch2( 5), 103);
+        assert_eq(testSwitch2( 2), 103);
+        assert_eq(testSwitch2(-9), 999);
+
+        assert_eq(testSwitch2(65533), 999);
+        assert_eq(testSwitch2(4294967293), 100);
+        assert_eq(testSwitch2(    0), 101);
+        assert_eq(testSwitch2(    5), 103);
+        assert_eq(testSwitch2(    2), 103);
+        assert_eq(testSwitch2(65527), 999);
+        assert_eq(testSwitch2(4294967287), 999);
+
+        assert_eq(testSwitch2((signed long) 4294967295), 105);  // 0xFFFFFFFF
+        
+        for (unsigned i = 3; i <= 41; ++i)
+        {
+            int expected = (i < 5 ? 102 : (i <= 24 ? 100 : (i <= 29 ? 102 : (i <= 39 ? 101 : 102)))); 
+            int actual = testSwitch6(i);
+            //printf("i=%2u: got %5d, expected %5d\n", i, actual, expected);
+            assert_eq(actual, expected);
+        }
+        
+        for (signed i = -7; i <= 16; ++i)
+        {
+            int expected = (i < -3 ? 102 : (i <= 5 ? 100 : (i < 10 ? 102 : (i <= 14 ? 101 : 102)))); 
+            int actual = testSwitch7(i);
+            //printf("i=%2d: got %5d, expected %5d\n", i, actual, expected);
+            assert_eq(actual, expected);
+        }
+
+        for (signed i = -24; i <= +2; ++i)
+        {
+            int expected = (i < -22 ? 102
+                            : (i <= -20 ? 101
+                            : (i < -14 ? 102
+                            : (i <= -10 ? 100
+                            : (i < -8 ? 102
+                            : (i <= -8 ? 100
+                            : (i < -3 ? 102
+                            : (i <= 0 ? 100
+                            : 102)))))))); 
+            long arg = i - 300000L;
+            int actual = testSwitch8(arg);
+            //printf("arg=%ld: got %5d, expected %5d\n", arg, actual, expected);
+            assert_eq(actual, expected);
+        }
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Switch on a signed char with case values above 32767},
+tolerateWarnings => 1,
+program => q`
+    // This test does not pass as is under GCC on Linux, because int is 32 bits on that platform.
+    void f0(signed char sc)
+    {
+        word result = 0;
+        switch (sc)
+        {
+            case 0x80FF:  // low byte of case value is equal to low byte of 'sc', but no match
+                result = 1000;
+                break;
+            default:
+                result = 2000;
+        }
+        assert_eq(result, 2000);
+    }
+    void f1(signed char sc)
+    {
+        word result = 0;
+        switch (sc)
+        {
+            case 0xFFFF:
+                result = 3000;
+                break;
+            default:
+                result = 4000;
+        }
+        assert_eq(result, 4000);
+    }
+    void f2(signed char sc)
+    {
+        word result = 0;
+        switch (sc)
+        {
+            case 0xFF00:  // equivalent to -256; cannot match 0
+                result = 5000;
+                break;
+            default:
+                result = 6000;
+        }
+        assert_eq(result, 6000);
+    }
+    void f3(signed char sc)
+    {
+        word result = 0;
+        switch (sc)
+        {
+            case 0xFF80:
+                result = 7000;
+                break;
+            default:
+                result = 8000;
+        }
+        assert_eq(result, 8000);
+    }
+    int main()
+    {
+        f0(-1);
+        f1(-1);
+        f2(0);
+        f3(-128);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Switch on a signed char with case values above 32767, with jump tables},
+tolerateWarnings => 1,
+compilerOptions => "--switch=jump",
+program => q`
+    // This test does not pass as is under GCC on Linux, because int is 32 bits on that platform.
+    void f0(signed char sc)
+    {
+        word result = 0;
+        switch (sc)
+        {
+            case 0x80FF:  // low byte of case value is equal to low byte of 'sc', but no match
+                result = 1000;
+                break;
+            default:
+                result = 2000;
+        }
+        assert_eq(result, 2000);
+    }
+    void f1(signed char sc)
+    {
+        word result = 0;
+        switch (sc)
+        {
+            case 0xFFFF:
+                result = 3000;
+                break;
+            default:
+                result = 4000;
+        }
+        assert_eq(result, 4000);
+    }
+    void f2(signed char sc)
+    {
+        word result = 0;
+        switch (sc)
+        {
+            case 0xFF00:  // equivalent to -256; cannot match 0
+                result = 5000;
+                break;
+            default:
+                result = 6000;
+        }
+        assert_eq(result, 6000);
+    }
+    void f3(signed char sc)
+    {
+        word result = 0;
+        switch (sc)
+        {
+            case 0xFF80:
+                result = 7000;
+                break;
+            default:
+                result = 8000;
+        }
+        assert_eq(result, 8000);
+    }
+    int main()
+    {
+        f0(-1);
+        f1(-1);
+        f2(0);
+        f3(-128);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
 title => q{break vs. switch in a switch},
 program => q`
     char testSwitchInASwitch(byte a, byte b)
     {
         //printf("testSwitchInASwitch(a=%u, b=%u): start\n", a, b);
         byte iter = 0;
+        char result = 0;
         switch (a)
         {
         case 10:
@@ -5043,7 +6346,7 @@ program => q`
             switch (b)
             {
             case 22:
-                //printf("case 22\n");
+                result = 3;
                 break;
             default:
                 return 1;
@@ -5057,11 +6360,17 @@ program => q`
                     // in SwitchStmt::emitCode().
         }
         //printf("testSwitchInASwitch: end\n");
-        return 0;  // supposed to come here
+        return result;
     }
     int main()
     {
         byte result = testSwitchInASwitch(10, 22);
+        assert_eq(result, 3);
+        result = testSwitchInASwitch(10, 255);
+        assert_eq(result, 1);
+        result = testSwitchInASwitch(22, 255);  // a==22 must not go to case 22
+        assert_eq(result, 0);
+        result = testSwitchInASwitch(33, 255);
         assert_eq(result, 0);
         return 0;
     }
@@ -5171,21 +6480,21 @@ expected => ""
 {
 title => q{Function pointer in an array or a struct},
 program => q`
-    int f() { return 99; }
+    int f(void) { return 99; }
     struct S {
-        int (*funcPtr)();
+        int (*funcPtr)(void);
     };
     char g;
-    void someWork() { g = 42; }
+    void someWork(void) { g = 42; }
     int addOne(int x) { return x + 1; }
     struct T {
-        void (*work)();
+        void (*work)(void);
         int (*incLong)(int n); 
     };
     int main()
     {
         {
-            int (*funcPtrs[])() = { f };
+            int (*funcPtrs[])(void) = { f };
             assert_eq(funcPtrs[0](), 99);
             assert_eq((*funcPtrs[0])(), 99);
     
@@ -5247,6 +6556,8 @@ program => q`
         FuncPtr finalAddr = 0x0212;
         finalAddr += 0xFEFA;
         assert_eq(finalAddr, 0x010C);
+        finalAddr -= 0x1111;
+        assert_eq(finalAddr, 0xEFFB);
 
         finalAddr = 0x0212;
         finalAddr += origISR + 3;
@@ -5257,17 +6568,17 @@ program => q`
         assert_eq(finalAddr, 0x0109);
 
         finalAddr = 0x0212;
-	origISR = 0x0101;
+        origISR = 0x0101;
         finalAddr -= origISR;
         assert_eq(finalAddr, 0x0111);
 
         finalAddr = 0x0212;
-	origISR = 3;
+        origISR = 3;
         finalAddr *= origISR;
         assert_eq(finalAddr, 0x0636);
 
         finalAddr = 0x0212;
-	origISR = 2;
+        origISR = 2;
         finalAddr /= origISR;
         assert_eq(finalAddr, 0x0109);
 
@@ -5288,16 +6599,19 @@ program => q`
     int writable = 42;
     #pragma const_data start
     unsigned char readonly[] = { 9, 8, 7, 6 };
+    const struct S { int m; } readonlyStruct = { 999 };
     int k = 1000;
     #pragma const_data end
     int main()
     {
         assert_eq(writable, 42);
         assert_eq(readonly[2], 7);
+        assert_eq(readonlyStruct.m, 999);
         assert_eq(k, 1000);
         
         assert(&writable >= (void  *) 0x4F00 && &writable < 0x5000);
         assert(readonly > (void *) 0x5C00);
+        assert(&readonlyStruct > (void *) 0x5C00); 
         assert(&k > (void *) 0x5C00);
         return 0;
     }
@@ -5316,15 +6630,18 @@ program => q`
     // instead of #pragma const_data.
     int writable = 42;
     const unsigned char readonly[] = { 9, 8, 7, 6 };
+    const struct S { int m; } readonlyStruct = { 999 };
     const int k = 1000;
     int main()
     {
         assert_eq(writable, 42);
         assert_eq(readonly[2], 7);
+        assert_eq(readonlyStruct.m, 999);
         assert_eq(k, 1000);
         
         assert(&writable >= (void  *) 0x4F00 && &writable < 0x5000);
         assert(readonly > (void *) 0x5C00); 
+        assert(&readonlyStruct > (void *) 0x5C00); 
         assert(&k > (void *) 0x5C00);
         return 0;
     }
@@ -5334,7 +6651,7 @@ expected => ""
 
 
 {
-title => q{global array of const arrays with --no-relocate},
+title => q{Global array of const arrays with --no-relocate},
 compilerOptions => "--org=5C00 --data=4F00 --no-relocate",
 program => q`
     const unsigned char byteArray0[] = { 99, 88, 77, 66 };
@@ -5366,7 +6683,7 @@ expected => ""
 
 
 {
-title => q{global array of const arrays without relocatability},
+title => q{Global array of const arrays without --no-relocate},
 compilerOptions => "--org=5C00 --data=4F00",  # not passing --no-relocate
 program => q`
     const unsigned char byteArray0[] = { 99, 88, 77, 66 };
@@ -5379,9 +6696,11 @@ program => q`
     {
         assert(byteArray0  >= (void *) 0x5C00);  // rodata
         assert(byteArray1  >= (void *) 0x5C00);  // rodata
+        #ifndef _CMOC_NO_RELOCATE_
         assert(byteArraysA <  (void *) 0x5C00);  // rwdata b/c byteArray0/byteArray1 depend on load address
         assert(byteArraysB <  (void *) 0x5C00);  // ditto
         assert(byteArraysC <  (void *) 0x5C00);  // ditto re: byteArray2
+        #endif
         assert_eq(byteArraysA[0], byteArray0);
         assert_eq(byteArraysA[1], byteArray1);
         assert_eq(byteArraysB[0], byteArray0);
@@ -5401,8 +6720,8 @@ expected => ""
 title => q{Function pointer in an array vs. --no-relocate},
 compilerOptions => "--org=5C00 --data=4F00 --no-relocate",
 program => q`
-    int f() { return 9999; }
-    typedef int (*FuncPtr)();
+    int f(void) { return 9999; }
+    typedef int (*FuncPtr)(void);
     const FuncPtr fpArray[] = { f };
     int main()
     {
@@ -5418,55 +6737,14 @@ expected => ""
 title => q{Function pointer in an array vs. relocatability},
 compilerOptions => "--org=5C00 --data=4F00",
 program => q`
-    int f() { return 9999; }
-    typedef int (*FuncPtr)();
+    int f() { return 9999; }   // implied K&R ellipsis
+    typedef int (*FuncPtr)();  // implied K&R ellipsis
     const FuncPtr fpArray[] = { f };
     int main()
     {
+        #ifndef _CMOC_NO_RELOCATE_
         assert(fpArray < (void *) 0x5C00);  // rwdata b/c address of function f() depends on load address
-        return 0;
-    }
-    `,
-expected => ""
-},
-
-
-{
-title => q{#pragma exec_once},
-program => q`
-    #pragma exec_once
-    int main()
-    {
-        char *_program_end;
-        char *_INITGL;
-        asm {
-            leax    program_end,pcr
-            stx     _program_end
-            leax    INITGL,pcr
-            stx     _INITGL
-        }
-        assert(_program_end == _INITGL);
-        return 0;
-    }
-    `,
-expected => ""
-},
-
-
-{
-title => q{Absence of #pragma exec_once},
-program => q`
-    int main()
-    {
-        char *_program_end;
-        char *_INITGL;
-        asm {
-            leax    program_end,pcr
-            stx     _program_end
-            leax    INITGL,pcr
-            stx     _INITGL
-        }
-        assert(_program_end > _INITGL);
+        #endif
         return 0;
     }
     `,
@@ -5505,6 +6783,58 @@ After:
         assert_eq(called, 1);
         // Address of failed check is expected to be between labels Before and After:
         assert(before <= g_addressOfFailedCheck && g_addressOfFailedCheck < after);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+compilerOptions => "--check-null",
+title => q{--check-null on assignment through pointer},
+program => q`
+    char called = 0;
+    void nullPointerHandler(void *addressOfFailedCheck)
+    {
+        ++called;
+    }
+    int main()
+    {
+        set_null_ptr_handler(nullPointerHandler);
+        asm { clr >0 }
+        unsigned char *p = 0;
+        * (char *) p = '$';  // must trigger call to nullPointerHandler()
+        assert_eq(* (char *) 0, '$');
+        *p = '%';  // must trigger call to nullPointerHandler()
+        assert_eq(* (char *) 0, '%');
+        * (char *) p = '\0';  // must trigger call to nullPointerHandler()
+        assert_eq(* (char *) 0, '\0');
+        assert_eq(called, 3);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+compilerOptions => "--check-null",
+title => q{--check-null on assignment through literal null pointer},
+program => q`
+    char called = 0;
+    void nullPointerHandler(void *addressOfFailedCheck)
+    {
+        ++called;
+        assert_eq(* (unsigned char *) addressOfFailedCheck, 0x17);  // check for LBSR instruction that called check_null_ptr_x
+    }
+    int main()
+    {
+        set_null_ptr_handler(nullPointerHandler);
+        asm { clr >0 }
+        * (char *) 0 = '$';  // must trigger call to nullPointerHandler(), even with -O2
+        assert_eq(* (char *) 0, '$');
+        assert_eq(called, 1);
         return 0;
     }
     `,
@@ -5632,7 +6962,7 @@ program => q`
         // Field width > 255.
         char temp[260];
         memset(temp, 'X', 260);
-        sprintf(temp, "%258s", ' ');  // overwrite 0..258; don't overwrite last 'X'
+        sprintf(temp, "%258s", " ");  // overwrite 0..258; don't overwrite last 'X'
         assert(temp[258] == 0);
         assert(temp[259] == 'X');
         for (int i = 0; i < 258; ++i)
@@ -5703,7 +7033,7 @@ program => q`
         assert_eq(u, 4242);
         
         // Signed cases.
-        char b;
+        signed char b;
         b = 0;
         assert_eq(b, 0);
         b = -42;
@@ -5725,8 +7055,9 @@ expected => ""
 {
 title => q{Multiplication},
 program => q`
-    char fc(char c) { return c; }
+    signed char fc(signed char c) { return c; }
     int fi(int n) { return n; }
+    byte f() { return 42; }
     int main()
     {
         {
@@ -5738,6 +7069,12 @@ program => q`
         assert_eq(b2, 18);
         b2 = 4 * b1;
         assert_eq(b2, 20);
+        b2 = f() * 6;
+        assert_eq(b2, 252);
+        b2 = f() * 1;
+        assert_eq(b2, 42);
+        b2 = f() * 0;
+        assert_eq(b2, 0);
 
         // Check that other binary operators accept an int constant and still return a byte.
         b2 = b0 / 6;
@@ -5798,9 +7135,9 @@ program => q`
         
         // Signed cases.
         {
-        char c0 = -3;
-        char c1 = 5;
-        char c2 = c0 * c1;
+        signed char c0 = -3;
+        signed char c1 = 5;
+        signed char c2 = c0 * c1;
         assert_eq(c2, -15);
         c2 = c0 * 6;
         assert_eq(c2, -18);
@@ -5981,6 +7318,7 @@ program => q`
         assert_eq(320 * 200, -1536);  // mul is signed because operands are both signed
         assert_eq(320 * 200 / 2, 0xFD00);  // div is signed, so 0xFA00 gets ASR
         assert_eq(320 * 200 / 2, -768);
+        assert_eq(320u * 200u / 2u, 32000);
         assert_eq((unsigned) 320 * 200, 64000);
         assert_eq((unsigned) 320 * 200 / 2, 32000);
         return 0;
@@ -5992,6 +7330,7 @@ expected => ""
 
 {
 noPreamble => 1,  # do not include cmoc.h
+tolerateWarnings => 1,  # accept warning about multiple definitions _putchar, etc.
 title => q{Redefining a function provided by the system library},
 program => q`
     // cmoc.h not included, so we need to declare putstr() here.
@@ -6053,15 +7392,15 @@ program => q`
     {
         return dividend % divisor;
     }
-    char multiplyc(char dividend, char divisor)
+    signed char multiplyc(signed char dividend, signed char divisor)
     {
         return dividend * divisor;
     }
-    char dividec(char dividend, char divisor)
+    signed char dividec(signed char dividend, signed char divisor)
     {
         return dividend / divisor;
     }
-    char moduloc(char dividend, char divisor)
+    signed char moduloc(signed char dividend, signed char divisor)
     {
         return dividend % divisor;
     }
@@ -6076,6 +7415,14 @@ program => q`
     byte modulouc(byte dividend, byte divisor)
     {
         return dividend % divisor;
+    }
+    byte same(byte n)
+    {
+        return n;
+    }
+    sbyte sameSigned(sbyte n)
+    {
+        return n;
     }
     int main()
     {
@@ -6139,16 +7486,16 @@ program => q`
         assert_eq(uc / (byte) 4, 62);
         assert_eq(uc / (byte) 64, 3);
         assert_eq(uc / (byte) 128, 1);
-        char sc = 125;
-        assert_eq(sc / (char) 1, 125);
-        assert_eq(sc / (char) 2, 62);
-        assert_eq(sc / (char) 4, 31);
-        assert_eq(sc / (char) 32, 3);
+        signed char sc = 125;
+        assert_eq(sc / (signed char) 1, 125);
+        assert_eq(sc / (signed char) 2, 62);
+        assert_eq(sc / (signed char) 4, 31);
+        assert_eq(sc / (signed char) 32, 3);
         sc = -125;
-        assert_eq(sc / (char) 1, -125);
-        assert_eq(sc / (char) 2, -62);
-        assert_eq(sc / (char) 4, -31);
-        assert_eq(sc / (char) 32, -3);
+        assert_eq(sc / (signed char) 1, -125);
+        assert_eq(sc / (signed char) 2, -62);
+        assert_eq(sc / (signed char) 4, -31);
+        assert_eq(sc / (signed char) 32, -3);
         
         // Special cases of byte modulo.
         assert_eq(uc % (byte) 1, 0);
@@ -6165,13 +7512,57 @@ program => q`
                 //printf("%3u / 7 = %2u remainder %u\n", dividend, quotient, remainder);
                 byte computedQuotient = dividend / 7;
                 assert_eq(computedQuotient, quotient);
+                assert_eq(same(dividend) / 7, quotient);  // case where dividend is not a variable
                 byte computedRemainer = dividend % 7;
                 assert_eq(computedRemainer, remainder);
+                assert_eq(same(dividend) % 7, remainder);  // case where dividend is not a variable
                 if (dividend == 255)
                     break;
             }
             if (dividend == 255)
                 break;
+        }
+        {
+            // Same test, but with a signed dividend. DIV8BY7 not used because signed dividend.
+            sbyte dividend = -128;
+            sbyte remainder = -2;
+            sbyte quotient = -18;
+            byte counter = 3;  // when reaches 0, expected quotient gets updated
+            sbyte minRemainder = -6;
+            sbyte maxRemainder = 0;
+            for (;;)
+            {
+                //printf("Expected: %4d / 7 = %4d remainder %2d\n", dividend, quotient, remainder);
+                sbyte computedQuotient = dividend / 7;
+                //printf("  computedQuotient = %d\n", computedQuotient);
+                assert_eq_signed(computedQuotient, quotient);
+                assert_eq_signed(sameSigned(dividend) / 7, quotient);  // case where dividend is not a variable
+                sbyte computedRemainer = dividend % 7;
+                //printf("  computedRemainer = %d\n", computedRemainer);
+                //printf("Actual: %4d / 7 = %4d remainder %4d\n", dividend, computedQuotient, computedRemainer);
+                assert_eq_signed(computedRemainer, remainder);
+                assert_eq_signed(sameSigned(dividend) % 7, remainder);  // case where dividend is not a variable
+                ++dividend;
+                if (dividend == -128)  // end loop if wrapped around
+                    break;
+                if (--counter == 0)
+                {
+                    //printf("counter now 0, dividend=%d, quotient=%d\n", dividend, quotient);
+                    if (dividend == 1)
+                    {
+                        minRemainder = 0;
+                        maxRemainder = 6;
+                        counter = 6;
+                    }
+                    else
+                    {
+                        ++quotient;
+                        counter = 7;
+                    }
+                }
+                if (++remainder > maxRemainder)
+                    remainder = minRemainder;
+            }
         }
         
         // Division of unsigned word by 10 (LBSR DIV16BY10).
@@ -6243,11 +7634,11 @@ program => q`
 
         // Division of signed byte by 10.
         {
-            char quotient = -12;
+            signed char quotient = -12;
             byte counter = 1;
-            for (char dividend = -128; ; ++dividend)
+            for (signed char dividend = -128; ; ++dividend)
             {
-                char computedQuotient = dividend / 10;
+                signed char computedQuotient = dividend / 10;
                 //printf("%5d / 10 = %5d\n", dividend, computedQuotient);
                 assert_eq(computedQuotient, quotient);
                 if (++counter == 10)
@@ -6297,18 +7688,18 @@ program => q`
         assert_eq(j, 200);
         
         // Signed byte, 0..127.
-        char c;
+        signed char c;
         for (c = 0; c >= 0; ++c)
         {
-            char computed = c / 2;
-            char expected = c >> 1;
+            signed char computed = c / 2;
+            signed char expected = c >> 1;
             assert_eq(computed, expected);
         }
         // Signed byte, -1..-128.
         for (c = -1; c != -128; --c)
         {
-            char computed = c / 2;
-            char expected = -((-c) >> 1);
+            signed char computed = c / 2;
+            signed char expected = -((-c) >> 1);
             //printf("%d %d %d\n", c, computed, expected);
             assert_eq(computed, expected); 
         }
@@ -6318,6 +7709,31 @@ program => q`
         assert_eq(u0 / u1, 0); 
         assert_eq(u1 / u0, 0xFFFF);  // division by zero does not hang
 
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Division of unsigned byte by 3},
+program => q`
+    byte same(byte n) { return n; }
+    int main()
+    {
+        byte dividend = 0, quotient = 0, counter = 0;
+        do
+        {
+            //printf("%3u / 3 = %3u, %3u, %3u\n", dividend, dividend / 3, same(dividend) / 3, quotient);
+            assert_eq(dividend / 3, quotient);
+            assert_eq(same(dividend) / 3, quotient);
+            if (++counter == 3)
+            {
+                ++quotient;
+                counter = 0;
+            }
+        } while (++dividend != 0);
         return 0;
     }
     `,
@@ -6500,7 +7916,11 @@ program => q`
         assert_eq(sizeof(u.b), 2);
         assert_eq(sizeof(u.s.c), 1);
         assert_eq(sizeof(u.s.i), 2);
-        
+
+        // Union declarator with initializer.
+        union Word wi = { 1000 };
+        assert_eq(wi.w, 1000);
+
         return 0;
     }
     `,
@@ -6672,13 +8092,13 @@ expected => "writableText=[foo]\nconstText=[bar]\nwritableText=[fXo]\nconstText=
 {
 title => q{Promotion to int for comparisons},
 program => q`
-    int s1(char *e)
+    int s1(signed char *e)
     {
-        if (*e == (char) 0xFF)  // *e compared with -1
+        if (*e == (signed char) 0xFF)  // *e compared with -1
             return 1;
         return 0;
     }
-    int s2(char *e)
+    int s2(signed char *e)
     {
         if (*e == 0xFFFF)  // *e sign-extended, then compared to 0xFFFF
             return 1;
@@ -6692,7 +8112,7 @@ program => q`
     }
     int u1(unsigned char *e)
     {
-        if (*e == (char) 0xFF)  // *e is zero-extended, then compared with -1, i.e., 0xFFFF
+        if (*e == (signed char) 0xFF)  // *e is zero-extended, then compared with -1, i.e., 0xFFFF
             return 1;
         return 0;
     }
@@ -6704,13 +8124,22 @@ program => q`
     }
     int main()
     {
-        char c = (char) 0xFF;
+        signed char c = (signed char) 0xFF;
         assert_eq(s1(&c), 1);
         assert_eq(s2(&c), 1);
         unsigned char uc = 0xFF;
         assert_eq(u0(&uc), 1);
         assert_eq(u1(&uc), 0);
         assert_eq(u2(&uc), 0);
+
+        // Prove that 8-bit comparison does not rely on A.
+        const char *p = "abc", *q = "cde";
+        asm { lda #$55 }
+        assert_ne(*p, *q);
+        p += 2;
+        asm { lda #$55 }
+        assert_eq(*p, *q);  // both should be 'c'
+
         return 0;
     }
     `,
@@ -7199,7 +8628,7 @@ expected => ""
 {
 title => q{Function pointer syntax},
 program => q`
-    char counter;
+    signed char counter;
     void unnamedArgFunc(int)
     {
         ++counter;
@@ -7237,7 +8666,7 @@ program => q`
     {
         return 42;
     }
-    int fi2(int i, char c)
+    int fi2(int i, signed char c)
     {
         return i + c;
     }
@@ -7245,13 +8674,13 @@ program => q`
     {
         return cb();
     }
-    int invokeCallback2ArgsRetInt(int (*cb)(int, char c))
+    int invokeCallback2ArgsRetInt(int (*cb)(int, signed char c))
     {
         return (*cb)(1000, -5);
     }
-    char fc0()
+    signed char fc0()
     {
-        char c = '$';
+        signed char c = '$';
         asm {
             lda #$EE    // put garbage in A
         }
@@ -7267,12 +8696,12 @@ program => q`
 
         assert_eq((fi0)(), 42);  // ordinary call, but with name in ()
 
-        int (*funcPtr2)(int i, char) = fi2;
+        int (*funcPtr2)(int i, signed char) = fi2;
         assert_eq((*funcPtr2)(10, 2), 12);
         assert_eq(funcPtr2(30, 7), 37);
         assert_eq(invokeCallback2ArgsRetInt(fi2), 995);
         
-        char (*funcPtr0c)() = fc0;
+        signed char (*funcPtr0c)() = fc0;
         assert_eq(sizeof(funcPtr0c()), 1);
         assert_eq(funcPtr0c(), '$');
         
@@ -7417,7 +8846,7 @@ expected => ""
 
 
 {
-title => q{Static keyword ignored, declaration still processed},
+title => q{Static global variable},
 program => q`
     static int g;
     
@@ -7641,7 +9070,7 @@ program => q`
         assert_eq(B8,  0x0100);
         assert_eq(B15, 0x8000);
         
-        assert_eq(THIRTY_TWO, 32);
+        assert_eq(THIRTY_TWO, 32);  // THIRTY_TWO here is still the enum name
         assert_eq(DEPENDENT_ON_PREVIOUS, 32);
         
         // Local variable name can hide enum name.
@@ -7659,9 +9088,9 @@ program => q`
         unsigned k0 = 22222, k1 = 22222;
         asm {
             ldd     #WALDO
-            std     k0
+            std     :k0
             ldd     #WALDO+234
-            std     k1
+            std     :k1
         }
         assert_eq(k0, 1000);
         assert_eq(k1, 1234);
@@ -7703,13 +9132,19 @@ program => q`
         assert_eq(atoui("0"),       0);
         assert_eq(atoui("1"),       1);
         assert_eq(atoui("543"),     543);
+        assert_eq(atoui("  543"),   543);
+        assert_eq(atoui("\t\t543"), 543);
         assert_eq(atoui("65535"),   65535);
         assert_eq(atoi("0"),        0);
         assert_eq(atoi("1"),        1);
         assert_eq(atoi("543"),      543);
+        assert_eq(atoi("  543"),    543);
+        assert_eq(atoi("\t\t543"),  543);
         assert_eq(atoi("32767"),    32767);
         assert_eq(atoi("-1"),       -1);
         assert_eq(atoi("-543"),     -543);
+        assert_eq(atoi("  -543"),   -543);
+        assert_eq(atoi("\t\t-543"), -543);
         assert_eq(atoi("-32768"),   -32768);
 
         char buf[64];
@@ -7802,7 +9237,44 @@ expected => ""
 
 
 {
+title => q{ultoa16()},
+linkerModeOnly => 1,
+program => q`
+    int main()
+    {
+        char buf[64];
+
+        assert_eq(ultoa16(0, buf),          buf);
+        assert_str_eq(buf, "0");
+        assert_eq(ultoa16(1, buf),          buf);
+        assert_str_eq(buf, "1");
+        assert_eq(ultoa16(543, buf),        buf);
+        assert_str_eq(buf, "21F");
+        assert_eq(ultoa16(32767, buf),      buf);
+        assert_str_eq(buf, "7FFF");
+        assert_eq(ultoa16(65535, buf),      buf);
+        assert_str_eq(buf, "FFFF");
+        assert_eq(ultoa16(64993, buf),      buf);
+        assert_str_eq(buf, "FDE1");
+        assert_eq(ultoa16(32768, buf),      buf);
+        assert_str_eq(buf, "8000");
+        assert_eq(ultoa16(65536, buf),      buf);
+        assert_str_eq(buf, "10000");
+        assert_eq(ultoa16(0x8765ABCD, buf), buf);
+        assert_str_eq(buf, "8765ABCD");
+        assert_eq(ultoa16(0xFFFFFFFF, buf), buf);
+        assert_str_eq(buf, "FFFFFFFF");
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
 title => q{Assignment operators on a struct field},
+compilerOptions => "-Wno-shift-always-zero",
 program => q`
     typedef struct {
         int _dummy, value;
@@ -7810,7 +9282,7 @@ program => q`
     
     typedef struct {
         int _dummy;
-        char value;
+        signed char value;
     } ByteValue;
     
     void test1div_ww(WordValue* t)
@@ -8003,7 +9475,7 @@ program => q`
         word w = b * (word) 100;
         assert_eq(w, 9900);
         
-        char sb = 99;
+        signed char sb = 99;
         int sw = sb * (int) 100;
         assert_eq(sw, 9900);
 
@@ -8058,7 +9530,7 @@ expected => ""
 {
 title => q{__FUNCTION__ and __func__},
 program => q`
-    char *g0 = __FUNCTION__, *g1 = __func__;
+    const char *g0 = __FUNCTION__, *g1 = __func__;
     void someFunction()
     {
         printf("%s\n", __FUNCTION__);
@@ -8084,6 +9556,7 @@ expected => "main\nsomeFunction\n\n\n"
 
 {
 title => q{Optimizer bug in ASMText::removeAndOrMulAddSub()},
+compilerOptions => "-Wno-shift-always-zero",
 program => q`
     unsigned char a[] = { 11, 22, 33 };
     int main()
@@ -8256,7 +9729,15 @@ program => q`
         assert_eq(c, '*');
         va_end(ap);
     }
-    
+    struct LargeStruct
+    {
+        char str[256];
+    };
+    void receiveLargeStruct(struct LargeStruct s)
+    {
+        assert_eq(s.str[0], '^');
+        assert_eq(s.str[255], '$');
+    }
     int main()
     {
         struct S instance = { 1000, 2000, 30 };
@@ -8288,6 +9769,13 @@ program => q`
         struct OneByte ob1 = { '-' };
         asm { clra }
         receiveOneByteStructViaEllipsis2(ob1, ob0, '*');
+
+        // Test a struct of at least 256 bytes, which is passed by a different
+        // utility function than structs of less than 256 bytes.
+        struct LargeStruct largeStructInstance;
+        largeStructInstance.str[0] = '^';
+        largeStructInstance.str[255] = '$';
+        receiveLargeStruct(largeStructInstance);
 
         return 0;
     }
@@ -8340,11 +9828,11 @@ expected => ""
 title => q{Argument too large for function parameter},
 tolerateWarnings => 1,
 program => q`
-    char takeChar(char x) { return x; }
+    signed char takeChar(signed char x) { return x; }
     unsigned char takeUnsignedChar(unsigned char x) { return x; }
     int main()
     {
-        char c = takeChar(0x1234);
+        signed char c = takeChar(0x1234);
         assert_eq(c, 0x34);
         c = takeChar(0x12F0);
         assert_eq(c, (int) -16); 
@@ -8365,9 +9853,9 @@ tolerateWarnings => 1,
 program => q`
     void f(int i, unsigned u)
     {
-        char c0 = i;
+        signed char c0 = i;
         assert_eq(c0, -32);
-        char c1 = u;
+        signed char c1 = u;
         assert_eq(c1, -48);
         unsigned char uc0 = i;
         assert_eq(uc0, (unsigned char) -32);
@@ -8477,8 +9965,8 @@ program => q`
         }
         assert_eq(n0, -4242);
         assert_eq(n1, -4242);
-        assert_eq(* (char *) HIGHMEM, 2);
-        assert_eq(* (char *) LOWMEM, -2);
+        assert_eq(* (signed char *) HIGHMEM, 2);
+        assert_eq(* (signed char *) LOWMEM, -2);
         return 0;
     }
     `,
@@ -8508,17 +9996,11 @@ expected => ""
 
 
 {
-title => q{const and volatile keywords accepted but ignored},
+title => q{volatile keyword accepted but ignored},
 tolerateWarnings => 1,
 program => q`
     int main()
     {
-        const int c = 0;
-        c = 999;
-        assert_eq(c, 999);
-        const char *s = "foo";
-        *s = 'g';
-        assert(!strcmp(s, "goo"));
         volatile int v = -1000;
         assert_eq(v, -1000);
         return 0;
@@ -8557,14 +10039,14 @@ program => q`
     
     typedef char *(*ArrayOfFuncPtrs[2])(int, char);
     
-    char noArgFunc() { return 'a'; }
+    char noArgFunc(void) { return 'a'; }
     
-    interrupt void isr() {}
+    interrupt void isr(void) {}
     
-    void installISR(interrupt void (*newISR)()) {}
+    void installISR(interrupt void (*newISR)(void)) {}
     
-    typedef interrupt void (*ISR)();
-    typedef void interrupt (*AltISR)();
+    typedef interrupt void (*ISR)(void);
+    typedef void interrupt (*AltISR)(void);
     
     ISR returnISR(ISR theISR) { return theISR; }
     AltISR returnAltISR(AltISR theISR) { return theISR; }
@@ -8974,8 +10456,16 @@ expected => ""
 
 {
 title => q{Tolerate NULL where typed pointer is expected},
+tolerateWarnings => 1,
 program => q`
     #define NULL ((void *) 0)
+    int *intArray[] =
+    {
+        NULL,
+        (void *) 1000,
+        (int) 2000UL,
+        (char) 127,
+    };
     int *f() { return NULL; }
     int main()
     {
@@ -8996,6 +10486,11 @@ program => q`
         assert_eq(t, NULL);
         t = NULL;
         assert_eq(t, NULL);
+
+        assert_eq(intArray[0], (int *) 0);
+        assert_eq(intArray[1], (int *) 1000);
+        assert_eq(intArray[2], (int *) 2000);
+        assert_eq(intArray[3], (int *) 127);
         return 0;
     }
     `,
@@ -9006,7 +10501,7 @@ expected => ""
 {
 title => q{Optimization of multiplication of two bytes giving a word},
 program => q`
-    // Optimization done by BinaryOpExpr::emitMulOfTypeUnsignedBytesGivingUnsignedWord().
+    // Optimization done by BinaryOpExpr::emitMulOfTypeUnsignedBytesGivingWord().
     void f(byte m, byte n)
     {
         word p0 = m * n;
@@ -9329,6 +10824,38 @@ expected => ""
 
 
 {
+title => q{switch() with large sparse array of values is generated as if-else sequence},
+compilerOptions => "--switch=jump",
+program => q`
+    int main()
+    {
+        // This switch must be generated as an if-else sequence,
+        // because a jump table would be much too large.
+        // Generating a jump table makes lwlink give an
+        // "unrecognized section flag 11" error, as of lwtools 4.18.
+        //
+        switch ((unsigned) rand())
+        {
+            case 0: return 1;
+            case 5000: return 2;
+            case 65535: return 0;
+            default: return 3;
+        }
+        switch ((signed) rand())
+        {
+            case 0: return 1;
+            case 5000: return 2;
+            case 65535: return 0;
+            default: return 3;
+        }
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
 title => q{Optimized multiplication of word by 10},
 linkerModeOnly => 1,
 program => q`
@@ -9420,15 +10947,29 @@ expected => ""
 {
 title => q{Array indexing optimization for unsigned byte index and element size},
 program => q`
+    struct S { unsigned u; char c; };  // 3-byte struct
     int a[10][15];
     void test(byte index)
     {
         a[index][9] = 'X';
     }
+    struct S vs[] = { { 1000, 10 }, { 2000, 20 } };
     int main()
     {
         test(7);
         assert_eq(a[7][9], 'X');
+
+        byte index = 0;
+        asm { nop }
+        assert_eq(vs[index].u, 1000);
+        asm { nop }
+        assert_eq(vs[index].c, 10);
+        asm { nop }
+        ++index;
+        asm { nop }
+        assert_eq(vs[index].u, 2000);
+        asm { nop }
+        assert_eq(vs[index].c, 20);
         return 0;
     }
     `,
@@ -9492,7 +11033,8 @@ program => q`
         byte temp;
         asm
         {
-            ldb     :s[3]
+            ldx     :s          // point X to start of string
+            ldb     3,x         // get char at index 3 in that string
             stb     :temp
         }
         return temp;
@@ -9511,7 +11053,8 @@ expected => ""
 
 
 {
-title => q{First parameter passed in register},
+title => q{First parameter passed in register},  # This calling convention is unsupported and subject to change, as of August 2022.
+tolerateWarnings => 1,  # b/c calls to takesByte(byte, int) that receive int expression as 1st arg
 program => q`
     int firstParamOnStack(int a, int b)
     {
@@ -9520,7 +11063,7 @@ program => q`
     } 
     _CMOC_fpir_ int firstParamInReg(int a, int b)
     {
-        assert(&a <= &b - 2);  // a is below return address, so at least two "ints" of difference
+        assert((byte *) &a < (byte *) &b - 2);  // a is spilled below return address, so at least 2 bytes of difference
         return a + b;
     }
     typedef _CMOC_fpir_ int (*FuncPtrType_firstParamInReg)(int a, int b);
@@ -9530,7 +11073,7 @@ program => q`
         struct S s = { a + b };
         return s; 
     } 
-    _CMOC_fpir_ struct S returnsStructNoArgs()
+    _CMOC_fpir_ struct S returnsStructNoArgs(void)
     {
         struct S s = { -9876 };
         return s; 
@@ -9542,6 +11085,11 @@ program => q`
     _CMOC_fpir_ long takesLongButNotAsFirstParam(int a, long b)
     {
         return a + b;
+    }
+    _CMOC_fpir_ byte takesByte(byte a, int b)
+    {
+        assert((byte *) &a < (byte *) &b - 2);  // a is spilled below return address, so at least 3 bytes of difference
+        return (byte) (~a + b);
     }
     int main()
     {
@@ -9557,6 +11105,12 @@ program => q`
         assert_eq(s.x, -9876);
         assert(returnsLong(50000, 60000) == 110000L);
         assert(takesLongButNotAsFirstParam(333, 70000L) == 70333L);
+        assert_eq(takesByte(0x55, 3), 0xAD);
+        char c = 0x33;
+        assert_eq(takesByte(c, 3), 0xCF);
+        int n = 0x4444;
+        assert_eq(takesByte(n, 3), 0xBE);
+        assert_eq(takesByte(n + c, 3), 0x8B);
         return 0;
     }
     `,
@@ -9596,7 +11150,7 @@ program => q`
     }
     int compareSignedBytes(const void *a, const void *b)
     {
-        char charA = * (char *) a, charB = * (char *) b;
+        signed char charA = * (signed char *) a, charB = * (signed char *) b;
         return charA == charB ? 0 : (charA < charB ? -1 : 1);
     }
     typedef struct S { unsigned long x, y, z; } S;
@@ -9608,7 +11162,7 @@ program => q`
         return aULong == bULong ? 0 : (aULong < bULong ? -1 : 1);
     }
 
-    char signedBytes[] =  // Defining this in main() would increase -O2 compile time...
+    signed char signedBytes[] =  // Defining this in main() would increase -O2 compile time...
     {
          118,  -91,  -67,  107,   35,    8,  -71,  115,  -60,    6,   57,  -78,  -67,   83,   25,  -12, 
          -10, -117,  -35,   32,   64,  -43,   64,   52, -108,  123,   98,   12, -101,   61, -107,  100, 
@@ -9650,11 +11204,11 @@ program => q`
         qsort(numbers, 1, sizeof(int), compareInts);  // single element: ditto 
 
         // Signed bytes:
-        char pair[2] = { 42, -128 };
+        signed char pair[2] = { 42, -128 };
         qsort(pair, 2, 1, compareSignedBytes);
         assert_eq(pair[0], -128);
         assert_eq(pair[1], 42);
-        char otherPair[2] = { -91, -12 };
+        signed char otherPair[2] = { -91, -12 };
         qsort(otherPair, 2, 1, compareSignedBytes);
         assert_eq(otherPair[0], -91);
         assert_eq(otherPair[1], -12);
@@ -9769,6 +11323,7 @@ expected => ""
 {
 title => q{Optimization stripOpToDeadReg vs. TFR CC,B},
 program => q`
+    byte f(byte z) { return z; }
     int main()
     {
         byte b = 0xAA;
@@ -9778,6 +11333,21 @@ program => q`
         assert_eq(isBitReset, 0);
         byte isBitSet = !!(*p & mask);
         assert_eq(isBitSet, 1);
+
+        word w = 0xAABB;
+        word *pw = &w;
+        word wmask = 0x0200;
+        isBitReset = !(*pw & wmask);
+        assert_eq(isBitReset, 0);
+        isBitSet = !!(*pw & wmask);
+        assert_eq(isBitSet, 1);
+
+        asm { nop }
+        assert_eq(f(!!b), 1);
+        b = 0;
+        asm { nop }
+        assert_eq(f(!!b), 0);
+
         return 0;
     }
     `,
@@ -10045,6 +11615,131 @@ expected => ""
 
 
 {
+title => q{Initializing a long int variable from a short int},
+program => q`
+    int main()
+    {
+        unsigned long ul = 0xDEADBEEFul;
+        signed long   sl = 0x9BADF00Dl;
+
+        unsigned short usFromUL = (unsigned short) ul;
+        signed   short ssFromUL = (signed   short) ul;
+        unsigned short usFromSL = (unsigned short) sl;
+        signed   short ssFromSL = (signed   short) sl;
+
+        assert_eq(usFromUL, 0xBEEFu);
+        assert_eq(ssFromUL, 0xBEEFu);
+        assert_eq(usFromSL, 0xF00D);
+        assert_eq(ssFromSL, 0xF00D);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+   
+
+{
+title => q{Returning an int from a function that returns a long},
+program => q`
+    long returnIntForLong(void)
+    {
+        return -30000;
+    }
+    unsigned long returnIntForULong(void)
+    {
+        return -30000;
+    }
+    long returnUIntForLong(void)
+    {
+        return 60000;
+    }
+    unsigned long returnUIntForULong(void)
+    {
+        return 60000;
+    }
+    long returnULongForLong(void)
+    {
+        return 4000000000UL;
+    }
+    unsigned long returnLongForULong(void)
+    {
+        return -2000000000L;
+    }
+    int main()
+    {
+        assert(returnIntForLong() == -30000L);
+        assert(returnIntForULong() == 4294937296UL);
+        assert(returnUIntForLong() == 60000L);
+        assert(returnUIntForULong() == 60000UL);
+        assert(returnULongForLong() == -294967296L);
+        assert(returnLongForULong() == 2294967296UL);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Casting a long to a pointer},
+program => q`
+    int main()
+    {
+        const long a = 0xDE0000EF, b = 0x00ADBE00;
+        assert(a + b == 0xDEADBEEF);
+        assert((long) a + (long) b == 0xDEADBEEF);
+
+        // Test declaration initializations.
+
+        unsigned char *p0 = (unsigned char *) ((long) 0xDE0000EF + (long) 0x00ADBE00);
+        assert_eq(p0, 0xBEEF);
+        unsigned char *p1 = (unsigned char *) (0xDE0000EF + 0x00ADBE00);
+        assert_eq(p1, 0xBEEF);
+        unsigned char *p2 = (unsigned char *) ((long) 0xDEADBEEF);
+        assert_eq(p2, 0xBEEF);
+        unsigned char *p3 = (unsigned char *) 0xDEADBEEF;
+        assert_eq(p3, 0xBEEF);
+
+        unsigned char *p4 = (unsigned char *) ((long) a + (long) b);
+        assert_eq(p4, 0xBEEF);
+        unsigned char *p5 = (unsigned char *) (a + b);
+        assert_eq(p5, 0xBEEF);
+        unsigned char *p6 = (unsigned char *) ((long) b);
+        assert_eq(p6, 0xBE00);
+        unsigned char *p7 = (unsigned char *) b;
+        assert_eq(p7, 0xBE00);
+
+        // Same tests, with assignments.
+
+        unsigned char *a0, *a1, *a2, *a3, *a4, *a5, *a6, *a7;
+
+        a0 = (unsigned char *) ((long) 0xDE0000EF + (long) 0x00ADBE00);
+        assert_eq(a0, 0xBEEF);
+        a1 = (unsigned char *) (0xDE0000EF + 0x00ADBE00);
+        assert_eq(a1, 0xBEEF);
+        a2 = (unsigned char *) ((long) 0xDEADBEEF);
+        assert_eq(a2, 0xBEEF);
+        a3 = (unsigned char *) 0xDEADBEEF;
+        assert_eq(a3, 0xBEEF);
+
+        a4 = (unsigned char *) ((long) a + (long) b);
+        assert_eq(a4, 0xBEEF);
+        a5 = (unsigned char *) (a + b);
+        assert_eq(a5, 0xBEEF);
+        a6 = (unsigned char *) ((long) b);
+        assert_eq(a6, 0xBE00);
+        a7 = (unsigned char *) b;
+        assert_eq(a7, 0xBE00);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
 title => q{Enumerated name initialized with sizeof expression, and later array initialized from enum name},
 program => q`
     const int v[] = { 10, 20, 30 };
@@ -10072,6 +11767,65 @@ expected => ""
 
 
 {
+title => q{Array parameter of size given by sum of constant and enum defined as sum},
+program => q`
+    enum { MAX = 3 + 2 };
+
+    void f(char a[MAX + 1])
+    {
+        strcpy(a, "abcde");
+    }
+
+    void g(char a[1 + MAX])
+    {
+        strcpy(a, "fghij");
+    }
+
+    int main()
+    {
+        char d[MAX + 1];
+        f(d);
+        assert_eq(strcmp(d, "abcde"), 0);
+        //printf("d=[%s]\n", d);
+        g(d);
+        assert_eq(strcmp(d, "fghij"), 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Using an enum name, defined by multiplying two integers, before having declared that name},
+program => q!
+    // Related to isVoidButNotEnumeratorName().
+    enum
+    {
+        S = 75,
+        E = 1000,
+        B = E,
+        T = B - S,
+        G = T - P,
+        P = 4 * 2000
+    };
+    int main()
+    {
+        //printf("S=%d, E=%d, B=%d, T=%d, P=%d, G=%d\n", S, E, B, T, P, G);
+        assert_eq(S, 75);
+        assert_eq(E, 1000);
+        assert_eq(B, 1000);
+        assert_eq(T, 925);
+        assert_eq(P, 8000);
+        assert_eq(G, -7075);
+        return 0;
+    }
+    !,
+expected => ""
+},
+
+
+{
 title => q{Or-assign operator inside an if() statement},
 program => q`
     long a = 0xab0defL, b = 0x00c000L;
@@ -10080,14 +11834,14 @@ program => q`
     {
         if (c)
             a |= b;
-        assert_eq(a, 0xabcdefL);
+        assert(a == 0xabcdefL);
         if (c)
             a &= b;
-        assert_eq(a, 0x00c000L);
+        assert(a == 0x00c000L);
         return 0;
         if (c)
             a ^= b;
-        assert_eq(a, 0x000000L);
+        assert(a == 0x000000L);
         return 0;
     }
    `,
@@ -10160,6 +11914,38 @@ program => q`
     {
         return u >> 24;
     }
+
+    unsigned long lShift8ip(unsigned long u)
+    {
+        u <<= 8;
+        return u;
+    }
+    unsigned long lShift16ip(unsigned long u)
+    {
+        u <<= 16;
+        return u;
+    }
+    unsigned long lShift24ip(unsigned long u)
+    {
+        u <<= 24;
+        return u;
+    }
+    unsigned long rShift8ip(unsigned long u)
+    {
+        u >>= 8;
+        return u;
+    }
+    unsigned long rShift16ip(unsigned long u)
+    {
+        u >>= 16;
+        return u;
+    }
+    unsigned long rShift24ip(unsigned long u)
+    {
+        u >>= 24;
+        return u;
+    }
+
     int main()
     {
         assert_eq(lShift8(0xDEADBEEFul),  0xADBEEF00ul);
@@ -10168,6 +11954,14 @@ program => q`
         assert_eq(rShift8(0xDEADBEEFul),  0x00DEADBEul);
         assert_eq(rShift16(0xDEADBEEFul), 0x0000DEADul);
         assert_eq(rShift24(0xDEADBEEFul), 0x000000DEul);
+
+        assert_eq(lShift8ip(0xDEADBEEFul),  0xADBEEF00ul);
+        assert_eq(lShift16ip(0xDEADBEEFul), 0xBEEF0000ul);
+        assert_eq(lShift24ip(0xDEADBEEFul), 0xEF000000ul);
+        assert_eq(rShift8ip(0xDEADBEEFul),  0x00DEADBEul);
+        assert_eq(rShift16ip(0xDEADBEEFul), 0x0000DEADul);
+        assert_eq(rShift24ip(0xDEADBEEFul), 0x000000DEul);
+
         return 0;
     }
     `,
@@ -10207,6 +12001,3400 @@ expected => ""
 },
 
 
+{
+title => q{Character matrix},
+program => q`
+    char a[5][6] =
+    {
+        "foo",
+        "bar",
+        "baz",
+        "quux",
+        "waldo",
+    };
+    char b[2][2][6] =
+    {
+        {
+            "Foo",
+            "Bar",
+        },
+        {
+            "foO",
+            "baR",
+        }
+    };
+    char c[2][2][2][6] =
+    {
+        {
+            {
+                "(a)",
+                "(b)",
+            },
+            {
+                "(c)",
+                "(d)",
+            }
+        },
+        {
+            {
+                "(e)",
+                "(f)",
+            },
+            {
+                "(g)",
+                "(h)",
+            }
+        }
+    };
+    int main()
+    {
+        assert_eq(memcmp(a, "foo\0\0\0bar\0\0\0baz\0\0\0quux\0\0waldo", 30), 0);
+        assert_eq(memcmp(b, "Foo\0\0\0Bar\0\0\0foO\0\0\0baR\0\0", 24), 0);
+        assert_eq(memcmp(c, "(a)\0\0\0(b)\0\0\0(c)\0\0\0(d)\0\0\0(e)\0\0\0(f)\0\0\0(g)\0\0\0(h)\0\0", 48), 0);
+        for (byte i = 0; i < 5; ++i)
+            printf("(%s)\n", a[i]);
+        for (byte i = 0; i < 2; ++i)
+            for (byte j = 0; j < 2; ++j)
+                for (byte k = 0; k < 2; ++k)
+                {
+                    assert_eq(strlen(c[i][j][k]), 3);
+                    assert_eq(c[i][j][k][0], '(');
+                    assert_eq(c[i][j][k][1], 'a' + (i * 4 + j * 2 + k));
+                    assert_eq(c[i][j][k][2], ')');
+                }
+
+        char aLocal[5][6] =
+        {
+            "aaa",
+            "bbb",
+            "ccc",
+            "ddd",
+            "eee",
+        };
+        for (byte i = 0; i < 5; ++i)
+            printf("(%s)\n", aLocal[i]);
+
+        char bLocal[2][2][6] =
+        {
+            {
+                "Foo",
+                "Bar",
+            },
+            {
+                "foO",
+                "baR",
+            }
+        };
+        for (byte i = 0; i < 2; ++i)
+            for (byte j = 0; j < 2; ++j)
+                printf("(%s)\n", bLocal[i][j]);
+
+        char cLocal[2][2][2][6] =
+        {
+            {
+                {
+                    "(a)",
+                    "(b)",
+                },
+                {
+                    "(c)",
+                    "(d)",
+                }
+            },
+            {
+                {
+                    "(e)",
+                    "(f)",
+                },
+                {
+                    "(g)",
+                    "(h)",
+                }
+            }
+        };
+        for (byte i = 0; i < 2; ++i)
+            for (byte j = 0; j < 2; ++j)
+                for (byte k = 0; k < 2; ++k)
+                    printf("[%s]\n", cLocal[i][j][k]);
+        return 0;
+    }
+    `,
+expected => "(foo)\n(bar)\n(baz)\n(quux)\n(waldo)\n"
+            . "(aaa)\n(bbb)\n(ccc)\n(ddd)\n(eee)\n"
+            . "(Foo)\n(Bar)\n(foO)\n(baR)\n"
+            . "[(a)]\n[(b)]\n[(c)]\n[(d)]\n[(e)]\n[(f)]\n[(g)]\n[(h)]\n"
+},
+
+
+{
+title => q{Initializer for a struct that contains a matrix of characters},
+program => q`
+    struct test
+    {
+        char arr[2][5];
+        int a;
+        int b;
+    };
+
+    struct test t = {{"ABCD", "abcd"}, 5, 11};
+    const struct test ct = {{"EFGH", "efgh"}, 55, 111};
+
+    int main()
+    {
+        //printf("%d %d %d\n", t.arr[1][2], t.a, t.b);
+        assert_eq(t.arr[1][2], 'c');
+        assert_eq(t.a, 5);
+        assert_eq(t.b, 11);
+        assert_eq(ct.arr[1][2], 'g');
+        assert_eq(ct.a, 55);
+        assert_eq(ct.b, 111);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Enum name in arithmetic expression in array parameter declaration},
+program => q`
+    enum
+    {
+        K = 6,
+        N = K + 2,
+    };
+    void f(char a[N + 1])
+    {
+        strcpy(a, "ABCDEFGH");
+    }
+    int main()
+    {
+        char b[N + 1];
+        assert_eq(K, 6);
+        assert_eq(N, 8);
+        assert_eq(N + 1, 9);
+        assert_eq(sizeof(b), 9);
+        f(b);
+        assert_eq(strcmp(b, "ABCDEFGH"), 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{6309 instructions allowed in inline assembly},
+program => q`
+    int main()
+    {
+        asm
+        {
+            bra     @skip
+            tfm     x+,y+
+@skip
+        }
+        printf("X\n");
+        return 0;
+    }
+    `,
+expected => "X\n"
+},
+
+
+{
+title => q{Sizeof an array struct member},
+program => q`
+    struct S { char n[8]; };
+    void f(unsigned k)
+    {
+        assert_eq(k, 8);
+    }
+    int main()
+    {
+        struct S *obj;
+        f(sizeof(obj->n));
+        return 0;
+    }
+   `,
+expected => ""
+},
+
+
+{
+title => q{typedef struct without body},
+program => q`
+    typedef struct S S;
+    void f(S *);
+    void g(S *) {}
+    int main()
+    {
+        S *p;
+        return 0;
+    }
+   `,
+expected => ""
+},
+
+
+{
+title => q{Local memcpy() is used when -nodefaultlibs is given},
+compilerOptions => "-nodefaultlibs",  # this does without the memcpy() provided by CMOC
+program => q`
+    struct S
+    {
+        char a, b[11];
+    };
+    char memcpyCalled = 0, sizeReceived = 0;
+    int main()
+    {
+        unsigned int x = 0x4142, y = 0x4344;
+        memcpy(&x, &y, sizeof(y));  // local memcpy() used here; it does not copy, so x stays the same
+
+        // Test with direct prints to stdout because assert_eq() would use printf(),
+        // which is not available because of -nodefaultlibs.
+        * (char *) 0xFF00 = (char) (x >> 8);     // supposed to print 'A' (0x41) to stdout under USim
+        * (char *) 0xFF00 = (char) x;            // supposed to print 'B' (0x42)
+        * (char *) 0xFF00 = '0' + memcpyCalled;  // supposed to print '1'
+        * (char *) 0xFF00 = '0' + sizeReceived;  // supposed to print '2', i.e., '0' + sizeof(y)
+        * (char *) 0xFF00 = '\n';
+        return 0;
+    }
+    void *memcpy(void *dst, const void *src, size_t size)
+    {
+        memcpyCalled = 1;
+        sizeReceived = (char) size;
+        return 0;
+    }
+    `,
+expected => "AB12\n"
+},
+
+
+{
+title => q{Scalar array with short initializer sequence},
+tolerateWarnings => 1,
+program => q`
+    unsigned int v0[40];
+    unsigned int v1[40] = {0};
+    const unsigned int constV[3] = {0};
+    unsigned int v2[40] = {42};
+    unsigned int m[][2] = {
+        { 10, 11 },
+        { 20, 21 },
+        { 30, 31 },
+        };
+    long v3[4] = { 100000L };
+    long v4[4] = { 100000L };
+    void check(unsigned int *v)
+    {
+        for (byte i = 1; i < 40; ++i)
+            assert_eq(v[i], 0);
+    }
+    int main()
+    {
+        assert_eq(sizeof(v0), 80);
+        assert_eq(sizeof(v1), 80);
+        assert_eq(v0[0], 0);
+        check(v0);
+        assert_eq(v1[0], 0);
+        check(v1);
+        assert_eq(v2[0], 42);
+        check(v2);
+        assert_eq((char *) v2 - (char *) v1, 80);  // v2 is really 80 bytes away from start of v1 (in read-write section)
+        // constV is in the read-only section.
+
+        for (byte i = 0; i < 40; ++i)
+        {
+            v1[i] = i;
+            v2[i] = i << 1;
+        }
+        for (byte i = 0; i < 40; ++i)
+        {
+            assert_eq(v1[i], i);
+            assert_eq(v2[i], i << 1);
+        }
+
+        assert_eq(v3[0], 100000L);
+        assert_eq(v3[1], 0);
+        assert_eq(v3[2], 0);
+        assert_eq(v3[3], 0);
+        assert_eq((char *) v4 - (char *) v3, 16);
+
+        assert_eq(sizeof(m), 12);
+        assert_eq(m[2][1], 31);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Macro invocation with space between macro name and arguments},
+program => q`
+    #define structassign(d, s) d = s
+    struct S { int n; };
+    int main()
+    {
+        struct S s0, s1;
+        s0.n = 0;
+        s1.n = 1000;
+        struct S *ps0 = &s0, *ps1 = &s1;
+        structassign (*ps0, *ps1);
+        assert_eq(s0.n, 1000);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Negation of words and bytes},
+program => q`
+    int main()
+    {
+        int i0 = -1844;
+        assert_eq(-i0, 1844);
+        unsigned u0 = 4481;
+        assert_eq(-u0, -4481);
+        char c0 = -42;
+        assert_eq(-c0, 42);
+        unsigned char uc0 = 24;
+        assert_eq(-uc0, -24);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Equality and inequality comparison involving a constant side},
+program => q`
+    word w() { return 1844; }
+    byte b() { return 42; }
+    unsigned long ul() { return 99999UL; }
+    int main()
+    {
+        byte good = 0, bad = 0;
+        if (w() == 1844) ++good;
+        if (w() != 1844) ++bad;
+        if (1844 == w()) ++good;
+        if (1844 != w()) ++bad;
+        if (b() == 42) ++good;
+        if (b() != 42) ++bad;
+        if (42 == b()) ++good;
+        if (42 != b()) ++bad;
+        if (ul() == 99999) ++good;
+        if (ul() != 99999) ++bad;
+        if (99999 == ul()) ++good;
+        if (99999 != ul()) ++bad;
+        assert_eq(good, 6);
+        assert_eq(bad, 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{16-bit overflow in computation of enumerator value},
+program => q`
+    enum  // enum values are signed 16-bit under CMOC
+    {
+        W = 320,
+        H = 200,
+        S = 0x2000,
+        E0 = S + W * H / 2,  // W * H overflows, gives -1536, so E0 is 0x1D00
+        E1 = S + W / 2 * H,  // 2nd term reordered to avoid mult. that gives >32767
+    };
+    int main()
+    {
+        assert_eq(E0, 0x1D00);
+        assert_eq(E1, 0x9D00);
+        assert_eq(E1, 40192);
+        assert_eq(E1, -25344);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Integral expression passed as argument to function expecting enum},
+tolerateWarnings => 1,
+program => q`
+    enum E
+    {
+        E0, E1, E2
+    };
+    enum E f(enum E e)
+    {
+        return e;
+    }
+    int main()
+    {
+        assert_eq(f(E0), E0);
+        assert_eq(f(E1), E1);
+        assert_eq(f(E2), E2);
+        assert_eq(f(0), E0);
+        assert_eq(f(1), E1);
+        assert_eq(f(2), E2);
+        assert_eq(f(3), 3);
+        assert_eq(f(-10), -10);
+        assert_eq(f(5555), 5555);
+        int i = 4321;
+        assert_eq(f(i), i);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Assignment of zero to byte location in an initializer},
+program => q`
+    int main()
+    {
+        asm { ldb #42 }  // simulate coming in with B not necessarily at zero
+        byte z = ((* (byte *) 0x3FFF) = 0);
+        assert_eq(z, 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{K&R function definitions},
+program => q`
+    foo(a, b)
+        signed char a;
+        int b;
+    {
+        return a + b;
+    }
+
+    bar()
+    {
+        return foo(99, 1000);
+    }
+
+    assumesInt(x, y, z)
+        signed char x;
+        unsigned z;
+    {
+        return x + y + z;
+    }
+
+    long returnsLong(x, y)
+        long x;
+    {
+        return x + y;
+    }
+
+    long returnsLongNoArgs()
+    {
+        return 99999L;
+    }
+
+    void voidFunc1(a)
+    {
+        assert_eq(a, 12345);
+    }
+
+    void voidFunc2(a)
+        unsigned long a;
+    {
+        assert_eq(a, 123456UL);
+    }
+
+    unsigned long receivesArray(v)
+        unsigned long v[3];
+    {
+        return v[0] + v[1] + v[2];
+    }
+
+    struct S { int m[3]; int bias; };
+    enum E { FIRST, SECOND, THIRD };
+
+    int receivesStructAndEnum(s, e)
+        struct S s;
+        enum E e;
+    {
+        switch (e)
+        {
+            case FIRST : return s.m[0] + s.bias;
+            case SECOND: return s.m[1] + s.bias;
+            case THIRD : return s.m[2] + s.bias;
+            return -11111;
+        }
+    }
+
+    int twoArgsOnSameLine(a, b)
+        int a, b;
+    {
+        return a + b;
+    }
+
+    int twoArgsOnSameLine2(a, b, c, p, m, n, z)
+        byte c;  // typedef name used here
+        int a, b;
+        void *p;
+        int *m, n, z;
+    {
+        return a + b + c + (unsigned) p + *m + n + z;
+    }
+
+    int main()
+    {
+        assert_eq(foo(-50, -5000), -5050);
+        assert_eq(bar(), 1099);
+        assert_eq(assumesInt(60, -1000, 30000), 29060);
+        assert_eq(returnsLong(-100000L, -33), -100033L);
+        assert_eq(returnsLongNoArgs(), 99999L);
+        voidFunc1(12345);
+        voidFunc2(123456UL);
+        unsigned long v[3] = { 100000UL, 200000UL, 300000UL };
+        assert_eq(receivesArray(v), 600000UL);
+        struct S s = { { 1000, 1001, 1002 }, 50 };
+        assert_eq(receivesStructAndEnum(s, FIRST ), 1050);
+        assert_eq(receivesStructAndEnum(s, SECOND), 1051);
+        assert_eq(receivesStructAndEnum(s, THIRD ), 1052);
+        assert_eq(twoArgsOnSameLine(1000, 2000), 3000);
+        int mm = 10000;
+        assert_eq(twoArgsOnSameLine2(1000, 2000, 99, 10000, &mm, 700, 100), 23899);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Tolerate second function declaration if first one has no parameters},
+program => q`
+    int f();
+    int f(int x) { return x + 1; }
+    int main()
+    {
+        assert_eq(f(42), 43);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{abs()},
+program => q`
+    int main()
+    {
+        assert_eq(abs(0), 0);
+        assert_eq(abs(50), 50);
+        assert_eq(abs(5000), 5000);
+        assert_eq(abs(32767), 32767);
+        assert_eq(abs(-50), 50);
+        assert_eq(abs(-5000), 5000);
+        assert_eq(abs(-32767), 32767);
+        assert_eq(abs(-32768), -32768);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{labs()},
+program => q`
+    int main()
+    {
+        assert_eq(labs(0), 0);
+        assert_eq(labs(50), 50);
+        assert_eq(labs(5000), 5000);
+        assert_eq(labs(500000), 500000);
+        assert_eq(labs(2147483647), 2147483647);
+        assert_eq(labs(-50), 50);
+        assert_eq(labs(-5000), 5000);
+        assert_eq(labs(-500000), 500000);
+        assert_eq(labs(-2147483647), 2147483647);
+        assert_eq(labs(-2147483648), -2147483648);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{long int, long signed, long unsigned},
+program => q`
+    // This checks double-keyword type names where 'long' come first.
+    int main()
+    {
+        long int li = -1000000;
+        assert_eq(li, -1000000);
+        long signed ls = -2000000;
+        assert_eq(ls, -2000000);
+        long unsigned lu = 1000000;
+        assert_eq(lu, 1000000);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Local static variable},
+program => q`
+    static int global;
+    int f(int param, void *addresses[2])
+    {
+        static int localStatic = 1000;
+        static const int constLocalStatic = 999;
+        int localAuto;
+
+        addresses[0] = (void *) &localStatic;
+        addresses[1] = (void *) &constLocalStatic;
+
+        localAuto = param;
+        ++localStatic;
+        return localStatic + constLocalStatic + localAuto;
+    }
+    int main()
+    {
+        void *addresses[2];
+        assert_eq(f(2000, addresses), 4000);
+        assert_eq(f(2000, addresses), 4001);
+        assert_eq(f(5000, addresses), 7002);
+
+        // Get the limits of the read--write and read-only data segments.
+        void *start_rwdata, *start_rodata;
+        size_t len_rwdata, len_rodata;
+        asm
+        {
+s_rwdata    IMPORT
+l_rwdata    IMPORT
+s_rodata    IMPORT
+l_rodata    IMPORT
+            leax    s_rwdata,pcr
+            stx     :start_rwdata
+            ldd     #l_rwdata
+            std     :len_rwdata
+            leax    s_rodata,pcr
+            stx     :start_rodata
+            ldd     #l_rodata
+            std     :len_rodata
+        }
+        //printf("localStatic at %p, constLocalStatic at %p\n", addresses[0], addresses[1]);
+        //printf("rwdata: %p len %u\n", start_rwdata, len_rwdata);
+        //printf("rodata: %p len %u\n", start_rodata, len_rodata);
+
+        // Check that localStatic is in the read-write data segment.
+        assert(addresses[0] >= start_rwdata && addresses[0] < start_rwdata + len_rwdata);
+
+        // Check that constLocalStatic is in the read-only data segment.
+        assert(addresses[1] >= start_rodata && addresses[1] < start_rodata + len_rodata);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Local static variable hides global},
+program => q`
+    int x;
+    int *getAddressOfGlobal() { return &x; }
+    void changeGlobal(int newValue) { x = newValue; }
+    int getGlobal() { return x; }
+    int main()
+    {
+        x = 4444;  // x refers to global
+        assert_eq(getGlobal(), 4444);
+
+        static int x = 2222;  // now, x refers to local static
+
+        assert_ne(&x, getAddressOfGlobal());
+        changeGlobal(1111);
+        assert_eq(getGlobal(), 1111);
+        assert_eq(x, 2222);
+        x = 3333;
+        assert_eq(x, 3333);
+        assert_eq(getGlobal(), 1111);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Local static variable without an initializer},
+program => q`
+    int f() { static int s; s = 1000; return s; }
+    int main()
+    {
+        assert_eq(f(), 1000);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Two local static variables of the same name in the same unit},
+program => q`
+    int f() { static int s = 1000; return s; }
+    int g() { static int s = 2000; return s; }
+    int main()
+    {
+        assert_eq(f(), 1000);
+        assert_eq(g(), 2000);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Read-only local static variable without an initializer},
+program => q`
+    const int *f() { static const int s; return &s; }
+    int main()
+    {
+        assert_ne(f(), 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Initializer for a local static variable containing a string literal},
+program => q`
+    const char *f(int i)
+    {
+        static const char *a[] = { "foo", "bar" };
+        return a[i];
+    }
+    const char *g(void)
+    {
+        static const char *b = "baz";
+        return b;
+    }
+    struct S
+    {
+        int n;
+        const char *s;
+    };
+    const char *h(int *dest)
+    {
+        static const struct S object = { 1000, "quux" };
+        *dest = object.n;
+        return object.s;
+    }
+    int main()
+    {
+        assert_eq(strcmp(f(0), "foo"), 0);
+        assert_eq(strcmp(f(1), "bar"), 0);
+        assert_eq(strcmp(g(), "baz"), 0);
+        int k = 0;
+        assert_eq(strcmp(h(&k), "quux"), 0);
+        assert_eq(k, 1000);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Static function that is only called through a pointer},
+program => q`
+    static int f(void) { return 1234; }
+    int (*pf)(void) = f;
+    int main()
+    {
+        assert_eq((*pf)(), 1234);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Translation unit where static function is only referenced through a pointer},
+compileOnly => 1,
+program => q`
+    // This test checks that the compiler does NOT say "static function f() is not called".
+    // 'pf' could be referenced by another translation unit through an 'extern' declaration.
+    //
+    static int f(void) { return 1234; }
+    int (*pf)(void) = f;
+    `,
+expected => ""
+},
+
+
+{
+title => q{Assignment to a function pointer global variable in the argument parenthesis of a function call},
+program => q`
+    void f0(void) {}
+    void (*pf0)(void);
+    void f1(void (*pf)(void))
+    {
+        assert_eq(pf, f0);
+    }
+    int main()
+    {
+        asm { LDD #$BAD1 }
+        f1(pf0 = f0);  // in CMOC 0.1.76, optimizeTfrOp() optimized this incorrectly
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Comparison of a dereferenced pointer to byte/word with a constant},
+program => q`
+    // This test checks that compiler optimizations (typically
+    // BinaryOpExpr::emitUnsignedComparisonOfByteExprWithByteConstant())
+    // generate appropriate code.
+    const signed char *f(const signed char *p)
+    {
+        if (*p == '-')
+            ++p;
+        return p;
+    }
+    const signed char *g(const signed char *p)
+    {
+        if (*p == 255)
+            ++p;
+        return p;
+    }
+    const signed char *h(const signed char *p)
+    {
+        if (*p == -42)
+            ++p;
+        return p;
+    }
+
+    // 16-bit cases.
+    const sword *ff(const sword *p)
+    {
+        if (*p == 1000)
+            ++p;
+        return p;
+    }
+    const sword *gg(const sword *p)
+    {
+        // 65535 is an unsigned int.
+        // *p is a signed int.
+        // Therefore, the comparison promotes *p to unsigned int,
+        // which allows gg({-1}) to increment p.
+        if (*p == 65535)
+            ++p;
+        return p;
+    }
+    const sword *hh(const sword *p)
+    {
+        if (*p == -500)
+            ++p;
+        return p;
+    }
+
+    int main()
+    {
+        const signed char *s = "-1.2";
+        assert_eq(f(s), s + 1);
+        const signed char *t = "\xFFXY";
+        assert_eq(g(t), t);  // *p will be -1, so not equal to 255
+        const signed char *u = "\xD6XY";
+        assert_eq(h(u), u + 1);  // \xD6 is -42
+
+        const sword ss[] = { 1000, 1111, 2222, 3333 };
+        assert_eq(ff(ss), ss + 1);
+        const sword tt[] = { -1, 1111, 2222, 3333 };
+        assert_eq(gg(tt), tt + 1);
+        const sword uu[] = { -500, 1111, 2222, 3333 };
+        assert_eq(hh(uu), uu + 1);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Initialization of a byte variable from an enumerated name},
+program => q`
+    enum { F };
+    int main()
+    {
+        // This test checks that the optimizer is safe on F.
+        unsigned char var = F;
+        assert_eq(var, 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Optimization of > 0 to != 0 when the left side is an unsigned char},
+program => q`
+    int main()
+    {
+        byte i = 255;
+        word c = 0;
+        for ( ; i > 0; )
+        {
+            ++c;
+            --i;
+        }
+        assert_eq(i, 0);
+        assert_eq(c, 255);
+
+        word w = 5;
+        c = 0;
+        for ( ; w > 0; )
+        {
+            ++c;
+            --w;
+        }
+        assert_eq(w, 0);
+        assert_eq(c, 5);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Optimization of pattern *p == '\0' || *p == non_zero},
+program => q`
+    int main()
+    {
+        char s[] = "foobar";
+        char *p = s;
+        char c = 0;
+        if (*p == '\0' || *p == 'f')
+            ++c;
+        assert_eq(c, 1);
+
+        p += 6;  // point to '\0'
+        if (*p == '\0' || *p == 'f')
+            ++c;
+        assert_eq(c, 2);
+
+        if (*p == 'f' || *p == '\0')
+            ++c;
+        assert_eq(c, 3);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Initializing a variable from a boolean expression},
+program => q`
+    int main()
+    {
+        char c = 'X';
+        char *p = &c;
+        asm { nop }
+        unsigned char b = (*p >= '5');
+        assert_eq(b, 1);
+        b = (*p < '5');
+        assert_eq(b, 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Switch that returns a string},
+program => q`
+    // Check that the optimizer does not get into an infinite loop in loadCmpZeroBeqOrBne().
+    const char* f(byte suit)
+    {
+        switch (suit)
+        {
+            case 0: return "hearts";
+            case 1: return "spades";
+            case 2: return "diamonds";
+            case 3: return "clubs";
+            default: return "ERROR";           
+        }
+    }
+    int main()
+    {
+        assert_eq(strcmp(f(0), "hearts"), 0);
+        assert_eq(strcmp(f(1), "spades"), 0);
+        assert_eq(strcmp(f(2), "diamonds"), 0);
+        assert_eq(strcmp(f(3), "clubs"), 0);
+        assert_eq(strcmp(f(4), "ERROR"), 0);
+        assert_eq(strcmp(f(255), "ERROR"), 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Long integer condition that is always true or always false},
+program => q`
+    int main()
+    {
+        byte x = 255;
+        if (0L)
+            x = 11;  // may be optimized away
+        else
+            x = 42;
+        assert_eq(x, 42);
+
+        if (70000L)
+            x = 21;
+        else
+            x = 33;  // may be optimized away
+        assert_eq(x, 21);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Large signed and unsigned indexes into an array of multibyte elements},
+program => q`
+    struct S { char a[3]; } a[1];
+    int main()
+    {
+        signed i0 = -1000;
+        struct S *p0 = &a[i0];
+        unsigned u1 = 40000;
+        struct S *p1 = &a[u1];
+        //printf("a=%p, p0=%p (%u, %u), p1=%p (%u, %u)\n", a, p0, a - p0, (char *) a - (char *) p0, p1, a - p1, (char *) a - (char *) p1);
+        assert_eq(a - p0, 1000);
+        assert_eq((char *) a - (char *) p0, 3000);
+        assert_eq(a - p1, 3690);
+        assert_eq((char *) a - (char *) p1, 11072);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Struct fields without initializer values are initialized with null bytes},
+compilerOptions => "-Wno-missing-field-initializers",
+program => q`
+    struct S { int a, b, c, d; };  // no more than 255 bytes to reset
+    struct Big { int e; char f[300]; };  // more than 255 bytes to reset
+    void *end;
+    struct S g_s1 = { 0xBEEF };
+    int main()
+    {
+        // Fill local variable stack space with non null bytes,
+        // to detect cases where a struct would be incompletely initialized.
+        asm
+        {
+            ldb     #$CD        ; non null garbage byte
+            stu     :end        ; end of local variable space
+            leax    ,s          ; start of local variable space
+@loop
+            stb     ,x+
+            cmpx    :end
+            blo     @loop
+        }
+
+        struct S s0 = {};
+        struct S s1 = { 0xBEEF };
+        struct S s2 = { 0xBEEF, 0xBEEF };
+        struct S s3 = { 0xBEEF, 0xBEEF, 0xBEEF };
+        struct Big b0 = { 0xBEEF };
+
+        assert_eq(s0.a, 0);
+        assert_eq(s0.b, 0);
+        assert_eq(s0.c, 0);
+        assert_eq(s0.d, 0);
+
+        assert_eq(s1.a, 0xBEEF);
+        assert_eq(s1.b, 0);
+        assert_eq(s1.c, 0);
+        assert_eq(s1.d, 0);
+
+        assert_eq(s2.a, 0xBEEF);
+        assert_eq(s2.b, 0xBEEF);
+        assert_eq(s2.c, 0);
+        assert_eq(s2.d, 0);
+
+        assert_eq(s3.a, 0xBEEF);
+        assert_eq(s3.b, 0xBEEF);
+        assert_eq(s3.c, 0xBEEF);
+        assert_eq(s3.d, 0);
+
+        assert_eq(g_s1.a, 0xBEEF);
+        assert_eq(g_s1.b, 0);
+        assert_eq(g_s1.c, 0);
+        assert_eq(g_s1.d, 0);
+
+        assert_eq(b0.e, 0xBEEF);
+        for (word i = 0; i < 300; ++i)
+            assert_eq(b0.f[i], 0);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Short array initializer pads rest of array with null bytes},
+tolerateWarnings => 1,
+program => q`
+    void *end;
+    int main()
+    {
+        // Fill local variable stack space with non null bytes,
+        // to detect cases where a struct would be incompletely initialized.
+        asm
+        {
+            ldb     #$CD        ; non null garbage byte
+            stu     :end        ; end of local variable space
+            leax    ,s          ; start of local variable space
+@loop
+            stb     ,x+
+            cmpx    :end
+            blo     @loop
+        }
+
+        int v[5] = { 1000, 1001, 1002 };
+        assert_eq(v[0], 1000);
+        assert_eq(v[1], 1001);
+        assert_eq(v[2], 1002);
+        assert_eq(v[3], 0);
+        assert_eq(v[4], 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Pre-increment followed by comparison},
+program => q`
+    void incCounter(char *counter)
+    {
+        for (char place = 2; place >= 0; --place)
+        {
+            char *dest = counter + place;
+            char digit = *dest;
+            if (++digit <= 0x79)  // optimizer must not remove an LDB here
+            {
+                *dest = digit;
+                break;
+            }
+            *dest = 0x70;
+        }
+    }
+    int main()
+    {
+        char ctr[3] = { 0x70, 0x70, 0x79 };
+        incCounter(ctr);
+        assert_eq(ctr[0], 0x70);
+        assert_eq(ctr[1], 0x71);
+        assert_eq(ctr[2], 0x70);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Pre-increment in a function argument},
+program => q`
+    byte f(byte r) { return r; }
+    int main()
+    {
+        byte s = 2;
+        asm { ldb #111 }  // put bogus value in B
+        byte r = f(++s);
+        assert_eq(s, 3);
+        assert_eq(r, 3);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Array reference where array is non-trivial expression and index is a byte},
+program => q`
+    struct S
+    {
+        const byte *memberArray;  // One mask for each supported color in current graphics mode.
+    };
+    byte f(struct S *s, byte index)
+    {
+        asm { lda #$AA }  // bogus value, to check that A is used correctly in next expression
+        return s->memberArray[index];  // involves extending byte index to word
+    }
+    const byte a[2] = { 0x00, 0xFF };
+    int main()
+    {
+        struct S s;
+        s.memberArray = a;
+        byte r = f(&s, 1);
+        assert_eq(r, 0xFF);
+        assert_eq(f(&s, 0), 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Array reference where array is non-trivial expression and index is a word},
+program => q`
+    struct S
+    {
+        word *wordArray;
+    } s;
+    word words[140];
+    int main()
+    {
+        for (word i = 0; i < 140; ++i)
+            words[i] = (1000 + i);
+        s.wordArray = words;
+        word index = 128;  // 16-bit index variable
+        asm { nop }
+        assert_eq(&words[index], words + 128);  // [index] should be 128 words after start of array
+        assert_eq(words + index, words + 128);  // same test with ptr arith
+        assert_eq(&s.wordArray[index], s.wordArray + 128);  // [index] should be 128 words after start of array
+        assert_eq(s.wordArray + index, s.wordArray + 128);  // same test with ptr arith
+        assert_eq(words[index], 1128);
+        assert_eq(*(words + index), 1128);
+        assert_eq(s.wordArray[index], 1128);
+        assert_eq(*(s.wordArray + index), 1128);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Global array of characters initialized from literal shorter than array},
+program => q!
+    char v[256] = "abc";
+    char after = '$';
+    int main()
+    {
+        //printf("v=%p, &after=%p; sizeof(v)=%u\n", v, &after, sizeof(v));
+        assert_eq(sizeof(v), 256);
+        assert_eq(&after, v + 256);
+        assert_eq(after, '$');
+        v[255] = 'X';
+        asm { nop }
+        assert_eq(v[255], 'X');
+        assert_eq(after, '$');
+
+        // Local case.
+        char localV[256] = "abc";
+        char localAfter = '%';
+        assert_eq(sizeof(localV), 256);
+        assert_eq(&localAfter, localV + 256);
+        assert_eq(localAfter, '%');
+        localV[255] = 'Y';
+        asm { nop }
+        assert_eq(localV[255], 'Y');
+        assert_eq(localAfter, '%');
+
+        return 0;
+    }
+    !,
+expected => ""
+},
+
+
+{
+title => q{Pointer to pointer to function},
+program => q`
+    int f(void) { return 1000; }
+    int g(void) { return 2000; }
+    int main()
+    {
+        int (*pf)(void) = f;
+        //printf("Call through pf: %d\n", (*pf)());
+        assert_eq(pf, f);
+        assert_eq((*pf)(), 1000);
+        assert_eq(pf(), 1000);
+
+        pf = g;
+        assert_eq(pf, g);
+        assert_eq((*pf)(), 2000);
+        assert_eq(pf(), 2000);
+
+        pf = f;
+        int (**ppf)(void) = &pf;  // declaration
+        //printf("Call through ppf: %d\n", (**ppf)());
+        assert_eq(*ppf, f);
+        assert_eq((**ppf)(), 1000);
+        assert_eq((*ppf)(), 1000);
+
+        ppf = NULL;
+        asm { nop }  // optimization barrier
+        ppf = &pf;
+
+        int (***pppf)(void) = &ppf;  // declaration
+        assert_eq(**pppf, f);
+        assert_eq((***pppf)(), 1000);
+        assert_eq((**pppf)(), 1000);
+
+        pppf = NULL;
+        asm { nop }
+        pppf = &ppf;
+
+        int (****ppppf)(void) = &pppf;  // declaration
+        assert_eq(***ppppf, f);
+        assert_eq((****ppppf)(), 1000);
+        assert_eq((***ppppf)(), 1000);
+
+        ppppf = NULL;
+        asm { nop }
+        ppppf = &pppf;
+
+        assert_eq(***ppppf, f);
+        assert_eq((****ppppf)(), 1000);
+        assert_eq((***ppppf)(), 1000);
+
+        // Cast on left side of assignment.
+        void *v = (void *) 0xDEAD;
+        * (int (**)(void)) &v = f;
+        //printf("f=%p, v=%p\n", f, v);
+        assert_eq(v, f);
+
+        // Cast on right side of assignment.
+        pf = (int (*)(void)) v;
+        //printf("Call through pf after cast of v: %d\n", (*pf)());
+        assert_eq((*pf)(), 1000);
+        assert_eq(((int (*)(void)) v)(), 1000);
+
+        // Arrays of ptrs to ptrs to funcs.
+        int (**appf[1])(void) = { &pf };  // declaration
+        assert_eq((**appf[0])(), 1000);
+        int (***apppf[1])(void) = { &ppf };  // declaration
+        assert_eq((***apppf[0])(), 1000);
+        int (****appppf[1])(void) = { &pppf };  // declaration
+        assert_eq((****appppf[0])(), 1000);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Referring to struct fields from inline assembly},
+tolerateWarnings => 1,
+program => q`
+    struct T
+    {
+        int v[3];
+        int m;
+    } t;
+    struct S
+    {
+        int a;
+        struct T t, tv[3];
+        int b;
+    } s;
+    int main()
+    {
+        memset(&t, 0xCD, sizeof(t));
+        memset(&s, 0xCD, sizeof(s));
+
+        asm { inc :t.m }  // increment high byte of t.m (big endian)
+        assert_eq(t.m, 0xCECD);
+        asm { inc :t.v[2] }  // increment high byte of t.v[2]
+        assert_eq(t.v[2], 0xCECD);
+
+        asm { inc :s.t.v[2] }
+        assert_eq(s.t.v[2], 0xCECD);
+        asm { inc :s.t.m }
+        assert_eq(s.t.m, 0xCECD);
+        asm { inc :s.tv[2].m }  // increment high byte of s.tv[2].m
+        assert_eq(s.tv[2].m, 0xCECD);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+
+
+{
+title => q{More than one enum name in the same inline assembler instruction},
+program => q`
+    enum
+    {
+        // The constants are marked as unsigned so that the assert does an unsigned multiplication.
+        // A signed multiplication would overflow.
+        PIXEL_COLS_PER_SCREEN = 256u,
+        PIXEL_ROWS_PER_SCREEN = 192u,
+        X = 8,  // a colon must precede the use of this name in asm{}, because X is a reg name
+    };
+    int main()
+    {
+        char *buffer = 0x1000, *result = 0xFFFF;
+        asm
+        {
+            ldx     :buffer
+            leax    :PIXEL_COLS_PER_SCREEN*:PIXEL_ROWS_PER_SCREEN/:X,x
+            stx     :result
+        }
+        //printf("buffer=%p, result=%p\n", buffer, result);
+        assert_eq(result, buffer + PIXEL_COLS_PER_SCREEN*PIXEL_ROWS_PER_SCREEN/X);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{+= on pointer to multi-byte type},
+program => q`
+    struct SingleByteStruct
+    {
+        char c;
+    };
+    struct SingleByteStruct *z = 0x3000;
+
+    struct TwoByteStruct
+    {
+        word w;
+    };
+    struct TwoByteStruct *a = 0x4000;
+
+    struct ThreeByteStruct
+    {
+        word w;
+        char c;
+    };
+    struct ThreeByteStruct *b = 0x5000;
+
+    struct PrimeSizedStruct
+    {
+        char v[251];
+    };
+    struct PrimeSizedStruct *c = 0x6000;
+
+    struct LargeStruct
+    {
+        char v[260];
+    };
+    struct LargeStruct *d = 0x7000;
+
+    int main()
+    {
+        byte k = 0x30;
+
+        // Pointers to a 1-byte struct.
+        const struct SingleByteStruct *pA = 0, *pB = 0;
+
+        pA = z + k;
+        //printf("pA=%p\n", pA);
+
+        pB = z;
+        pB += k;
+        //printf("pB=%p\n", pB);
+
+        assert_eq(pB, pA);
+
+        // Pointers to a 2-byte struct.
+        const struct TwoByteStruct *p0 = 0, *p1 = 0;
+
+        p0 = a + k;
+        //printf("p0=%p\n", p0);
+
+        p1 = a;
+        p1 += k;  // buggy in CMOC 0.1.79
+        //printf("p1=%p\n", p1);
+
+        assert_eq(p1, p0);
+
+        p1 += 0x2F;
+        assert_eq(p1, p0 + 0x2F);
+
+        // Pointers to a 3-byte struct.
+        const struct ThreeByteStruct *p2 = 0, *p3 = 0;
+
+        p2 = b + k;
+        //printf("p2=%p\n", p2);
+
+        p3 = b;
+        p3 += k;  // buggy in CMOC 0.1.79
+        //printf("p3=%p\n", p3);
+
+        assert_eq(p3, p2);
+
+        // Pointers to a struct or less than 255 bytes.
+        const struct PrimeSizedStruct *p4 = 0, *p5 = 0;
+
+        p4 = c + k;
+        //printf("p4=%p\n", p4);
+
+        p5 = c;
+        p5 += k;  // buggy in CMOC 0.1.79
+        //printf("p5=%p\n", p5);
+
+        assert_eq(p5, p4);
+
+        // Pointers to a struct or more than 255 bytes.
+        const struct LargeStruct *p6 = 0, *p7 = 0;
+
+        p6 = d + k;
+        //printf("p6=%p\n", p6);
+
+        p7 = d;
+        p7 += k;  // buggy in CMOC 0.1.79
+        //printf("p7=%p\n", p7);
+
+        assert_eq(p7, p6);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Adds and shifts test},
+program => q`
+    int main()  // Stolen from a CoCo Discord forum on 2023-01-28.
+    {
+        for (unsigned i = 0; i <= 255; ++i)
+        {
+            unsigned char yy = (unsigned char) i, a, b;
+            asm { nop }  // optimizer barrier
+            a = yy+128;   
+            a = a>>1;
+            a = a+48;
+            asm { nop }  // optimizer barrier
+            b = ((unsigned char)((unsigned char)(yy+128))>>1)+48;
+            assert_eq(a, b);
+        }
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Return a comma expression from a function that must return a byte},
+program => q`
+    enum { K = 42 };
+    int no;
+    unsigned char f()
+    {
+        return (no = 1234, K);  // type of parenthesis is type of last sub-expression, i.e., K, i.e., unsigned char
+    }
+    int main()
+    {
+        unsigned char retval = f();
+        assert_eq(no, 1234);
+        assert_eq(retval, 42);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{setjmp(), longjmp()},
+program => q`
+    #include <setjmp.h>
+    jmp_buf env;
+    byte numFCalls = 0, numGCalls = 0;
+    void f(void)
+    {
+        ++numFCalls;
+        longjmp(env, 9999);
+    }
+    void g(void)
+    {
+        ++numGCalls;
+        f();
+    }
+    void checkEnv(void)
+    {
+        // Check that 'env' filled with non-zero register values.
+        const void *savedPC = (void *) ((word *) env)[0];
+        const void *savedS  = (void *) ((word *) env)[1];
+        const void *savedU  = (void *) ((word *) env)[2];
+        //printf("env: PC=%p, S=%p, U=%p\n", savedPC, savedS, savedU);
+        assert_ne(savedPC, 0);
+        assert_ne(savedS,  0);
+        assert_ne(savedU,  0);
+        assert(savedPC < savedS);
+    }
+    int main()
+    {
+        memset(env, '\0', sizeof(env));
+        int value = setjmp(env);
+        checkEnv();
+        if (value == 0)
+        {
+            // 'env' set up for future longjmp().
+            assert_eq(numGCalls, 0);
+            assert_eq(numFCalls, 0);
+            g();  // calls longjmp()
+            assert(0);  // not supposed to get here
+        }
+        else
+        {
+            // Destination of longjmp().
+            assert_eq(numGCalls, 1);
+            assert_eq(numFCalls, 1);
+            assert_eq(value, 9999);
+        }
+        printf("end\n");
+        return 0;
+    }
+    `,
+expected => "end\n"
+},
+
+
+{
+title => q{Passing 0 to longjmp() gives 1},
+program => q`
+    #include <setjmp.h>
+    jmp_buf env;
+    byte numZeroReturnValues = 0;
+    void f(void)
+    {
+        longjmp(env, 0);
+    }
+    int main()
+    {
+        int value = setjmp(env);
+        if (value == 0)
+        {
+            ++numZeroReturnValues;  // count number of times passing thru here, to detect infinite loop
+            assert_eq(numZeroReturnValues, 1);
+            if (numZeroReturnValues != 1)  // if longjmp() mishandled the 0 it got as its 2nd arg
+                return 1;  // quit, to avoid infinite loop (a failed assert does not quit)
+            f();
+            assert(0);  // not supposed to get here
+        }
+        else
+            assert_eq(value, 1);
+        printf("end\n");
+        return 0;
+    }
+    `,
+expected => "end\n"
+},
+
+
+{
+title => q{-fomit-frame-pointer does not apply to functions that use inline assembly},
+compilerOptions => "-fomit-frame-pointer",
+program => q`
+    asm int asmOnly(int n)
+    {
+        asm
+        {
+            ldd     2,s
+            addd    #1
+        }
+    }
+    int asmAndC(int n)
+    {
+        int arg = 0;
+        asm
+        {
+            ldd     :n
+            std     :arg
+        }
+        return arg + 2;
+    }
+    int noAsm(int n)
+    {
+        return n + 3;
+    }
+
+    #define DECLARE_LABEL(VARIABLE, ADDRESS_LABEL) byte *VARIABLE; asm { leax ADDRESS_LABEL,pcr } asm { stx :VARIABLE } //printf("Variable %s\n", #VARIABLE);
+
+    void checkFramePointer(const byte *funcStart, const byte *funcEnd, byte framePtrExpected)
+    {
+        //printf("checkFramePointer(%p, %p, %u): size=%u\n", funcStart, funcEnd, framePtrExpected, funcEnd - funcStart);
+        //printf("checkFramePointer: First bytes: $%02x $%02x $%02x $%02x\n", funcStart[0], funcStart[1], funcStart[2], funcStart[3]);
+        if (framePtrExpected)
+        {
+            size_t funcSize = funcEnd - funcStart;
+            assert(funcSize >= 4 + 4);
+
+            // Look for PSHS U ($34 $40) and LEAU ,S ($33 $E4) as the first two instructions.
+            assert_eq(funcStart[0], 0x34);
+            assert_eq(funcStart[1], 0x40);
+            assert_eq(funcStart[2], 0x33);
+            assert_eq(funcStart[3], 0xE4);
+
+            // Look for LEAS ,U ($32 $C4) and PULS U,PC ($35 $C0) at the end of the function.
+            assert_eq(funcEnd[-4], 0x32);
+            assert_eq(funcEnd[-3], 0xC4);
+            assert_eq(funcEnd[-2], 0x35);
+            assert_eq(funcEnd[-1], 0xC0);
+        }
+        else
+        {
+            assert(   funcStart[0] != 0x34
+                   || funcStart[1] != 0x40
+                   || funcStart[2] != 0x33
+                   || funcStart[3] != 0xE4);
+        }
+    }
+    int main()
+    {
+        // main() has a frame pointer, before -fomit-frame-pointer is attempted, because DECLARE_LABEL() declares a local variable.
+
+        DECLARE_LABEL(asmOnly_start, _asmOnly)
+        DECLARE_LABEL(asmOnly_end, funcend_asmOnly)
+        checkFramePointer(asmOnly_start, asmOnly_end, 0);  // asm-only function does not have a CMOC-provided frame pointer anyway
+
+        DECLARE_LABEL(asmAndC_start, _asmAndC)
+        DECLARE_LABEL(asmAndC_end, funcend_asmAndC)
+        checkFramePointer(asmAndC_start, asmAndC_end, 1);  // -fomit-frame-pointer does not apply b/c inline asm in asmAndC()
+
+        DECLARE_LABEL(noAsm_start, _noAsm)
+        DECLARE_LABEL(noAsm_end, funcend_noAsm)
+        checkFramePointer(noAsm_start, noAsm_end, 0);  // -fomit-frame-pointer applies
+
+        DECLARE_LABEL(checkFramePointer_start, _checkFramePointer)
+        DECLARE_LABEL(checkFramePointer_end, funcend_checkFramePointer)
+        checkFramePointer(checkFramePointer_start, checkFramePointer_end, 0);  // -fomit-frame-pointer applies
+
+        DECLARE_LABEL(main_start, _main)
+        DECLARE_LABEL(main_end, funcend_main)
+        checkFramePointer(main_start, main_end, 1);  // -fomit-frame-pointer does not apply b/c inline asm in DECLARE_LABEL
+
+        assert_eq(asmOnly(1000), 1001);
+        assert_eq(asmAndC(1000), 1002);
+        assert_eq(noAsm(1000),   1003);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Call to function via parenthesized name to avoid macro with same name},
+program => q`
+    int foo(void) { return 42; }
+    #define foo() 99
+    int main()
+    {
+        assert_eq(foo(), 99);  // uses macro
+        assert_eq((foo)(), 42);  // uses function
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Using a parenthesized function name to call a function that has the same name as a macro},
+program => q`
+    #define foo() 99
+    int (foo)(void);  // cpp does not replace foo b/c paren prevents macro invocation
+    int (foo)(void) { return 42; }  // test both prototype and body: different rules in parser.yy
+    #define bar(n) ((n) + 1)
+    int (bar)(int n);  // now with argument(s): different rule in parser.yy
+    int (bar)(int n) { return n + 2; }
+    #define baz() 88
+    int (baz)();  // implicit ellipsis
+    int (baz)() { return 77; }
+    #define quux(...) 66
+    unsigned (quux)(int n, ...);  // explicit ellipsis
+    unsigned (quux)(int n, ...)
+    {
+        va_list ap;  // <stdarg.h> is included by <cmoc.h>, which is included by each unit test
+        va_start(ap, n);
+        unsigned u = va_arg(ap, unsigned);
+        char c = va_arg(ap, char);
+        va_end(ap);
+        return (unsigned) n + u + (unsigned) c;
+    }
+    int main()
+    {
+        assert_eq(foo(), 99);  // uses macro
+        assert_eq((foo)(), 42);  // uses function
+        assert_eq(bar(10), 11);  // uses macro
+        assert_eq((bar)(20), 22);  // uses function
+        assert_eq(baz(), 88);
+        assert_eq((baz)(), 77);
+        assert_eq(quux(), 66);
+        assert_eq((quux)(1000, 200u, 'A'), 1265);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{isspace()},
+program => q`
+    int main()
+    {
+        for (int c = -5; c <= 260; ++c)
+        {
+            int result = isspace(c);
+            //printf("c=%d, result=%d\n", c, result);
+            switch (c)
+            {
+                case ' ':
+                case '\r':
+                case '\n':
+                case '\t':
+                case '\f':
+                case '\v':
+                    assert_eq(result, 1);
+                    break;
+                default:
+                    assert_eq(result, 0);
+            }
+        }
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Initializer of array of pointers in non-relocatable code},
+compilerOptions => "--no-relocate",
+program => q`
+    int b[4] = { 1000, 1001, 1002, 1003 };
+    int c[4] = { 2000, 2001, 2002, 2003 };
+    int *a[] = { b, c };  // expected to be initialized with FDB _b and FDB _c instead of LEAX+STX.
+    int main()
+    {
+        assert_eq(sizeof(a), 4);
+        assert_eq(sizeof(b), 8);
+        assert_eq(a[0][0], 1000);
+        assert_eq(a[0][1], 1001);
+        assert_eq(a[0][2], 1002);
+        assert_eq(a[0][3], 1003);
+        assert_eq(a[1][0], 2000);
+        assert_eq(a[1][1], 2001);
+        assert_eq(a[1][2], 2002);
+        assert_eq(a[1][3], 2003);
+
+        // Check that no initialization code was emitted for global variables.
+        // This proves that no LEAX or STX instructions were emitted as they would be
+        // without --no-relocate.
+        //
+        size_t l_initgl = 0xBEEF;
+        asm
+        {
+l_initgl IMPORT
+            ldd     #l_initgl       ; length of the "initgl" code segment emitted by CMOC
+            std     :l_initgl
+        }
+        assert_eq(l_initgl, 0);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Verbatim assembly at global scope},
+program => q`
+    void func0() {}
+
+    int g0;
+
+    asm
+    {
+asm0:
+        ldd     #1000
+        std     :g0
+        rts
+    }
+
+    void *g1;
+
+    asm
+    {
+asm1:
+        leax    func0       ; ref to C func becomes <symbol>,pcr
+        stx     :g1
+        rts
+alias_for_main:
+    }
+
+    int main()
+    {
+        assert_eq(g0, 0);
+        assert_eq(g1, NULL);
+
+        asm
+        {
+            lbsr    asm0
+        }
+
+        assert_eq(g0, 1000);
+        assert_eq(g1, NULL);
+
+        asm
+        {
+            lbsr    asm1
+        }
+
+        assert_eq(g0, 1000);
+        assert_eq(g1, func0);
+
+        // Check that addresses of asm0, asm1 and main are in order.
+        // This checks that the asm{} blocks before a function are emitted
+        // before that function.
+        void *a0, *a1;
+        asm
+        {
+            leax    asm0,pcr
+            stx     :a0
+            leax    asm1,pcr
+            stx     :a1
+        }
+        assert(a0 < a1);
+        assert(a1 < main);
+
+        void *alias, *late;
+        asm
+        {
+            leax    alias_for_main,pcr
+            stx     :alias
+            leax    late_label,pcr
+            stx     :late
+        }
+        assert_eq(alias, main);
+        assert(main < late);
+
+        //printf("%p %p %p %p\n", a0, a1, main, late);
+        return 0;
+    }
+
+    asm
+    {
+late_label:
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Allowed to assign to a non-const struct through a const pointer},
+program => q`
+    struct A
+    {
+        int x;
+    };
+    int main()
+    {
+        struct A instance;
+        struct A * const p = &instance;
+        p->x = 3;
+        assert_eq(instance.x, 3);
+        p->x++;
+        (p->x)++;
+        assert_eq(instance.x, 5);
+        ++p->x;
+        ++(p->x);
+        assert_eq(instance.x, 7);
+        --p->x;
+        --(p->x);
+        assert_eq(instance.x, 5);
+        p->x--;
+        (p->x)--;
+        assert_eq(instance.x, 3);
+        //printf("instance.x=%d\n", instance.x);
+
+        int n = 5000;
+        int * const pi = &n;
+        assert_eq(*pi, 5000);
+        *pi = 6000;
+        assert_eq(*pi, 6000);
+        ++*pi;
+        ++(*pi);
+        assert_eq(*pi, 6002);
+        --*pi;
+        --(*pi);
+        assert_eq(*pi, 6000);
+        (*pi)++;
+        assert_eq(*pi, 6001);
+        (*pi)--;
+        assert_eq(*pi, 6000);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{String literal cast to character pointer can be part of constant initializer},
+program => q`
+    typedef unsigned char u8;
+
+    unsigned char *ua[] =
+    {
+        (unsigned char *) "foo",
+        (unsigned char *) "bar"
+    };
+    char *sa[] =
+    {
+        (char *) "baz",
+        (char *) "quux"
+    };
+    u8 *tua[] =
+    {
+        (u8 *) "waldo",
+        (u8 *) "garply"
+    };
+
+    static unsigned char *sua[] =
+    {
+        (unsigned char *) "foo",
+        (unsigned char *) "bar"
+    };
+    static char *ssa[] =
+    {
+        (char *) "baz",
+        (char *) "quux"
+    };
+    static u8 *stua[] =
+    {
+        (u8 *) "waldo",
+        (u8 *) "garply"
+    };
+
+    int main()  // test static and non-static cases, global and local
+    {
+        assert_eq(strcmp((char *) ua[0], "foo"), 0);
+        assert_eq(strcmp((char *) ua[1], "bar"), 0);
+        assert_eq(strcmp(sa[0], "baz"), 0);
+        assert_eq(strcmp(sa[1], "quux"), 0);
+        assert_eq(strcmp((char *) tua[0], "waldo"), 0);
+        assert_eq(strcmp((char *) tua[1], "garply"), 0);
+
+        assert_eq(strcmp((char *) sua[0], "foo"), 0);
+        assert_eq(strcmp((char *) sua[1], "bar"), 0);
+        assert_eq(strcmp(ssa[0], "baz"), 0);
+        assert_eq(strcmp(ssa[1], "quux"), 0);
+        assert_eq(strcmp((char *) stua[0], "waldo"), 0);
+        assert_eq(strcmp((char *) stua[1], "garply"), 0);
+
+        unsigned char *s0 = (unsigned char *) "aaaaa";
+        assert_eq(strcmp((char *) s0, "aaaaa"), 0);
+
+        static unsigned char *s1 = (unsigned char *) "bbbbb";
+        assert_eq(strcmp((char *) s1, "bbbbb"), 0);
+
+        char *s2 = (char *) "ccccc";
+        assert_eq(strcmp(s2, "ccccc"), 0);
+
+        static char *s3 = (char *) "ddddd";
+        assert_eq(strcmp(s3, "ddddd"), 0);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{16-bit constant cast to long can be part of constant initializer for long variable},
+program => q`
+    long gl0 = (long) 0;
+    static long gl1 = (long) 0;
+    long gl2 = (long) -12003;
+    static long gl3 = (long) -12003;
+    long gl4 = (long) 24777;
+    static long gl5 = (long) 24777;
+
+    int main()  // test static and non-static cases, global and local
+    {
+        assert(!gl0);
+        assert(!gl1);
+        assert(gl2 == -12003L);
+        assert(gl3 == -12003L);
+        assert(gl4 == 24777);
+        assert(gl5 == 24777);
+
+        {
+            long l0 = (long) 0;
+            assert(!l0);
+            static long l1 = (long) 0;
+            assert(!l1);
+            long l2 = (long) -12003;
+            assert(l2 == -12003L);
+            static long l3 = (long) -12003;
+            assert(l3 == -12003L);
+            long l4 = (long) 24777;
+            assert(l4 == 24777);
+            static long l5 = (long) 24777;
+            assert(l5 == 24777);
+        }
+
+        {
+            unsigned long ul0 = (unsigned long) 0;
+            assert(!ul0);
+            static unsigned long ul1 = (unsigned long) 0;
+            assert(!ul1);
+            unsigned long ul2 = (unsigned long) -12003;
+            assert(ul2 == 0xffffd11dUL);
+            static unsigned long ul3 = (unsigned long) -12003;
+            assert(ul3 == 0xffffd11dUL);
+            unsigned long ul4 = (unsigned long) 24777;
+            assert(ul4 == 24777);
+            static unsigned long ul5 = (unsigned long) 24777;
+            assert(ul5 == 24777);
+        }
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Pointer-to-array variable that is not a function parameter},
+program => q`
+    // From B.P.
+    enum { SPM_MAX_SPRITES = 20 };
+    typedef long spm_sprite;
+    static const spm_sprite y_endlists[4][SPM_MAX_SPRITES] =
+            {{15, 11, 17, 18, 13, 19, 14, 12, 9, 2, 3, 16, 1, 7, 10, 6, 5, 8, 100, 4},
+            {15, 11, 3, 14, 18, 9, 17, 13, 19, 12, 6, 2, 16, 1, 110, 7, 10, 5, 8, 4},
+            {15, 11, 2, 17, 18, 13, 19, 14, 12, 9, 3, 16, 1, 7, 10, 6, 5, 8, 120, 4},
+            {15, 11, 17, 18, 13, 19, 14, 12, 9, 2, 3, 1, 16, 7, 10, 6, 5, 8, 130, 4}};
+    typedef const spm_sprite ArrayType[SPM_MAX_SPRITES];
+    static ArrayType * const y_endl = y_endlists;  // not an array, but a pointer to an array
+
+    int main()
+    {
+        assert(sizeof(y_endl) == sizeof(void *));
+        assert(sizeof(*y_endl) == SPM_MAX_SPRITES * sizeof(spm_sprite));
+
+        assert(y_endlists != NULL);
+        assert(y_endl != NULL);
+        assert(*y_endl != NULL);
+
+        size_t numElements = sizeof(y_endlists) / sizeof(y_endlists[0][0]);
+        assert(numElements == 4 * SPM_MAX_SPRITES);
+        assert((void *) y_endl == (void *) *y_endl);
+        assert(y_endl == y_endlists);
+        assert((void *) &y_endl != (void *) y_endlists);
+        assert(&(*y_endl)[0] == *y_endl);
+        assert((void *) &(*y_endl)[0] == (void *) y_endl);
+
+        // Check some of the integers in the matrix, via y_endl.
+        assert((*y_endl)[0] == 15);
+        assert((*y_endl)[1] == 11);
+        assert((*y_endl)[78] == 130);
+        assert((*y_endl)[79] == 4);
+
+        // Check the sum.
+        long sum = 0;
+        for (size_t i = 0; i < numElements; ++i)
+        {
+            assert((*y_endl)[i] > 0);
+            assert((*y_endl)[i] <= 130);
+            sum += (*y_endl)[i];
+        }
+        assert(sum == 1220);
+
+        // y_endl[i] is a 20-element span. Check that for all i, the addresses are at the right byte offset.
+        for (size_t i = 0; i < SPM_MAX_SPRITES; ++i)
+        {
+            size_t distanceInElements = y_endl[i] - y_endl[0];
+            size_t distanceInBytes = (char *) y_endl[i] - (char *) y_endl[0];
+            assert(distanceInElements == i * SPM_MAX_SPRITES);
+            assert(distanceInBytes == i * SPM_MAX_SPRITES * sizeof(spm_sprite));
+        }
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Accessing element of array using index variable, when elements of array are large},
+program => q`
+    struct Large
+    {
+        char a[300];
+    };
+    int main()
+    {
+        struct Large v[2];
+        unsigned index = 1;
+        asm { nop }  // prevent optimizer from removing 'index' variable
+        //printf("%p %p %u\n", &v[0], &v[index], (char *) &v[index] - (char *) v);
+        assert_eq((char *) &v[index] - (char *) v, 300);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Struct with final member of type array of variable size},
+compilerOptions => "-Wno-unknown-first-dim -Wno-too-many-elements",
+program => q`
+    struct B
+    {
+        byte w;
+        byte h;
+        byte p[];
+    };
+    struct B b0 = { 1, 2, { 'f', 'o', 'o', 'b', 'a', 'r' } };
+    int main()
+    {
+        assert_eq(b0.w, 1);
+        assert_eq(b0.h, 2);
+        assert_eq(memcmp(b0.p, "foobar", 6), 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Empty enum},
+program => q`
+    enum {};
+    enum Foo {};
+    int main()
+    {
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{-Wno-label-on-declaration},
+compilerOptions => "-Wno-label-on-declaration",
+program => q`
+    int f() { return 42; }
+    int main()
+    {
+        switch (f())
+        {
+            case 0:
+                int n = 0;
+                break;
+            case 1:
+                f();
+                break;
+        }
+    L0:
+        int m = 0;
+    L1:
+        m++;
+        assert_eq(m, 1);
+        return 0;
+    }
+   `,
+expected => ""
+},
+
+
+{
+title => q{No warning and correct product on enum times sizeof despite -Wgives-byte},
+compilerOptions => "-Wgives-byte",
+program => q`
+    enum { N = 100 };
+    struct S { char s[4]; };
+    int main()
+    {
+        unsigned p = N * sizeof(struct S);
+        assert_eq(p, 400);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Array reference plus long index},
+tolerateWarnings => 1,  # re: "array index is 32 bits (only low 16 bits used)"
+program => q`
+    int main()
+    {
+        unsigned long index = 3;
+
+        char ca[4] = { 'A', 'B', 'C', 'D' };
+        assert_eq(*(ca + index), 'D');
+        assert_eq(*(index + ca), 'D');
+
+        int ia[4] = { 1000, 2000, 3000, 4000 };
+        assert_eq(*(ia + index), 4000);
+        assert_eq(*(index + ia), 4000);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{removePushBPullABeforeMul optimization (see ASMText.cpp)},
+program => q`
+    int main()
+    {
+        unsigned char a[] = { 9, 8, 7, 6 };
+        const unsigned char *p = a;
+        unsigned e = (((unsigned) p[0] * 125u) << 3) + (int) p[1] * 100u + p[2] * 10u + p[3];
+        assert_eq(e, 9876);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{strspn()},
+program => q`
+    int main()
+    {
+        assert_eq(strspn("foobar", "fo"), 3);
+        assert_eq(strspn("foobar", "xy"), 0);
+        assert_eq(strspn("foobar", "f"), 1);
+        assert_eq(strspn("foobar", "o"), 0);
+        assert_eq(strspn("foobar", "of"), 3);
+        assert_eq(strspn("foobar", "xf"), 1);
+        assert_eq(strspn("foobar", ""), 0);
+        assert_eq(strspn("", "fo"), 0);
+        assert_eq(strspn("", ""), 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{strcspn()},
+program => q`
+    int main()
+    {
+        assert_eq(strcspn("foobar", "fo"), 0);
+        assert_eq(strcspn("foobar", "ba"), 3);
+        assert_eq(strcspn("foobar", "xy"), 6);
+        assert_eq(strcspn("foobar", "f"), 0);
+        assert_eq(strcspn("foobar", "o"), 1);
+        assert_eq(strcspn("foobar", "of"), 0);
+        assert_eq(strcspn("foobar", "xf"), 0);
+        assert_eq(strcspn("foobar", ""), 6);
+        assert_eq(strcspn("", "fo"), 0);
+        assert_eq(strcspn("", ""), 0);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{strtok()},
+program => q`
+    int main()
+    {
+        char buf[64];
+        const char *t;
+
+        strcpy(buf, "foo,bar,baz");
+        
+        t = strtok(buf,  ",");
+        assert_str_eq(t, "foo");
+        t = strtok(NULL, ",");
+        assert_str_eq(t, "bar");
+        t = strtok(NULL, ",");
+        assert_str_eq(t, "baz");
+        t = strtok(NULL, ",");
+        assert_eq(t, NULL);
+
+        // Same, with varying delimiter.
+        strcpy(buf, "foo,bar;baz:");
+        
+        t = strtok(buf,  ",");
+        assert_str_eq(t, "foo");
+        t = strtok(NULL, ";");
+        assert_str_eq(t, "bar");
+        t = strtok(NULL, ":");
+        assert_str_eq(t, "baz");
+        t = strtok(NULL, ":");
+        assert_eq(t, NULL);
+
+        // Leading and trailing delimiters.
+        strcpy(buf, ",Foo,Bar,Baz,");
+        
+        t = strtok(buf,  ",");
+        assert_str_eq(t, "Foo");
+        t = strtok(NULL, ",");
+        assert_str_eq(t, "Bar");
+        t = strtok(NULL, ",");
+        assert_str_eq(t, "Baz");
+        t = strtok(NULL, ",");
+        assert_eq(t, NULL);
+
+        // No delimiters.
+        strcpy(buf, "");
+        t = strtok(buf, ",");
+        assert_eq(t, NULL);
+
+        // More than one delimiter.
+        strcpy(buf, "foo,bar;baz:");
+        
+        t = strtok(buf,  ";:,");
+        assert_str_eq(t, "foo");
+        t = strtok(NULL, ";:,");
+        assert_str_eq(t, "bar");
+        t = strtok(NULL, ";:,");
+        assert_str_eq(t, "baz");
+        t = strtok(NULL, ";:,");
+        assert_eq(t, NULL);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{strpbrk()},
+program => q`
+    int main()
+    {
+        const char *s;
+
+        s = "foobar";
+        assert_eq(strpbrk(s, "f"), s);
+        assert_eq(strpbrk(s, "fo"), s);
+        assert_eq(strpbrk(s, "of"), s);
+        assert_eq(strpbrk(s, "o"), s + 1);
+        assert_eq(strpbrk(s, "b"), s + 3);
+        assert_eq(strpbrk(s, "arb"), s + 3);
+        assert_eq(strpbrk(s, "ar"), s + 4);
+        assert_eq(strpbrk(s, "ra"), s + 4);
+        assert_eq(strpbrk(s, "r"), s + 5);
+        assert_eq(strpbrk(s, "rxy"), s + 5);
+        assert_eq(strpbrk(s, "xyr"), s + 5);
+        assert_eq(strpbrk(s, "F"), NULL);
+        assert_eq(strpbrk(s, "x"), NULL);
+        assert_eq(strpbrk(s, "xy"), NULL);
+        assert_eq(strpbrk(s, ""), NULL);
+
+        assert_eq(strpbrk("", ""), NULL);
+        assert_eq(strpbrk("", "x"), NULL);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{GCC6809 calling convention},
+program => q`
+    struct OneByteStruct { char foo; };
+    struct TwoByteStruct { int foo; };
+    struct LargeStruct { long foo; };
+
+    __gcccall int f0(char p0) { return p0; }
+    __gcccall int f1(int p0) { return p0; }
+    __gcccall char f2(char p0) { return p0 + 1; }
+    __gcccall unsigned char f3(int p0) { return (unsigned char) p0 + 1; }
+
+    // Byte/word parameter is not first.
+    __gcccall char f4(long p0, char p1) { return p1 + 2; }
+    __gcccall int f5(long p0, int p1) { return p1 + 2; }
+
+    // Register-passed parameter is not first.
+    __gcccall char f6(char p0, long p1, int p2) { return p0 + (char) p2; }
+    __gcccall int f7(int p0, long p1, char p2) { return p0 + p2; }
+
+    typedef __gcccall int (*F7)(int p0, long p1, char p2);
+
+    // Hidden parameter.
+    __gcccall long f8(void) { return 100000L; }
+
+    // First 1- or 2-byte parameter is a struct.
+    __gcccall char f9(struct OneByteStruct p0) { return p0.foo; }
+    __gcccall int f10(struct TwoByteStruct p0) { return p0.foo; }
+
+    // Return a 1- or 2-byte struct.
+    __gcccall struct OneByteStruct f11(void)
+    {
+        struct OneByteStruct obs = { 'X' };
+        return obs;
+    }
+    __gcccall struct TwoByteStruct f12(void)
+    {
+        struct TwoByteStruct tbs = { 1000 };
+        return tbs;
+    }
+
+    // Prototype with calling convention keyword.
+    __gcccall int f13(int p0, long p1, char p2);
+
+    // Definition for that function, without the keyword (not needed, still applies).
+    int f13(int p0, long p1, char p2) { return p0 + p2; }
+
+    // Same situation, but __gcccall is on prototype and definition comes before.
+    int f13bis(int p0, long p1, char p2) { return p0 + p2; }
+    __gcccall int f13bis(int p0, long p1, char p2);
+
+    // Similar check for 'interrupt'.
+    interrupt void f14(void);
+    void f14(void) {}  // Must use RTI.
+
+    // Take the address of a parameter that is received in a register.
+    __gcccall int f15(char p0, int p1)
+    {
+        char *pp0 = &p0;
+        int *pp1 = &p1;
+        return *pp0 + *pp1;
+    }
+
+    // Variadic function: all args on stack, but return value still in X.
+    __gcccall int f16(char p0, int p1, ...)
+    {
+        // Check that the address of p0 and p1 are higher than the address
+        // in stack frame register U.
+        void *u;
+        asm { stu :u }
+        assert(u < &p0);  // if p0 had been received in reg, it would get spilled lower than U
+        assert(&p0 + 1 == (char *) &p1);  // p0 and p1 are contiguous in stack
+        
+        // Return the sum of the explicit arguments and of the integer that follows.
+        va_list ap;
+        va_start(ap, p1);
+        int result = p0 + p1 + va_arg(ap, int);
+        va_end(ap);
+        return result;
+    }
+
+    // Check that hidden parameter in X or in stack, depending on answer to question on mailint list.
+    __gcccall struct LargeStruct f17(char p0, int p1, ...)
+    {
+        // Check that the address of p0 and p1 are higher than the address
+        // in stack frame register U.
+        void *u;
+        asm { stu :u }
+        assert(u < &p0);  // if p0 had been received in reg, it would get spilled lower than U
+        assert(&p0 + 1 == (char *) &p1);  // p0 and p1 are contiguous in stack
+        
+        // Return the sum of the explicit arguments and of the integer that follows.
+        va_list ap;
+        va_start(ap, p1);
+        struct LargeStruct ls;
+        ls.foo = p0 + p1 + va_arg(ap, long);
+        va_end(ap);
+        return ls;
+    }
+
+    __gcccall int f18(void) { return 0x9ABC; }
+
+    char getChar(void) { return '@'; }
+    int getInt(void) { return 0x7F12; }
+
+    int main()
+    {
+        int r0 = f0('X');
+        assert_eq(r0, 'X');
+        int r1 = f1(1000);
+        assert_eq(r1, 1000);
+        int r1a = f1(42);  // tests ASMText::optimizeXParameterLoad()
+        assert_eq(r1a, 42);
+        char r2 = f2('X');
+        assert_eq(r2, 'Y');
+        char r3 = f3(1000);
+        assert_eq(r3, 233);
+        char r4 = f4(0L, 'X');
+        assert_eq(r4, 'Z');
+        int r5 = f5(0L, 1000);
+        assert_eq(r5, 1002);
+        char r6 = f6('X', 0L, 1000);
+        assert_eq(r6, 64);
+        int r7 = f7(1000, 0L, 'X');
+        assert_eq(r7, 1088);
+        long r8 = f8();
+        assert(r8 == 100000L);
+
+        // Call via a function pointer.
+        __gcccall int (*pf7)(int p0, long p1, char p2) = f7;
+        int r7p = (*pf7)(1000, 0L, 'X');
+        assert_eq(r7p, 1088);
+
+        // Same, using a typedef for the function pointer type.
+        F7 pf7_typedef = f7;
+        int r7t = (*pf7_typedef)(1000, 0L, 'X');
+        assert_eq(r7t, 1088);
+
+        struct OneByteStruct obs9 = { 'X' };
+        char r9 = f9(obs9);
+        assert_eq(r9, 'X');
+
+        struct TwoByteStruct obs10 = { 1000 };
+        int r10 = f10(obs10);
+        assert_eq(r10, 1000);
+
+        struct OneByteStruct obs11 = f11();
+        assert_eq(obs11.foo, 'X');
+        struct TwoByteStruct tbs12 = f12();
+        assert_eq(tbs12.foo, 1000);
+
+        // Check that f13() spills two of its parameters, i.e., it starts with
+        //   PSHS U; LEAU ,S; LEAS -3,S; STB -1,U; STX -3,U.
+        // The last 2 instructions spill the parameter registers into the local variable space.
+        // Also accept the version where the frame pointer has been optimized out.
+        const char *f13code = "\x34\x40\x33\xE4\x32\x7D\xE7\x5F\xAF\x5D";
+        const char *f13codeNoFramePtr = "\x32\x7D\xE7\x62\xAF\xE4";  // LEAS -3,S; STB 2,S; STX ,S
+
+        int memcmp13a = memcmp((char *) f13, f13code, 10);
+        int memcmp13b = memcmp((char *) f13, f13codeNoFramePtr, 6);
+        assert(memcmp13a == 0 || memcmp13b == 0);
+        int r13 = f13(1000, 0L, 'X');
+        assert_eq(r13, 1088);
+
+        // Same check on f13bis().
+        int memcmp13c = memcmp((char *) f13bis, f13code, 10);
+        int memcmp13d = memcmp((char *) f13bis, f13codeNoFramePtr, 6);
+        assert(memcmp13c == 0 || memcmp13d == 0);
+        int r13bis = f13bis(1000, 0L, 'X');
+        assert_eq(r13bis, 1088);
+
+        byte *pb14 = (byte *) f14;
+        // RTI op code, when no frame pointer, or PSHS/LEAU/LEAS/PULS/RTI when frame pointer used.
+        const byte code[] = { 0x34, 0x40, 0x33, 0xE4, 0x32, 0xC4, 0x35, 0x40, 0x3B };
+        assert(pb14[0] == 0x3B || memcmp(pb14, code, sizeof(code)) == 0);
+
+        int r15 = f15('X', 1000);
+        assert_eq(r15, 1088);
+
+        // Check that variadic function f16() does NOT spill registers,
+        // because all of its arguments are supposed to be on the stack.
+        // It must start with:
+        //   PSHS U; LEAU ,S; LEAS -5,S
+        // but NOT continue with:
+        //   STB __,U; STX __,U.
+        assert_eq(memcmp((char *) f16, "\x34\x40\x33\xE4\x32\x7A", 6), 0);
+        assert_ne(((char *) f16)[6], 0xE7);  // not STB __,U
+        int r16 = f16('X', 1000, 2000);
+        assert_eq(r16, 3088);
+
+        // Similar check for variadic function f17() that returns a struct
+        // of more than 2 bytes.
+        assert_eq(((word *) f17)[0], 0x3440);  // PSHS U
+        assert_eq(((word *) f17)[1], 0x33E4);  // LEAU ,S
+        assert_eq(((word *) f17)[2] >> 8, 0x32);  // LEAS -__,S
+        assert_eq(((word *) f17)[3] >> 8, 0xEF);  // inline STU instruction
+        struct LargeStruct r17 = f17('X', 1000, 200000L);
+        assert(r17.foo == 201088L);
+
+        // Check that main() uses the CMOC default convention.
+        const byte *mainEnd = NULL;
+        asm
+        {
+            leax    funcend_main,pcr
+            stx     :mainEnd
+        }
+        assert_eq(((word *) mainEnd)[-2], 0x32C4);  // LEAS ,U
+        assert_eq(((word *) mainEnd)[-1], 0x35C0);  // PULS U,PC
+        if (mainEnd[-7] == 0x16)  // if LBRA * (due to -O0)
+            assert_eq(* (word *) (mainEnd - 9), 0x4F5F);  // CLRA; CLRB (__gcccall would follow w/ TFR D,X)
+        else
+            assert_eq(((word *) mainEnd)[-3], 0x4F5F);  // CLRA; CLRB (__gcccall would follow w/ TFR D,X)
+
+        // Check that a __gcccall function returns a 16-bit value in X.
+        asm
+        {
+            ldd     #$1234
+            ldx     #$5678
+        }
+        int r18 = f18();
+        int xReg;
+        asm
+        {
+            stx     :xReg
+        }
+        assert_eq(xReg, 0x9ABC);
+        assert_eq(r18, 0x9ABC);
+
+        // Register-passed arguments are not immediate values.
+        char r6_ = f6(getChar(), 100000L, getInt());
+        assert_eq(r6_, 82);
+        int r7_ = f7(getInt(), 100000L, getChar());
+        assert_eq(r7_, 0x7F52);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{No spill instructions in __gcccall function that is asm-only},
+program => q`
+    asm __gcccall void f0(char a) {}
+    asm __gcccall void f1(int b) {}
+    asm __gcccall void f2(char a, int b) {}
+    int main()
+    {
+        f0('X');
+        f1(1000);
+        f2('X', 1000);
+
+        assert_eq(* (byte *) f0, 0x39);  // body must be RTS only
+        assert_eq(* (byte *) f1, 0x39);
+        assert_eq(* (byte *) f2, 0x39);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{int-typed argument passed to char parameter of __gcccall function},
+program => q`
+    __gcccall int foo(char a, int b, long c)
+    {
+        return a + b + (c > 0);
+    }
+    __gcccall int bar(int b, char a, long c)
+    {
+        return a + b + (c > 0);
+    }
+
+    // Unsigned 'a' and 'b':
+    __gcccall unsigned int ufoo(unsigned char a, unsigned int b, long c)
+    {
+        return a + b + (c > 0);
+    }
+    __gcccall unsigned int ubar(unsigned int b, unsigned char a, long c)
+    {
+        return a + b + (c > 0);
+    }
+
+    void signedCases(void)
+    {
+        // The '100' must be passed in B, because the parameter ('a') is char,
+        // even though the type of '100' is int (2 bytes). 
+        int n;
+        n = foo(100, 1000, 100000L);
+        assert_eq(n, 1101);
+        n = foo(100, '*', 100000L);
+        assert_eq(n, 143);
+
+        // Negative argument for 'b'.
+        n = foo(100, -1000, 100000L);
+        assert_eq(n, -899);
+        n = foo(100, -42, 100000L);
+        assert_eq(n, 59);
+
+        // Inverse order for 'a' and 'b'.
+        n = bar(1000, 100, 100000L);
+        assert_eq(n, 1101);
+        n = bar('*', 100, 100000L);
+        assert_eq(n, 143);
+
+        // Negative argument for 'b'.
+        n = bar(-1000, 100, 100000L);
+        assert_eq(n, -899);
+        n = bar(-42, 100, 100000L);
+        assert_eq(n, 59);
+    }
+
+    void unsignedCases(void)
+    {
+        // The '100' must be passed in B, because the parameter ('a') is char,
+        // even though the type of '100' is int (2 bytes). 
+        int n;
+        n = ufoo(100, 1000, 100000L);
+        assert_eq(n, 1101);
+        n = ufoo(100, '*', 100000L);
+        assert_eq(n, 143);
+
+        // Negative argument for 'b'.
+        n = ufoo(100, -1000, 100000L);
+        assert_eq(n, (unsigned) -899);
+        n = ufoo(100, -42, 100000L);
+        assert_eq(n, 59);
+
+        // Inverse order for 'a' and 'b'.
+        n = ubar(1000, 100, 100000L);
+        assert_eq(n, 1101);
+        n = ubar('*', 100, 100000L);
+        assert_eq(n, 143);
+
+        // Negative argument for 'b'.
+        n = ubar(-1000, 100, 100000L);
+        assert_eq(n, (unsigned) -899);
+        n = ubar(-42, 100, 100000L);
+        assert_eq(n, 59);
+    }
+
+    int main()
+    {
+        signedCases();
+        unsignedCases();
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Zero-length array},
+tolerateWarnings => 1,
+program => q`
+    struct S0
+    {
+        short length;
+        char contents[0];
+    };
+    struct S1
+    {
+        short length;
+        char contents[0];
+        char extra[0];
+    };
+    int main()
+    {
+        int a[0];
+        assert_eq(sizeof(a), 0);
+
+        int m0[0][3] = {};
+        assert_eq(sizeof(m0), 0);
+
+        int m1[3][0];
+        assert_eq(sizeof(m1), 0);
+
+        #ifndef OMIT_FRAME_POINTER  /* -fomit-frame-pointer confused by these out-of-bound addresses: */
+        assert_eq(&m0[1], (byte *) &m0[0] + 6);
+        assert_eq(&m0[2], (byte *) &m0[0] + 12);
+        assert_eq(&m1[1], (byte *) &m1[0]);
+        assert_eq(&m1[2], (byte *) &m1[0]);
+        #endif
+
+        assert_eq(sizeof(struct S0), sizeof(short));
+        struct S0 s0;
+        assert_eq(sizeof(s0), sizeof(short));
+        assert_eq(sizeof(s0.length), sizeof(short));
+        assert_eq(sizeof(s0.contents), 0);
+        assert_eq(&s0.length, &s0);
+        assert_eq(&s0.contents, (byte *) &s0 + sizeof(short));
+
+        assert_eq(sizeof(struct S1), sizeof(short));
+        struct S1 s1;
+        assert_eq(sizeof(s1), sizeof(short));
+        assert_eq(sizeof(s1.length), sizeof(short));
+        assert_eq(sizeof(s1.contents), 0);
+        assert_eq(sizeof(s1.extra), 0);
+        assert_eq(&s1.length, &s1);
+        assert_eq(&s1.contents, (byte *) &s1 + sizeof(short));
+        assert_eq(&s1.extra, (byte *) &s1 + sizeof(short));
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Sign-extension of 8-bit constants in a conditional expression assigned to a word},
+program => q`
+    int cond() { return 0; }
+    int main()
+    {
+        unsigned short u;
+        u = (cond() ? 120 : 240);  // N.B.: cond expr is signed byte, not word, under CMOC
+        assert_eq(u, 0xFFF0);  // so signed byte 0xF0 gets sign-extended to 0xFFF0
+        u = (cond() ? 240 : 120);
+        assert_eq(u, 120);
+        u = (cond() ? 120u : 240u);
+        assert_eq(u, 240);
+        u = (cond() ? 240u : 120u);
+        assert_eq(u, 120);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Optimization bug on switch() under --no-relocate},
+compilerOptions => "--no-relocate",
+program => q`
+    typedef struct Note
+    {
+        word p;
+        char v;
+        byte l;
+    } Note;
+
+    Note a[1] = { { 0, 0, 4 } };
+
+    int main()
+    {
+        word i = 0;
+        char f = 'X', s = ' ';
+        switch (a[i].l)  // LDB 3,X was removed by buggy optimization in 0.1.89
+        {
+            case 0: f = '6'; s = '4'; break;
+            case 1: f = '3'; s = '2'; break;
+            case 2: f = '1'; s = '6'; break;
+            case 3: f = '8'; break;
+            case 4: f = '4'; break;
+            case 5: f = '2'; break;
+            case 6: f = '1'; break;
+        }
+        assert_eq(f, '4');
+        assert_eq(s, ' ');
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Removal of two consecutive LEAS instructions that cancel each other},
+compilerOptions => "--mc6839",
+program => q`
+    int main()
+    {
+        long a = 100000L, b = 200000L;
+        printf("%ld\n", a + b);
+        float f = 3.1f, g = 0.0416f;
+        enable_printf_float();  // requires otherwise printf() prints "!"
+        printf("%f\n", f + g);
+        return 0;
+    }
+    `,
+expected => "300000\n3.1416\n"
+},
+
+
+{
+title => q{Cast a long to a char as part of an expression},
+program => q`
+    int main()
+    {
+        unsigned long ul0 = 0x1234ABCDul;
+        char c0 = (char) ul0 & 0x0F;
+        assert_eq(c0, 0x0D);
+
+        long sl1 = 0x1289ABEFul;
+        char c1 = (char) sl1 & 0x0F;
+        assert_eq(c1, 0x0F);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{No size zero warning on an array member whose dimensions are in a typedef},
+program => q`
+    typedef unsigned short ArrayType[2];
+    struct S
+    {
+        ArrayType arrayMember;  // must not issue diagnostic (as version 0.1.91 did)
+        int n;
+    };
+    int main()
+    {
+        struct S s = { { 50000, 60000 }, -30000 };
+        assert_eq(s.arrayMember[0], 50000);
+        assert_eq(s.arrayMember[1], 60000);
+        assert_eq(s.n, -30000);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Optimization of long shifted right by 16 bits then cast to short},
+program => q`
+    unsigned long ul() { return 0x12345678LU; }
+    long l() { return 0x12345678L; }
+    int main()
+    {
+        short s = (short) (ul() >> 16);
+        assert_eq(s, 0x1234);
+        unsigned short us = (unsigned short) (ul() >> 16);
+        assert_eq(us, 0x1234);
+        s = (short) (l() >> 16);
+        assert_eq(s, 0x1234);
+        us = (unsigned short) (l() >> 16);
+        assert_eq(us, 0x1234);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Pointers to functions that use the GCC calling convention},
+program => q`
+    __gcccall int f(char b, int x, int k) { return b + x + k; }
+    __gcccall int (*fp)(char b, int x, int k);
+    struct S
+    {
+        __gcccall int (*fp)(char b, int x, int k);  // 1st member
+    };
+    struct T
+    {
+        long l;
+        __gcccall int (*fp)(char b, int x, int k);  // not 1st member
+    };
+    int main()
+    {
+        assert_eq(f(100, 1009, 10000), 11109);
+        fp = f;
+        assert_eq((*fp)(100, 1000, 10000), 11100);
+        assert_eq(fp(102, 1000, 10000), 11102);
+
+        struct S s = { f };
+        assert_eq((*s.fp)(101, 2000, 20000), 22101);
+        assert_eq(s.fp(103, 2000, 20000), 22103);
+        struct S *ps = &s;
+        assert_eq(ps->fp(103, 2000, 20000), 22103);
+
+        struct T t = { 0L, f };
+        assert_eq((*t.fp)(101, 2000, 20000), 22101);
+        assert_eq(t.fp(103, 2000, 20000), 22103);
+        struct T *pt = &t;
+        assert_eq(pt->fp(103, 2000, 20000), 22103);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{#pragma push_calling_convention affects struct members},
+program => q`
+    #pragma push_calling_convention __gcccall
+    struct S
+    {
+        void (*fpm)(void);
+        __gcccall void (*fpm_explicit)(void);
+    };
+    int counter = 0;
+    void f(void) { ++counter; }
+    #pragma pop_calling_convention
+    int main()
+    {
+        __gcccall void (*fp)(void) = f;
+        struct S s = { f, NULL };
+        s.fpm_explicit = f;
+
+        f();
+        s.fpm();
+        s.fpm_explicit();
+
+        assert_eq(counter, 3);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{#pragma push_calling_convention affects function pointer typedefs},
+program => q`
+    #pragma push_calling_convention __gcccall
+    typedef int (*FP)(char a0, int a1, int a2);
+    #pragma pop_calling_convention
+    __gcccall int f0(char a0, int a1, int a2)
+    {
+        return a0 + a1 + a2;
+    }
+    int main()
+    {
+        FP fp = f0;  // FP supposed to be __gcccall b/c of #pragma
+
+        int rv = (*fp)(0x11, 0x100, 0x1000);
+        assert_eq(rv, 0x1111);
+
+        // Test call convention of 'fp' by assuming it is __gcccall in inline asm:
+        rv = 0xFFFF;
+        asm
+        {
+            pshs    y           ; preserve data segment pointer
+            ldd     #$2000
+            pshs    d
+            ldx     #$200       ; first word arg
+            ldb     #$22        ; first byte arg
+            ldy     :fp         ; get function address from 'fp'
+            jsr     ,y
+            leas    2,s         ; discard $2000
+            stx     :rv         ; store return value
+            puls    y
+        }
+        assert_eq(rv, 0x2222);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Duff's device with switch as a jump table},
+compilerOptions => "--switch=jump",
+program => duffsDevice(),
+expected => ""
+},
+
+
+{
+title => q{Duff's device with switch as an if-else sequence},
+compilerOptions => "--switch=ifelse",
+program => duffsDevice(),
+expected => ""
+},
+
+
+{
+title => q{Jump table switch() with cases in do-while statements},
+compilerOptions => "--switch=jump",
+program => testSwitchWithCasesInDoWhiles(),
+expected => ""
+},
+
+
+{
+title => q{If-else sequence switch() with cases in do-while statements},
+compilerOptions => "--switch=ifelse",
+program => testSwitchWithCasesInDoWhiles(),
+expected => ""
+},
+
+
+{
+title => q{Jump table switch() with a goto out of it},
+compilerOptions => "--switch=jump",
+program => switchWithGotoOutOfIt(),
+expected => ""
+},
+
+
+{
+title => q{If-else sequence switch() with a goto out of it},
+compilerOptions => "--switch=ifelse",
+program => switchWithGotoOutOfIt(),
+expected => ""
+},
+
+
+{
+title => q{Jump table nested switches},
+compilerOptions => "--switch=jump",
+program => nestedSwitches(),
+expected => ""
+},
+
+
+{
+title => q{If-else sequence nested switches},
+compilerOptions => "--switch=ifelse",
+program => nestedSwitches(),
+expected => ""
+},
+
+
+{
+title => q{Switch with statement before first case, jump table},
+tolerateWarnings => 1,
+compilerOptions => "--switch=jump",
+program => switchWithStatementBefore1stCase(),
+expected => ""
+},
+
+
+{
+title => q{Switch with statement before first case, ifelse},
+tolerateWarnings => 1,
+compilerOptions => "--switch=ifelse",
+program => switchWithStatementBefore1stCase(),
+expected => ""
+},
+
+
+{
+title => q{A break in a while() in a switch() breaks the while(), not the switch(), jump table},
+compilerOptions => "--switch=jump",
+program => breakInWhileInSwitchBreaksWhile(),
+expected => ""
+},
+
+
+{
+title => q{A break in a while() in a switch() breaks the while(), not the switch(), ifelse},
+compilerOptions => "--switch=ifelse",
+program => breakInWhileInSwitchBreaksWhile(),
+expected => ""
+},
+
+
+{
+title => q{Optimization of for() condition that post-decrements a word variable},
+program => q`
+    int main()
+    {
+        word sum = 0;
+        for (word k = 10; k--; )
+            sum += k;
+        assert_eq(sum, 45);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Optimization of MUL16 by a constant},
+program => q`
+    byte *s = (byte *) 0x0E00;
+    byte *f(byte x, byte y)
+    {
+        return (byte *) s + (word) y * 32 + (x >> 3);
+    }
+    int main()
+    {
+        assert_eq(f(  0,   0), 0x0E00);
+        assert_eq(f(255,   0), 0x0E1F);
+        assert_eq(f(128,  96), 0x1A10);
+        assert_eq(f(  0, 191), 0x25E0);
+        assert_eq(f(255, 191), 0x25FF);
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
+{
+title => q{Casting a pointer or array to a byte before applying a binary operation},
+program => q`
+    int main()
+    {
+        const char *ptr = "bar";
+        word w = 0xDE95;
+        char ary[] = "foo";
+        byte b;
+
+        asm { nop }  // prevent optimizations between before and after this line
+
+        b = ((byte) w) & 0x3F;
+        assert_eq(b, 0x0015);
+
+        b = ((byte) ptr) & 0x3F;
+        assert_eq(b, (word) ptr & 0x003F);
+
+        b = ((byte) ary) & 0x3F;
+        assert_eq(b, (word) ary & 0x003F);
+
+        return 0;
+    }
+    `,
+expected => ""
+},
+
+
 #{
 #title => q{Sample test},
 #program => q`
@@ -10222,7 +15410,616 @@ expected => ""
 );  # End of test case list.
 
 
+# Subs that return C code that is used by more than one test.
+
+
+sub generalSwitchTests
+{
+    return q`
+    enum { FIVE = 5 };
+    int testSwitch1(int n)
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case -3:
+            return 100;
+        case 0:
+            ret = 101;
+            break;
+        case FIVE:  // enum name as a constant expression
+            ret = 102;
+            // FALLTHROUGH
+        case FIVE - 3:  // constant binary operator expression
+            ret = 103;
+            break;
+        default:
+            ret = 999;
+        }
+        return ret;
+    }
+    int testSwitch2(int n)  // default in the middle
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case -3:
+            return 100;
+        default:
+            ret = 999;
+            break;
+        case 0:
+            ret = 101;
+            break;
+        case 5:
+            ret = 102;
+            // FALLTHROUGH
+        case 2:
+            ret = 103;
+        }
+        return ret;
+    }
+    int testSwitch3(signed char n)  // byte expression, default in the middle
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case -3:
+            return 100;
+        default:
+            ret = 999;
+            break;
+        case 0:
+            ret = 101;
+            break;
+        case 5:
+            ret = 102;
+            // FALLTHROUGH
+        case 2:
+            ret = 103;
+        }
+        
+        return ret;
+    }
+    char testSwitch4(signed char n)
+    {
+        switch (n)
+        {
+            case 2:
+            case 8:
+            case 11:
+                return 0;
+            default:
+                return 1;
+        }
+    }
+    int testSwitch5(unsigned n)  // default in the middle
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case 65533:
+            return 100;
+        default:
+            ret = 999;
+            break;
+        case 0:
+            ret = 101;
+            break;
+        case 5:
+            ret = 102;
+            // FALLTHROUGH
+        case 2:
+            ret = 103;
+        }
+        return ret;
+    }
+    int testSwitch5a(unsigned n)  // default in the middle with no break
+    {
+        int ret = 7777;
+        switch (n)
+        {
+        case 65533:
+            return 100;
+        default:
+            ret = 999;
+            // FALLTHROUGH
+        case 0:
+            ret = 101;
+            break;
+        case 5:
+            ret = 102;
+            // FALLTHROUGH
+        case 2:
+            ret = 103;
+        }
+        return ret;
+    }
+    int testSwitch6(unsigned n)
+    {
+        if (n == 999)  // special case
+            goto foobar;
+        int ret = 7777;
+        switch (n)
+        {
+        case 5:
+        case 6:
+        case 7:
+        case 8:
+        case 9:
+        case 10:
+        case 11:
+        case 12:
+        case 13:
+        case 14:
+        case 15:
+        case 16:
+        case 17:
+        case 18:
+        case 19:
+        case 20:
+        case 21:
+        case 22:
+        case 23:
+        case 24:
+            return 100;
+        case 30:
+        case 31:
+        case 32:
+        case 33:
+        case 34:
+        foobar:  // the following cases must be visible despite this label
+        case 35:
+        case 36:
+        case 37:
+        case 38:
+        case 39:
+            return 101;
+        default:
+            return 102;
+        }
+        return ret;
+    }
+    int testSwitch7(unsigned n)  // goto from one case to middle of an another
+    {
+        int result = 0;
+        switch (n)
+        {
+            case 1:
+                result |= 1;
+                goto other_case;
+                result |= 2;
+                break;
+            case 2:
+                result |= 4;
+            other_case:
+                result |= 8;
+                break;
+        }
+        result |= 0x80;
+        return result;
+    }
+    int main()
+    {
+        assert_eq(testSwitch1(-3), 100);
+        assert_eq(testSwitch1( 0), 101);
+        assert_eq(testSwitch1( 5), 103);
+        assert_eq(testSwitch1( 2), 103);
+        assert_eq(testSwitch1(-9), 999);
+
+        assert_eq(testSwitch2(-3), 100);
+        assert_eq(testSwitch2( 0), 101);
+        assert_eq(testSwitch2( 5), 103);
+        assert_eq(testSwitch2( 2), 103);
+        assert_eq(testSwitch2(-9), 999);
+
+        assert_eq(testSwitch3(-3), 100);
+        assert_eq(testSwitch3( 0), 101);
+        assert_eq(testSwitch2( 5), 103);
+        assert_eq(testSwitch3( 2), 103);
+        assert_eq(testSwitch3(-9), 999);
+        
+        assert_eq(testSwitch4(2),  0);
+        assert_eq(testSwitch4(8),  0);
+        assert_eq(testSwitch4(11), 0);
+        assert_eq(testSwitch4(13), 1);
+
+        assert_eq(testSwitch5(65533), 100);
+        assert_eq(testSwitch5(    0), 101);
+        assert_eq(testSwitch5(    5), 103);
+        assert_eq(testSwitch5(    2), 103);
+        assert_eq(testSwitch5(65527), 999);
+        
+        assert_eq(testSwitch5a(65533), 100);
+        assert_eq(testSwitch5a(    0), 101);
+        assert_eq(testSwitch5a(    5), 103);
+        assert_eq(testSwitch5a(    2), 103);
+        assert_eq(testSwitch5a(65527), 101);  // default falls through to case 0
+
+        for (unsigned i = 3; i <= 41; ++i)
+        {
+            int expected = (i < 5 ? 102 : (i <= 24 ? 100 : (i <= 29 ? 102 : (i <= 39 ? 101 : 102)))); 
+            int actual = testSwitch6(i);
+            //printf("i=%2u: got %5u, expected %5u\n", i, actual, expected);
+            assert_eq(actual, expected);
+        }
+
+        // Check that "goto foobar" jumps to middle of switch body.
+        assert_eq(testSwitch6(999), 101);
+        
+        // break inside an if().
+        int n = 17;
+        switch (3)
+        {
+        case 3:
+            if (n == 17)
+            {
+                n = 88;
+                break;
+            }
+        case 4:
+            n = 99;
+            break;
+        }
+        assert_eq(n, 88);
+        
+        assert_eq(testSwitch7(1), 1 | 8 | 0x80);
+        assert_eq(testSwitch7(2), 4 | 8 | 0x80);
+        assert_eq(testSwitch7(0), 0x80);
+
+        return 0;
+    }
+    `;
+}
+
+
+sub duffsDevice
+{
+    return q`
+    // Source: https://en.wikipedia.org/wiki/Duff%27s_device
+    // Modified to increment 'to' and to return void.
+    void send(to, from, count)
+    register short *to, *from;
+    register count;
+    {
+        register n = (count + 7) / 8;
+        switch (count % 8) {
+        case 0: do { *to++ = *from++;
+        case 7:      *to++ = *from++;
+        case 6:      *to++ = *from++;
+        case 5:      *to++ = *from++;
+        case 4:      *to++ = *from++;
+        case 3:      *to++ = *from++;
+        case 2:      *to++ = *from++;
+        case 1:      *to++ = *from++;
+                } while (--n > 0);
+        }
+    }
+    short src[] = { 
+            1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007,
+            1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015,
+            1016, 1017, 1018 };
+    short dest[24];
+    void check(size_t numSrc)
+    {
+        //printf("check(%u)\n", numSrc);
+        byte success = 1;
+        for (size_t i = 0; i < sizeof(dest) / sizeof(dest[0]); ++i)
+        {
+            //printf("%4d ", dest[i]);
+            //if (i % 8 == 7)
+            //    printf("\n");
+            if (i < numSrc && dest[i] != src[i])
+                success = 0;
+            else if (i >= numSrc && dest[i] != -1)
+                success = 0;
+        }
+        if (!success)
+            printf("check: Failed with numSrc=%u.\n", numSrc);
+        assert(success);
+    }
+    int main()
+    {
+        size_t numSrc = sizeof(src) / sizeof(src[0]);
+        memset(dest, '\xFF', sizeof(dest));
+        send(dest, src, numSrc);
+        check(numSrc);
+
+        numSrc = 16;  // try with number of elements divisible by 8
+        memset(dest, '\xFF', sizeof(dest));
+        send(dest, src, numSrc);
+        check(numSrc);
+
+        numSrc = 14;
+        memset(dest, '\xFF', sizeof(dest));
+        send(dest, src, numSrc);
+        check(numSrc);
+
+        numSrc = 5;
+        memset(dest, '\xFF', sizeof(dest));
+        send(dest, src, numSrc);
+        check(numSrc);
+
+        numSrc = 1;
+        memset(dest, '\xFF', sizeof(dest));
+        send(dest, src, numSrc);
+        check(numSrc);
+
+        numSrc = 0;
+        memset(dest, '\xFF', sizeof(dest));
+        send(dest, src, numSrc);
+        check(8);  // Duff's device copies 8 elements when count==0
+
+        return 0;
+    }`;
+}
+
+
+sub testSwitchWithCasesInDoWhiles
+{
+    return q`
+    int testSwitchWithCasesInDoWhiles(int lc, int cond0, int cond1, int cond2, int cond3)
+    {
+        //printf("testSwitchWithCasesInDoWhiles(%d, %d, %d, %d, %d)\n", lc, cond0, cond1, cond2, cond3);
+        switch (lc)
+        {
+        case 0:
+            ;
+            do
+            {
+                lc = 95;
+            case 95:
+                ;
+                if (cond0)
+                {
+                    return 1;
+                }
+            } while (0);
+            do
+            {
+                lc = 96;
+            case 96:
+                ;
+                if (cond1)
+                {
+                    return 2;
+                }
+            } while (0);
+            do
+            {
+                lc = 98;
+            case 98:
+                ;
+                if (cond2)
+                {
+                    return 3;
+                }
+            } while (0);
+            do
+            {
+                lc = 99;
+            case 99:
+                ;
+                if (cond3)
+                {
+                    return 4;
+                }
+            } while (0);
+        }
+        ;
+        lc = 0;
+        ;
+        return 0;
+    }
+    int main()
+    {
+        assert_eq(testSwitchWithCasesInDoWhiles( 0, 0, 0, 0, 0), 0);
+        assert_eq(testSwitchWithCasesInDoWhiles( 0, 1, 0, 0, 0), 1);
+        assert_eq(testSwitchWithCasesInDoWhiles(95, 1, 0, 0, 0), 1);
+        assert_eq(testSwitchWithCasesInDoWhiles(95, 0, 0, 0, 0), 0);
+        assert_eq(testSwitchWithCasesInDoWhiles(96, 0, 1, 0, 0), 2);
+        assert_eq(testSwitchWithCasesInDoWhiles(96, 0, 0, 0, 0), 0);
+        assert_eq(testSwitchWithCasesInDoWhiles(98, 0, 0, 1, 0), 3);
+        assert_eq(testSwitchWithCasesInDoWhiles(98, 0, 0, 0, 0), 0);
+        assert_eq(testSwitchWithCasesInDoWhiles(99, 0, 0, 0, 1), 4);
+        assert_eq(testSwitchWithCasesInDoWhiles(99, 0, 0, 0, 0), 0);
+        assert_eq(testSwitchWithCasesInDoWhiles(77, 0, 0, 0, 0), 0);
+        return 0;
+    }
+    `;
+}
+
+
+sub switchWithGotoOutOfIt
+{
+    return q`
+    unsigned sw(int x)
+    {
+        unsigned bitField = 0;
+        switch (x)
+        {
+            case 1:
+                bitField |= 1;
+                goto end_switch;
+                bitField |= 0x8000;  // unreachable
+            case 2:
+                bitField |= 2;
+                break;
+                bitField |= 0x4000;  // unreachable
+        }
+        bitField |= 4;
+    end_switch:
+        bitField |= 8;
+        return bitField;
+    }
+    int main()
+    {
+        assert_eq(sw(0), 4 | 8);
+        assert_eq(sw(1), 1 | 8);
+        assert_eq(sw(2), 2 | 4 | 8);
+        return 0;
+    }
+    `;
+}
+
+
+sub nestedSwitches
+{
+    return q`
+    unsigned sw(int x, int y)
+    {
+        unsigned bitField = 0;
+        switch (x)
+        {
+            case 1:
+                bitField |= 2;
+                switch (y)
+                {
+                    case 10:
+                        bitField |= 4;
+                        break;
+                        bitField |= 0x8000;  // unreachable
+                }
+                bitField |= 8;
+                break;
+                bitField |= 0x4000;  // unreachable
+        }
+        bitField |= 16;
+        return bitField;
+    }
+    int main()
+    {
+        assert_eq(sw(1, 10), 2 | 4 | 8 | 16);
+        assert_eq(sw(1, 1), 2 | 8 | 16);
+        assert_eq(sw(1, -42), 2 | 8 | 16);
+        assert_eq(sw(-9999, 10), 16);
+        assert_eq(sw(-9999, -888), 16);
+        assert_eq(sw(10, 1), 16);
+        assert_eq(sw(10, 10), 16);
+        return 0;
+    }
+    `;
+}
+
+
+sub switchWithStatementBefore1stCase
+{
+    return q`
+    int firstSwitchLabelIsCase(int c)
+    {
+        int n = 0;
+        switch (c)
+        {
+            n |= 0x80;
+        case 1:
+            n |= 1;
+            break;
+        }
+        n |= 2;
+        return n;
+    }
+    int firstSwitchLabelIsDefault(int c)
+    {
+        int n = 0;
+        switch (c)
+        {
+            n |= 0x80;
+        default:
+            n |= 1;
+            break;
+        }
+        n |= 2;
+        return n;
+    }
+    int firstSwitchLabelIsDefaultThenCase(int c)
+    {
+        int n = 0;
+        switch (c)
+        {
+            n |= 0x80;
+        default:
+            n |= 1;
+            break;
+        case 1:
+            n |= 4;
+            break;
+        }
+        n |= 2;
+        return n;
+    }
+    int main()
+    {
+        assert_eq(firstSwitchLabelIsCase(0), 2);
+        assert_eq(firstSwitchLabelIsCase(1), 1 | 2);
+        assert_eq(firstSwitchLabelIsDefault(0), 1 | 2);
+        assert_eq(firstSwitchLabelIsDefaultThenCase(0), 1 | 2);
+        assert_eq(firstSwitchLabelIsDefaultThenCase(1), 4 | 2);
+        return 0;
+    }
+    `;
+}
+
+
+sub breakInWhileInSwitchBreaksWhile
+{
+    return q`;
+    unsigned f(unsigned n)
+    {
+        switch (n)
+        {
+        case 10:
+            while (--n)
+                if (n == 4)
+                    break;
+            n |= 0x80;
+            break;
+        }
+        return n;
+    }
+    unsigned g(unsigned n0, unsigned n1)
+    {
+        switch (n0)
+        {
+        case 10:
+            while (--n0)
+                if (n0 == 4)
+                {
+                    switch (n1)
+                    {
+                    case 20:
+                        n0 |= 8;
+                        break;
+                    case 21:
+                        n0 |= 0x10;
+                        break;
+                    case 22:
+                        n0 |= 0x20;
+                        break;
+                    }
+                    n0 |= 0x40;
+                    break;
+                }
+            n0 |= 0x80;
+            break;
+        }
+        return n0;
+    }
+    int main()
+    {
+        assert_eq(f(10), 0x84);
+        assert_eq(f(99), 99);
+        assert_eq(g(10, 20), 4 | 8 | 0x40 | 0x80);
+        assert_eq(g(10, 21), 4 | 0x10 | 0x40 | 0x80);
+        assert_eq(g(10, 22), 4 | 0x20 | 0x40 | 0x80);
+        assert_eq(g(88, 99), 88);
+        return 0;
+    }
+    `;
+}
+
+
 ###############################################################################
+
 
 sub usage
 {
@@ -10230,19 +16027,22 @@ sub usage
 Usage: $0 [options] SRCDIR
 
 Options:
---nocleanup       Do not delete the intermediate files after running.
---only=NUM        Only run test #NUM, with no clean up. Implies --nocleanup.
---last            Only run the last test. Implies --nocleanup.
---start=NUM       Start at test #NUM. The first test has number zero.
---stop-on-fail    Stop right after a test has failed instead of continuing
-                  to the end of the test list. Implies --nocleanup.
---titles[=STRING] Dump test titles (with numbers) to standard output.
-                  If STRING specified, only dumps titles that contain STRING.
---coco            Generate test####.bin files and suite###.bin files to be run
-                  on a CoCo.
---compile-as-c    Check that each program is accepted by the local C compiler.
---load-offset=D   Tell 6809 simulator to load program with specified HEX offset.
---optims=L        Compile with level L optimizations (default is $optimLevel).
+--nocleanup           Do not delete the intermediate files after running.
+--only=NUM[,NUM...]   Only run test #NUM, with no clean up. Implies --nocleanup.
+--last                Only run the last test. Implies --nocleanup.
+--start=NUM           Start at test #NUM. The first test has number zero.
+--stop-on-fail        Stop right after a test has failed instead of continuing
+                      to the end of the test list. Implies --nocleanup.
+--titles[=STRING]     Dump test titles (with numbers) to standard output.
+                      If STRING specified, only dumps titles that contain STRING.
+--coco                Generate test####.bin files and suite###.bin files to be run
+                      on a CoCo.
+--compile-as-c        Check that each program is accepted by the local C compiler.
+--load-offset=D       Tell 6809 simulator to load program with specified HEX offset.
+--optims=L            Compile with level L optimizations (default is $optimLevel).
+--allow-y             Allow the compiler to use the Y regisgter (i.e., pass it -Oy).
+--omit-frame-pointer  Pass -fomit-frame-pointer to the compiler (default is not to).
+--no-omit-frame-pointer  Pass -fno-omit-frame-pointer to the compiler (default is not to).
 
 __EOF__
 
@@ -10251,6 +16051,8 @@ __EOF__
 
 ###############################################################################
 
+my @origArgs = @ARGV;
+
 my $helpWanted = 0;
 my $noCleanUp = 0;
 my $onlyArg;
@@ -10258,6 +16060,9 @@ my $onlyLast;
 my $firstTestToRun;
 my $loadOffsetArg;
 my $titleDumpWanted;
+my $printNumTests;
+my $allowYReg = 0;
+my $useOneFilenamePerTest;  # string to use for $baseFilename, with test number appended
 
 if (!GetOptions(
         "help" => \$helpWanted,
@@ -10270,13 +16075,28 @@ if (!GetOptions(
         "compile-as-c" => \$testCCompilability,
         "load-offset=s" => \$loadOffsetArg,
         "titles:s" => \$titleDumpWanted,  # the ':' means argument is optional
+        "count" => \$printNumTests,
         "optims=i" => \$optimLevel,
+        "allow-y" => \$allowYReg,
+        "omit-frame-pointer" => \$omitFramePointer,
+        "no-omit-frame-pointer" => \$noOmitFramePointer,
+        "unsigned-char" => \$isCharUnsigned,
+        "no-relocate" => \$noRelocate,
+        "filename-per-test=s" => \$useOneFilenamePerTest,
         ))
 {
     usage(1);
 }
 
 usage(0) if $helpWanted;
+
+my $baseFilename = ",check-prog";
+
+if (defined $printNumTests)
+{
+    print scalar(@testCaseList), "\n";
+    exit 0;
+}
 
 if (defined $titleDumpWanted)
 {
@@ -10327,8 +16147,8 @@ if (defined $onlyArg)  # --only=#,#,#
             my $raMatches = findMatchingTestNumbers($n);
             if (@$raMatches == 0)
             {
-                print "Invalid test number '$n'\n\n";
-                usage(1);
+                print "Invalid test number '$n'\n";
+                exit 1;
             }
 
             # If $n matches more than one test title, list matches and fail.
@@ -10339,8 +16159,7 @@ if (defined $onlyArg)  # --only=#,#,#
                 {
                     printf("%4u  %s\n", $match->{num}, $match->{title});
                 }
-                print "\n";
-                usage(1);
+                exit 1;
             }
 
             # Only one match: take the test number and continue.
@@ -10412,7 +16231,9 @@ sub compileAsC($$)
 {
     my ($program, $cFilename) = @_;
 
-    my $cmd = "gcc -o ,tempprog -I . -x c -std=c99 '$cFilename'";
+    # -m32 is needed to have gcc consider 'long' 32 bits, not 64.
+    #
+    my $cmd = "gcc -m32 -o ,tempprog -I . -x c -std=c99 '$cFilename'";
     if (system($cmd) != 0)
     {
         print "$0: ERROR: failed to compile program as C\n";
@@ -10427,6 +16248,9 @@ sub compileAsC($$)
 
     return 1;
 }
+
+
+my %testPerfTable;  # Key: test number. Value: { userTime => number of seconds }.
 
 
 # Returns the output of the simulator, or undef if $generateCoCoBinary is true,
@@ -10457,7 +16281,13 @@ sub testProgram($$$$$$)
         return undef;
     }
 
-    my $compCmd = "./cmoc --usim --verbose -nostdinc -O$optimLevel --org=$org --intermediate";
+    my $compCmd = "./cmoc --usim --verbose -nostdinc -O$optimLevel"
+                  . ($allowYReg ? " -Oy" : "")
+                  . ($omitFramePointer ? " -fomit-frame-pointer -DOMIT_FRAME_POINTER=1" : "")
+                  . ($noOmitFramePointer ? " -fno-omit-frame-pointer -DNO_OMIT_FRAME_POINTER=1" : "")
+                  . ($isCharUnsigned ? " -funsigned-char" : "")
+                  . ($noRelocate ? " --no-relocate" : "")
+                  . " --org=$org --intermediate";
     
     $compCmd .= " -Lstdlib/ -L float";
 
@@ -10469,6 +16299,11 @@ sub testProgram($$$$$$)
     if (!defined $rhTestCase->{tolerateWarnings})
     {
         $compCmd .= " -Werror";
+    }
+
+    if ($rhTestCase->{compileOnly})
+    {
+        $compCmd .= " -c";
     }
 
     if (defined $rhTestCase->{compilerOptions})
@@ -10489,7 +16324,8 @@ sub testProgram($$$$$$)
     $compCmd .= " $cFilename";
     print "--- Compilation command: $compCmd\n";
     my $fh;
-    if (!open($fh, "$compCmd 2>&1 |"))
+    my $timePrefix = "";  # put "time " here to get performance measurements (see %testPerfTable)
+    if (!open($fh, "${timePrefix}env CMOCFLOATLIBDIR=float $compCmd 2>&1 |"))
     {
         print "$0: ERROR: failed to compile preceding program with command $compCmd: $!\n";
         return undef;
@@ -10497,6 +16333,11 @@ sub testProgram($$$$$$)
     my $line;
     while ($line = <$fh>)
     {
+        if ($line =~ /^(\d.*)user /)  # if line from the "time" command (see $timePrefix)
+        {
+            $testPerfTable{$testNo} = { userTime => $1 + 0 };
+        }
+
         $line =~ s/: warning:/: __warning__:/g;  # mask warning to keep auto build system from complaining 
         print $line;
     }
@@ -10517,6 +16358,12 @@ sub testProgram($$$$$$)
             or exit 1;
 
         return undef;  # no execution output to return
+    }
+
+    if ($rhTestCase->{compileOnly})
+    {
+        print "No execution because no linking requested.\n";
+        return undef;
     }
 
     my $usimCmd = sprintf("'%s' %s %x", $usimFilename, $execFilename, $hexLoadOffset);
@@ -10556,7 +16403,9 @@ sub runTestNumber($)
     my $program = $rhTestCase->{program};
     
     die unless defined $program;
-    die unless defined $rhTestCase->{title};
+
+    my $testTitle = $rhTestCase->{title};
+    die unless defined $testTitle;
 
     # Prepend the program with a definition of an assert() macro, etc.
     # We avoid the stringification operator (#) because it may not be supported
@@ -10565,6 +16414,7 @@ sub runTestNumber($)
     my $preamble = <<__EOF__;
 #ifdef __GNUC__
 #include <stdio.h>
+#include <stdarg.h>
 #else
 #include <cmoc.h>
 #endif
@@ -10573,11 +16423,17 @@ typedef unsigned char byte;
 typedef signed char sbyte;
 typedef unsigned int word;
 typedef signed int sword;
+
 #define assert(cond) do { if (!(cond)) printf("ERROR: assert failed: line %d\\n", __LINE__); } while (0)
 #define assert_eq(actual, expected) \\
 do { if ((actual) != (expected)) \\
          printf("ERROR: assert_eq failed: line %d: should be equal: got %u (\$%x), expected %u (\$%x)\\n", \\
                 __LINE__, (word) (actual), (word) (actual), (word) (expected), (word) (expected)); \\
+   } while (0)
+#define assert_eq_signed(actual, expected) \\
+do { if ((actual) != (expected)) \\
+         printf("ERROR: assert_eq_signed failed: line %d: should be equal: got %d expected %d\\n", \\
+                __LINE__, (actual), (expected)); \\
    } while (0)
 #define assert_ne(actual, expected) \\
 do { if ((actual) == (expected)) \\
@@ -10589,13 +16445,24 @@ do { if ((actual) < (expectedMin) && (actual) > (expectedMax)) \\
          printf("ERROR: assert_range failed: line %d: out of range: got %u (\$%x), expected %u..%u (\$%x..\$%x)\\n", \\
                 __LINE__, (word) (actual), (word) (actual), (word) (expectedMin), (word) (expectedMax), (word) (expectedMin), (word) (expectedMax)); \\
    } while (0)
+#define assert_str_eq(actual, expected) \\
+do { if (strcmp((actual), (expected)) != 0) \\
+         printf("ERROR: assert_str_eq failed: line %d: should be equal: got \\"%s\\", expected \\"%s\\"\\n", \\
+                __LINE__, (actual), (expected)); \\
+   } while (0)
 __EOF__
 
     my $org = "4000";
 
-    unless (defined $rhTestCase->{noPreamble})
+    my $testIdComment = "/* Test #$i: $testTitle */\n";
+
+    if (defined $rhTestCase->{noPreamble})
     {
-        $program = $preamble . $program;
+        $program = $testIdComment . $program;
+    }
+    else
+    {
+        $program = $testIdComment . $preamble . $program;
     }
 
     $rhTestCase->{org} = $org;
@@ -10621,10 +16488,21 @@ __EOF__
         return 1;
     }
 
-    my $cFilename = ",check-prog.c";
-    my $execFilename = ",check-prog.srec";
+    if (defined $useOneFilenamePerTest)
+    {
+        # Use test number in the filename provided on the command line.
+        $baseFilename = "$useOneFilenamePerTest-$i";
+    }
+
+    my $cFilename = "$baseFilename.c";
+    my $execFilename = "$baseFilename.srec";
     
     my $actualOutput = testProgram($i, $program, $cFilename, $execFilename, $rhTestCase, $org);
+
+    if ($rhTestCase->{compileOnly})
+    {
+        return 1;
+    }
 
     if ($generateCoCoBinary)
     {
@@ -10668,9 +16546,9 @@ sub cleanUp($)
     print "\n";
     print "Cleaning up:\n";
     my $success = 1;
-    for my $ext (qw(c asm s i lst hex bin srec map link o))
+    for my $ext (qw(.c .asm .s .i .lst .hex .bin .srec .map .link .o), "")  # no extension on OS-9 executables
     {
-        my $fn = "$basename.$ext";
+        my $fn = "$basename$ext";
         if (-f $fn)
         {
             print "  erasing $fn\n";
@@ -10779,11 +16657,11 @@ for my $i (@testNumbers)
         push @failedTestNumbers, $i;
         last if $stopOnFail;
     }
-}
 
-if ($cleanUp)
-{
-    cleanUp(",check-prog") or exit 1;
+    if ($cleanUp)
+    {
+        cleanUp($baseFilename) or exit 1;
+    }
 }
 
 if ($generateCoCoBinary)
@@ -10841,11 +16719,38 @@ if ($generateCoCoBinary)
 }
 else
 {
+    # Dump test performance numbers, if any were captured.
+    #
+    my @testNos = sort { $a <=> $b } keys %testPerfTable;
+    if (@testNos > 0)
+    {
+        my @a;
+        for my $testNo (@testNos)
+        {
+            push @a, { testNo => $testNo, userTime => $testPerfTable{$testNo}->{userTime} };
+        }
+
+        print "\n";
+        print "Test performances:\n";
+        print "\n";
+        print "  Test #  User time (s)\n";
+        print "  ======  =============\n";
+        for my $rh (sort { $b->{userTime} <=> $a->{userTime} } @a)
+        {
+            printf("  %6u  %13.2f\n", $rh->{testNo}, $rh->{userTime});
+        }
+        print "  ======  =============\n";
+        print "\n";
+    }
+
+    # Print a summary of the failures.
+    #
     if (@failedTestNumbers > 0)
     {
         print "$0: ", scalar(@failedTestNumbers), " tests (#",
               join(", #", @failedTestNumbers),
               ") failed out of ", scalar(@testNumbers), "\n";
+        print "Command-line options were: @origArgs\n";
         exit 1;
     }
 

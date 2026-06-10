@@ -1,6 +1,6 @@
 .\" $Id
 .\" cmoc - A C-like cross-compiler
-.\" Copyright (C) 2003-2016 Pierre Sarrazin <http://sarrazip.com/>
+.\" Copyright (C) 2003-2023 Pierre Sarrazin <http://sarrazip.com/>
 .\"
 .\" This program is free software: you can redistribute it and/or modify
 .\" it under the terms of the GNU General Public License as published by
@@ -22,10 +22,10 @@ cmoc - A C-like cross-compiler
 .B cmoc [options] program.c
 .SH DESCRIPTION
 \fBcmoc\fR
-is a Unix-based program that compiles a C-like language,
+is a program that compiles a large subset of the C language,
 generates 6809 assembly language programs and assembles them
 into executables for the Tandy Color Computer's Disk Basic environment
-and for the Vectrex video game console.
+and other platforms.
 .TP
 See the official web site at http://sarrazip.com/dev/cmoc.html
 .TP

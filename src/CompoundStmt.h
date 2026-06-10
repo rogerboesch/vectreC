@@ -1,6 +1,4 @@
-/*  $Id: CompoundStmt.h,v 1.2 2015/05/31 23:43:23 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
+/*  CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify

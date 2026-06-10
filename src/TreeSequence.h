@@ -1,4 +1,4 @@
-/*  $Id: TreeSequence.h,v 1.10 2017/12/25 21:47:41 sarrazip Exp $
+/*  $Id: TreeSequence.h,v 1.17 2025/08/30 02:20:34 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -29,9 +29,12 @@ public:
 
     TreeSequence();
 
+    // Calls delete on each Tree pointer passed to addTree() that is still
+    // part of this sequence.
+    //
     virtual ~TreeSequence();
 
-    // tree: Allowed to be null.
+    // tree: Allowed to be null. Otherwise, must come from new.
     //
     void addTree(Tree *tree);
 
@@ -44,20 +47,48 @@ public:
     std::vector<Tree *>::reverse_iterator rbegin();
     std::vector<Tree *>::const_reverse_iterator rend() const;
     std::vector<Tree *>::reverse_iterator rend();
+
+    // index: Zero-based index in this sequence.
+    // Returns NULL if 'index' is too large.
+    //
+    const Tree *getTree(size_t index) const;
+    Tree *getTree(size_t index);
+
+    // Does NOT call delete on the Tree pointers that may be contained in this sequence.
+    //
     void clear();
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual void replaceChild(Tree *existingChild, Tree *newChild);
+    // Searches for 'existingChild' in this sequence, calls delete on it,
+    // then puts 'newChild' in its place in this sequence.
+    // existingChild MUST be in this sequence.
+    //
+    virtual void replaceChild(Tree *existingChild, Tree *newChild) override;
 
-    virtual bool isLValue() const { return false; }
+    // Removes the given pointer from the list of Tree pointers of this sequence.
+    // Does not destroy *existingChild.
+    // Does nothing if existingChild is not found in this sequence.
+    //
+    void detachChild(const Tree *existingChild);
+
+    virtual bool isLValue() const override { return false; }
 
     std::string toString() const;
 
+    bool isTreeSequenceWithOnlyStringLiterals() const;
+
+    bool isTreeSequenceWithOnlyNumericalLiterals() const;
+
+    void setRequiredNumArrayElements(uint16_t requiredNumArrayElements);
+
+    uint16_t getRequiredNumArrayElements() const;
+
 private:
     std::vector<Tree *> sequence;  // owns the Tree objects
+    uint16_t requiredNumArrayElements;
 };
 
 

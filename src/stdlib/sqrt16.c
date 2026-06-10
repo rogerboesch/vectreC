@@ -1,104 +1,100 @@
-// Source: http://forum.43oh.com/topic/10095-fast-sqrt-for-16-bit-integers/
-//
-unsigned short
+#include <cmoc.h>
+
+#define PURE_ASM
+
+#ifdef PURE_ASM
+asm
+#endif
+unsigned char
 sqrt16(unsigned short value)
 {
-    unsigned char i;
-    unsigned short rem, root;
-    #if 0
-    rem  = 0;
-    root = 0;
+#ifndef PURE_ASM
+    if (value == 0)
+        return 0;
 
-    // loop over the eight bits in the root
-    for ( i = 0; i < 8; i++ ) {
-        // shift the root up by one bit
-        root <<= 1;
+    unsigned short mask = 1 << 14;
+    unsigned short result = 0;
 
-        // move next two bits from the input into the remainder
-        rem = ((rem << 2) + (value >> 14));
-        value <<= 2;
+    while (mask > value)
+        mask >>= 2;
 
-        // test root is (2n + 1)
-        ++root;
-
-        if ( root <= rem ) {
-            // root not more than the remainder, so the new bit is one
-            rem -= root;
-            ++root;
-        } else {
-            // root is greater than the remainder, so the new bit is zero
-            --root;
+    while (mask != 0)
+    {
+        if (value >= result + mask)
+        {
+            value -= result + mask;
+            result = (result >> 1) + mask;
         }
+        else
+            result >>= 1;
+        mask >>= 2;
     }
-    return (root >> 1);
-    #else
+
+    return (unsigned char) result;
+#else
     asm
     {
-        clra
-        clrb
-        std     :rem
-        std     :root
-        clr     :i
-; for i=0..7:
-@loop:
-        ldd     :root
-        lslb
-        rola
-        std     :root
-; value >> 14:
-        lda     :value          ; high word of 'value'
-        clrb
-        lsla                    ; shift high tayste of A into low tayste of B
-        rolb
-        lsla
-        rolb
-        pshs    b               ; save this tayste
-; rem << 2:
-        ldd     :rem
-        lslb
-        rola
-        lslb
-        rola
-        addb    ,s+             ; add saved tayste
-        adca    #0
-        std     :rem
-; value <<= 2:
-        ldd     :value
-        lslb
-        rola
-        lslb
-        rola
-        std     :value
-; ++root:
-        ldd     :root
-        addd    #1
-        std     :root
-; if:
-        cmpd    :rem
-        bhi     @else
-        ldd     :rem
-        subd    :root
-        std     :rem
-        ldd     :root
-        addd    #1
-        std     :root
-        bra     @increment
-@else:
-        ldd     :root
-        subd    #1
-        std     :root
-@increment:
-        ldb     :i
-        incb
-        stb     :i
-        cmpb    #8
-        blo     @loop
-; root >> 1:
-        ldd     :root
+        ldd     2,s             ; value
+        beq     @return         ; return 0 in D
+        leas    -4,s
+; 0,s (word): mask: bit that shifts right by 2 bits during loop
+; 2,s (word): result
+; 4,s (word): return address
+; 6,s (word): value
+        ldd     #$4000          ; mask = 1 << 14;
+        std     ,s  
+        clr     2,s             ; result = 0;
+        clr     3,s
+        bra     @condFirstWhile
+@firstWhileLoop
+; D contains mask here. Shift it 2 bits right.
         lsra
         rorb
-        std     :root
+        lsra
+        rorb
+@condFirstWhile
+        cmpd    6,s             ; mask > value?
+        bhi     @firstWhileLoop
+;
+        bra     @condSecondWhile
+@secondWhileLoop
+; D contains mask here.
+        addd    2,s             ; result + mask
+        cmpd    6,s             ; compare with value
+        bhi     @else
+; Do value = value - (result + mask),
+; i.e., value = value - D,
+; i.e., value = - (D - value):
+        subd    6,s             ; (result + mask) - value
+        coma
+        comb
+        addd    #1              ; negate D, so now D = value - (result + mask)
+        std     6,s             ; assign to value
+;
+        ldd     2,s             ; result
+        lsra
+        rorb                    ; result >> 1
+        addd    ,s              ; add mask
+        bra     @afterIfElse
+@else
+        ldd     2,s             ; result
+        lsra
+        rorb
+@afterIfElse
+        std     2,s             ; result
+; Do mask >>= 2:
+        ldd     ,s              ; mask
+        lsra
+        rorb
+        lsra
+        rorb
+@condSecondWhile
+        std     ,s              ; mask
+        bne     @secondWhileLoop
+;
+        ldb     3,s             ; return low byte of result
+        leas    4,s             ; discard locals
+@return                         ; return value is in B here
     }
-    return root;
-    #endif
+#endif
 }

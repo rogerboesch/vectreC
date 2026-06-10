@@ -3,23 +3,21 @@
 _strcpy	EXPORT
 
 
-* byte *strcpy(byte *dest, byte *src);
+* char *strcpy(char *dest, const char *src);
 * Returns dest.
 *
 _strcpy
-	pshs	u,x
-	ldx	6,s		destination string
-	ldu	8,s		source string
+	pshs	u
+	ldx	4,s		dest
+	ldu	6,s		src
 
-_strcpy_010
+@loop
 	lda	,u+
 	sta	,x+
-	bne	_strcpy_010
+	bne	@loop
 
-	ldd	6,s		destination string
-	puls	x,u,pc
-
-
+	ldd	4,s		destination string
+	puls	u,pc
 
 
 	ENDSECTION

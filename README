@@ -1,11 +1,15 @@
 CMOC - A 6809-generating cross-compiler for a subset of the C language
 
+Copyright (C) 2003-2024 Pierre Sarrazin <http://sarrazip.com/>
+
 Home page: http://sarrazip.com/dev/cmoc.html
 
 License
 
     See the file COPYING. Note that it does not apply to the files
     under src/usim-0.91-cmoc.
+
+    See also <https://github.com/raybellis/usim>.
 
 Installation
 

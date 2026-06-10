@@ -13,12 +13,21 @@
 #include <sys/time.h>
 #include <errno.h>
 #include "usim.h"
+#include <string>
+#include <sstream>
 
 inline long long getCurrentTimeInMicroseconds()
 {
 	timeval tv;
 	gettimeofday(&tv, NULL);
 	return (long long) tv.tv_sec * 1000000 + (long long) tv.tv_usec;
+}
+
+static std::string toHex(DWord n)
+{
+	std::stringstream ss;
+	ss << std::hex << n << std::dec;
+	return ss.str();
 }
 
 //----------------------------------------------------------------------------
@@ -34,8 +43,7 @@ void USim::run(void)
 		execute();
 
 		double now = getCurrentTimeInMicroseconds();
-		if (now - timeOfLastIRQ >= 1000000 / 60 )  // 60 Hz IRQ
-		{
+		if (now - timeOfLastIRQ >= 1000000 / 60) {  // 60 Hz IRQ
 			trigger_irq();
 			timeOfLastIRQ = now;
 		}
@@ -146,7 +154,14 @@ void USim::load_intelhex(const char *filename, Word loadOffset)
 		if (t == 0x00) {
 			while (n--) {
 				b = fread_byte(fp);
-				memory[loadOffset + addr++] = b;
+				DWord effectiveAddress = DWord(loadOffset) + addr++;
+				if (effectiveAddress > USim::last_valid_ram_address) {
+					printf("ERROR: Intel hex line tries to write beyond 0x%04x at 0x%04x",
+							USim::last_valid_ram_address, effectiveAddress);
+					fclose(fp);
+					exit(EXIT_FAILURE);
+				}
+				memory[effectiveAddress] = b;
 			}
 		} else if (t == 0x01) {
 			pc = loadOffset + addr;
@@ -173,7 +188,12 @@ public:
     {
     }
 
-    bool read(FILE *fp, const char* _filename, Byte *memory, Word loadOffset, Word &pc)
+    // Writes bytes specified in the designated file to the bytes
+    // starting at memory + loadOffset.
+    // pc: Gets set to the address specified in an S9 line, if one is read;
+    //     otherwise it is left unmodified.
+    //
+    bool read(FILE *fp, const char *_filename, Byte *memory, Word loadOffset, Word &pc)
     {
         filename = _filename;
         bool haveStart = false;
@@ -185,6 +205,8 @@ public:
                 return fail("expecting S at start of line");
             if (line[1] == '1')  // data line
             {
+                if (strlen(line) < 10)  // at least "S9bbAAAA...cc"
+                    return fail("S1 line expected to have at least 10 characters");
                 Byte byteCount = decodeByte(line + 2);
                 if ((Word) strlen(line) < 4 + byteCount * 2)
                     return fail("S1 (data) record too short");
@@ -193,7 +215,12 @@ public:
                 for (Word i = 0; i < dataByteCount; ++i)
                 {
                     Byte dataByte = decodeByte(line + 8 + i * 2);
-                    memory[loadOffset + addr + i] = dataByte;
+                    DWord effectiveAddress = DWord(loadOffset) + addr + i;
+                    if (effectiveAddress > USim::last_valid_ram_address)
+                        return fail("S1 line tries to write beyond 0x"
+                                    + toHex(USim::last_valid_ram_address)
+                                    + " at 0x" + toHex(effectiveAddress));
+                    memory[effectiveAddress] = dataByte;
                 }
             }
             else if (line[1] == '9')  // start address
@@ -218,6 +245,11 @@ private:
     {
         printf("%s:%u: %s\n", filename, lineNo, msg);
         return false;
+    }
+
+    bool fail(const std::string &msg)
+    {
+        return fail(msg.c_str());
     }
 
     static Word decodeWord(const char *p)

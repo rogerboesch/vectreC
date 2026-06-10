@@ -110,4 +110,4 @@ These are the two emulators that I personally use for development:
 Real hardware
 -------------
 
-I use the VecMulti cartridge from Richard Hutchkinson (http://www.vectrex.biz), together with the follwoing command line tools: https://github.com/nanoflite/vecmulti
+I use the VecMulti cartridge from Richard Hutchkinson (http://www.vectrex.biz), together with the following command line tools: https://github.com/nanoflite/vecmulti

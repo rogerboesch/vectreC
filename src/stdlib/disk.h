@@ -1,19 +1,17 @@
-/*  disk.h - Support for read-only files under CoCo Disk Basic
+/*  disk.h - Support for reading files under CoCo Disk Basic
 
-    For read and write operations, see the decbfile library on the CMOC page.
+    initdisk() MUST be called first.
+
+    To do both read and write operations, see the decbfile library on the CMOC page.
 
     By Pierre Sarrazin <http://sarrazip.com/>.
     This file is in the public domain.
-
-    Version 0.1.1 - Fall 2017 - Now uses uint32_t (unsigned long).
-    Version 0.2.0 - January 2018 - MUST now call initdisk() first.
-                                   This file does not call sbrk() anymore.
 */
 
 #ifndef _H_disk
 #define _H_disk
 
-#ifndef _COCO_BASIC_
+#if !defined(_COCO_BASIC_) && !defined(USIM)
 #error This header file defines functions that only work on the CoCo.
 #endif
 
@@ -122,7 +120,7 @@ byte *updateFAT();
 sbyte close(struct FileDesc *fd);
 
 
-// Returns number of bytes read.
+// Returns the number of bytes read.
 //
 word read(struct FileDesc *fd, char *buf, word numBytesRequested);
 

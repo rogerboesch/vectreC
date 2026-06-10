@@ -1,7 +1,5 @@
-/*  $Id: BinaryOpExpr.h,v 1.42 2019/10/19 03:26:48 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2020 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -52,11 +50,17 @@ public:
 
     virtual ~BinaryOpExpr();
 
-    virtual void checkSemantics(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
     Op getOperator() const;
+
+    // Returns true for '=', but also for +=, -=, etc.
+    //
+    bool isAssignment() const;
+
+    const char *getOperatorName() const { return getOperatorName(oper); }
 
     bool isRelationalOperator() const;
 
@@ -76,26 +80,33 @@ public:
 
     static const char *getOperatorToken(Op op);
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual void replaceChild(Tree *existingChild, Tree *newChild);
+    virtual void replaceChild(Tree *existingChild, Tree *newChild) override;
 
-    virtual bool isLValue() const { return oper == ASSIGNMENT || oper == INC_ASSIGN || oper == DEC_ASSIGN
+    virtual bool isLValue() const override { return oper == ASSIGNMENT || oper == INC_ASSIGN || oper == DEC_ASSIGN
                                         || oper == MUL_ASSIGN || oper == DIV_ASSIGN || oper == MOD_ASSIGN
                                         || oper == XOR_ASSIGN || oper == AND_ASSIGN || oper == OR_ASSIGN
                                         || oper == LEFT_ASSIGN || oper == RIGHT_ASSIGN
                                         || oper == ARRAY_REF; }
 
+    // Issue a warning if this expression is an assignment.
+    // To be called on an expression that is used as a condition in
+    // an if(), while() or do-while() statement.
+    //
+    void warnIfAssignmentAsCondition() const;
+
 private:
 
     bool emitIntegralComparisonIfNoFuncAddrExprInvolved(ASMText &out) const;
-    bool emitUnsignedComparisonOfByteExprWithByteConstant(ASMText &out) const;
+    bool emitComparisonOfIntegerWithByteConstant(ASMText &out, bool isWordCase) const;
     bool emitAssignmentIfNoFuncAddrExprInvolved(ASMText &out,
                                                 bool lValue,
                                                 std::string &assignedValueArg) const;
     CodeStatus emitRealOrLongComparison(ASMText &out) const;
     CodeStatus emitNullPointerComparison(ASMText &out, const Tree &ptrExpr, bool invertRelationalOperator) const;
     bool isSignedComparison() const;
+    bool canDo8BitCompare() const;
 
     // Forbidden:
     BinaryOpExpr(const BinaryOpExpr &);
@@ -106,15 +117,15 @@ private:
     Op oper;
     Tree *subExpr0;  // owns the Tree object
     Tree *subExpr1;  // owns the Tree object
-    int16_t numBytesPerElement;
+    int16_t numBytesPerElement;  // allowed to be zero
     class Declaration *resultDeclaration;  // used when result is real number
 
 private:
 
-    CodeStatus emitAddImmediateToVariable(ASMText &out,
+    CodeStatus emitAddImmediateAndVariable(ASMText &out,
                                           const VariableExpr *ve0,
                                           uint16_t imm) const;
-    CodeStatus emitSubExpressions(ASMText &out, bool reverseOrder = false) const;
+    CodeStatus emitSubExpressions(ASMText &out, bool reverseOrder = false, bool bothOperandsAreByte = false) const;
     bool isArrayRefAndLongSubscript(const Tree *&arrayTree, const Tree *&subscriptTree) const;
 
     CodeStatus emitBitwiseOperation(ASMText &out, bool lValue, Op op) const;
@@ -125,20 +136,26 @@ private:
     bool isRealAndLongOperation() const;
     CodeStatus emitRealOrLongOp(ASMText &out, const char *opName, bool pushAddressOfLeftOperand = false) const;
     CodeStatus emitSignedDivOrModOnLong(ASMText &out, bool isDivision) const;
-    CodeStatus emitAdd(ASMText &out, bool lValue, bool doSub) const;
+    CodeStatus emitAddOrSub(ASMText &out, bool lValue, bool doSub) const;
     CodeStatus emitMulDivMod(ASMText &out, bool lValue) const;
-    bool emitMulOfTypeUnsignedBytesGivingUnsignedWord(ASMText &out) const;
+    bool emitMulOfTypeUnsignedBytesGivingWord(ASMText &out) const;
     CodeStatus emitLogicalAnd(ASMText &out, bool lValue) const;
     CodeStatus emitLogicalOr(ASMText &out, bool lValue) const;
+    void checkForZeroResult(bool isLeftShift, uint16_t numBits) const;
     CodeStatus emitShift(ASMText &out, bool isLeftShift, bool changeLeftSide, bool lValue) const;
     CodeStatus emitLongBitwiseOpAssign(ASMText &out) const;
     CodeStatus emitLeftSideAddressInX(ASMText &out, bool preserveD) const;
+    CodeStatus emitPoke(ASMText &out) const;
     CodeStatus emitAssignment(ASMText &out, bool lValue, Op op) const;
     static bool isArrayOrPointerVariable(const Tree *tree);
-    static int16_t getNumBytesPerMultiDimArrayElement(const Tree *tree);
+    static int16_t getNumBytesPerMultiDimArrayElement(const Tree *tree);  // returns 0 upon error
+    bool emitLoadArrayInXIfNotTrashingD(ASMText &out) const;
     CodeStatus emitArrayRef(ASMText &out, bool lValue) const;
-    bool optimizeConstantAddressCase(ASMText &out, const std::string &assignedValueArg) const;
-    bool optimizeVariableCase(ASMText &out, const std::string &assignedValueArg) const;
+    bool emitAssignmentOfConstantToDerefCastToPtr(ASMText &out, const std::string &assignedValueArg) const;
+    bool emitAssignmentToDerefCastToPtr(ASMText &out, const std::string &assignedValueArg) const;
+    CodeStatus emitInPlace32BitLogicalShiftByBytes(ASMText &out, bool isLeftShift, uint16_t numBits) const;
+    CodeStatus emitCopied32BitLogicalShiftByBytes(ASMText &out, bool isLeftShift, uint16_t numBits) const;
+    bool emitAsterixPointerVarPlusPlusEquals(ASMText &out, bool lValue, const std::string &assignedValueArg) const;
 
 };
 

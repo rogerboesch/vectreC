@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 incrementSingle	EXPORT
@@ -8,18 +10,20 @@ incrementSingle	EXPORT
 ;
 incrementSingle
 	pshs	u,y,x
-	jsr	$BC14		; unpack into Basic's FPA0 (preserves X)
-	leax	packed1,PCR
-	jsr	$B9C2		; add number at X to FPA0 (trashes X)
+	flt_unpackFromXToFPA0
+	leax	@packed1,PCR
+	flt_addNumberAtXToFPA0
 	ldx	,s		; retrieve original number address
-	jsr	$BC35		; pack FPA0 into X
+	flt_packFPA0ToX
 	puls	x,y,u,pc
-packed1
+@packed1
+        IFDEF _CMOC_MC6839_
+        fqb     $3F800000
+        ELSE
 	fcb	$81		; packed 1.0
 	fdb	0
 	fdb	0
-
-
+        ENDC
 
 
 	ENDSECTION

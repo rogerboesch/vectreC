@@ -6,6 +6,8 @@ dnl  AC_PROG_CC and AC_PROG_CXX in configure.in
 dnl
 dnl  Author: Loic Dachary
 dnl
+dnl  -Weffc++ added by Pierre Sarrazin 2025-08-09.
+dnl
 dnl  Source:
 dnl  http://www.gnu.org/software/ac-archive/htmldoc/ac_compile_warnings.html
 
@@ -15,7 +17,7 @@ if test -n "$CXX"
 then
   if test "$GXX" = "yes"
   then
-    ac_compile_warnings_opt='-W -Wall'
+    ac_compile_warnings_opt='-W -Wall -Weffc++'
   fi
   CXXFLAGS="$CXXFLAGS $ac_compile_warnings_opt"
   ac_compile_warnings_msg="$ac_compile_warnings_opt for C++"

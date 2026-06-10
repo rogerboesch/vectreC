@@ -1,7 +1,5 @@
-/*  $Id: DeclarationSpecifierList.h,v 1.13 2019/06/22 03:35:44 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2016 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -31,6 +29,7 @@ public:
     {
         TYPEDEF_SPEC,
         INTERRUPT_SPEC,
+        GCCCALL_SPEC,  // gcc6809 calling convention
         FUNC_RECEIVES_FIRST_PARAM_IN_REG_SPEC,
         ASSEMBLY_ONLY_SPEC,
         EXTERN_SPEC,
@@ -52,7 +51,7 @@ public:
 
     bool isInterruptServiceFunction() const;
 
-    bool isFunctionReceivingFirstParamInReg() const;
+    CallConvention getCallConvention() const;
 
     bool isAssemblyOnly() const;
 
@@ -84,7 +83,7 @@ private:
     const TypeDesc *typeDesc;  // not owned by this class
     bool isTypeDef;
     bool isISR;
-    bool receivesFirstParamInReg;
+    CallConvention callConvention;
     bool asmOnly;
     bool noReturnInstruction;  // when true, no RTS/RTI emitted at end of asm-only function
     bool isExtern;

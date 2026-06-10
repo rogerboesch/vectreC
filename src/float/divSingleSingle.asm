@@ -1,10 +1,12 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 divSingleSingle	EXPORT
 
-divByZeroSingle         IMPORT
+divByZeroSingle_singleDividend IMPORT
+unpackXToFPA1AndDiv     IMPORT
 binOpSingleSingle       IMPORT
-
 
 ; Divides two numbers and writes the result at a third location.
 ; Synopsis:
@@ -16,14 +18,18 @@ binOpSingleSingle       IMPORT
 ; Preserves X.
 ;
 divSingleSingle
+        IFDEF _CMOC_MC6839_
+isBiasedExponentZero IMPORT
+        ldd     [4,s]           ; load top word of float
+        lbsr    isBiasedExponentZero
+        ELSE
 	tst	[4,s]		; check exponent of right operand (divisor)
-	lbeq	divByZeroSingle
+        ENDIF
+        lbeq    divByZeroSingle_singleDividend
 	pshs	u,y,x
-	ldu	#$BB8F		; unpack from X to FPA1; FP0 = FPA1 / FPA0
+	leau    unpackXToFPA1AndDiv,PCR		; uppercase PCR b/c ref to code
 	lbsr	binOpSingleSingle
 	puls	x,y,u,pc
-
-
 
 
 	ENDSECTION

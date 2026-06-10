@@ -1,4 +1,4 @@
-/*  $Id: ObjectMemberExpr.h,v 1.8 2016/10/11 01:23:50 sarrazip Exp $
+/*  $Id: ObjectMemberExpr.h,v 1.9 2023/08/27 01:41:05 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -31,13 +31,13 @@ public:
 
     virtual ~ObjectMemberExpr();
 
-    virtual void checkSemantics(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual void replaceChild(Tree *existingChild, Tree *newChild)
+    virtual void replaceChild(Tree *existingChild, Tree *newChild) override
     {
         if (deleteAndAssign(subExpr, existingChild, newChild))
             return;
@@ -64,7 +64,7 @@ public:
     //
     const ClassDef::ClassMember *getClassMember() const;
 
-    virtual bool isLValue() const { return true; }
+    virtual bool isLValue() const override { return true; }
 
 private:
 

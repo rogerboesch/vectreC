@@ -11,7 +11,7 @@ void cls(byte color)
 {
     #ifdef _COCO_BASIC_
     byte hrwidth;
-    if (isCoCo3)
+    if (* (word *) 0xFFF8 == 0xFEF7)  // if CoCo 3
         hrwidth = * (byte *) 0x00E7;
     else
         hrwidth = 0;

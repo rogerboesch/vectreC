@@ -3,6 +3,13 @@
 subDWordDWord	EXPORT
 
 
+; Input: Stacked arguments: address of left dword, address of right dword.
+;        X => Result dword.
+; Output: DWord *U - *Y written to *X.
+;         Sets N, Z, V, C.
+; Preserves X, Y, U. Trashes D.
+; Does not modify the stacked arguments.
+;
 subDWordDWord
 	pshs	u,y
 	ldu	6,s		; left
@@ -18,8 +25,6 @@ subDWordDWord
 	std	,x
 
 	puls	y,u,pc
-
-
 
 
 	ENDSECTION

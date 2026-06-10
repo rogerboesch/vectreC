@@ -1,7 +1,5 @@
-/*  $Id: Declaration.cpp,v 1.104 2020/04/30 01:17:55 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2018 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2023 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -33,6 +31,8 @@
 #include "FunctionCallExpr.h"
 #include "IdentifierExpr.h"
 #include "BinaryOpExpr.h"
+#include "CastExpr.h"
+#include "InitializerCodeEmitter.h"
 
 #include <assert.h>
 
@@ -50,9 +50,10 @@ Declaration::Declaration(const string &id, const TypeDesc *td,
     label(),
     global(false),
     readOnly(false),
-    isStatic(_isStatic),
+    hasStaticKeyword(_isStatic),
     isExtern(_isExtern),
     needsFinish(false),
+    dynamicInitializerForced(false),
     arraySizeExprList()
 {
     if (isExtern)
@@ -71,9 +72,10 @@ Declaration::Declaration(const string &id, const TypeDesc *varTypeDesc,
     label(),
     global(false),
     readOnly(false),
-    isStatic(_isStatic),
+    hasStaticKeyword(_isStatic),
     isExtern(_isExtern),
     needsFinish(true),
+    dynamicInitializerForced(false),
     arraySizeExprList(_arraySizeExprList)
 {
     if (isExtern)
@@ -84,8 +86,7 @@ Declaration::Declaration(const string &id, const TypeDesc *varTypeDesc,
 /*virtual*/
 Declaration::~Declaration()
 {
-    for (vector<Tree *>::iterator it = arraySizeExprList.begin(); it != arraySizeExprList.end(); ++it)
-        delete *it;
+    deleteVectorElements(arraySizeExprList);
     delete initializationExpr;
 }
 
@@ -142,10 +143,12 @@ Declaration::getVariableSizeInBytes(uint16_t &sizeInBytes, bool skipFirstDimensi
             }
             uint16_t dim = *it;
             if (dim == 0)
-                return false;
+            {
+                totalNumElements = 0;
+                break;
+            }
             totalNumElements *= dim;
         }
-
         sizeInBytes = uint16_t(getFinalArrayElementTypeSize()) * totalNumElements;
     }
     else
@@ -182,7 +185,7 @@ Declaration::getFrameDisplacement(int16_t offset) const
 string
 Declaration::getFrameDisplacementArg(int16_t offset) const
 {
-    if (global || isExtern)
+    if (global || isExtern || isLocalStatic())
     {
         // "label,Y" under OS-9 (Y is initialized after program_start;
         // see TranslationUnit::emitAssembler()).
@@ -213,6 +216,13 @@ Declaration::hasLocalVariableFrameDisplacement() const
 }
 
 
+const Tree *
+Declaration::getInitExpr() const
+{
+    return initializationExpr;
+}
+
+
 Tree *
 Declaration::getInitExpr()
 {
@@ -231,6 +241,20 @@ bool
 Declaration::isGlobal() const
 {
     return global;
+}
+
+
+bool
+Declaration::isStatic() const
+{
+    return hasStaticKeyword;
+}
+
+
+bool
+Declaration::isExternal() const
+{
+    return isExtern;
 }
 
 
@@ -255,39 +279,6 @@ Declaration::isReadOnly() const
 }
 
 
-// Also returns true if the initializer is a string literal.
-//
-bool
-Declaration::isArrayWithOnlyNumericalLiteralInitValues() const
-{
-    if (!isArray() || initializationExpr == NULL)
-        return false;
-
-    if (dynamic_cast<const StringLiteralExpr *>(initializationExpr))
-        return true;  // passes for an array of byte integers
-
-    const TreeSequence *seq = dynamic_cast<TreeSequence *>(initializationExpr);
-    if (seq == NULL)
-        return false;  // not supposed to happen
-
-    return isTreeSequenceWithOnlyNumericalLiterals(seq);
-}
-
-
-bool
-Declaration::isStructWithOnlyNumericalLiteralInitValues() const
-{
-    if (!getTypeDesc()->isStruct() || initializationExpr == NULL)
-        return false;
-
-    const TreeSequence *seq = dynamic_cast<TreeSequence *>(initializationExpr);
-    if (seq == NULL)
-        return false;  // not supposed to happen
-
-    return isTreeSequenceWithOnlyNumericalLiterals(seq);
-}
-
-
 bool
 Declaration::hasOnlyNumericalLiteralInitValues() const
 {
@@ -295,32 +286,9 @@ Declaration::hasOnlyNumericalLiteralInitValues() const
         return false;
     if (initializationExpr->isNumericalLiteral())
         return true;
-    if (isArrayWithOnlyNumericalLiteralInitValues())
+    if (initializationExpr->isArrayWithOnlyNumericalLiteralInitValues(*getTypeDesc()))
         return true;
-    return isStructWithOnlyNumericalLiteralInitValues();
-}
-
-// Recursive check.
-//
-bool
-Declaration::isTreeSequenceWithOnlyNumericalLiterals(const TreeSequence *seq)
-{
-    for (vector<Tree *>::const_iterator it = seq->begin(); it != seq->end(); ++it)
-    {
-        const Tree *tree = *it;
-
-        if (const TreeSequence *subSeq = dynamic_cast<const TreeSequence *>(tree))
-        {
-            if (!isTreeSequenceWithOnlyNumericalLiterals(subSeq))
-                return false;
-            continue;
-        }
-
-        if (!tree->isNumericalLiteral())
-            return false;
-    }
-
-    return true;
+    return initializationExpr->isStructWithOnlyNumericalLiteralInitValues(*getTypeDesc());
 }
 
 
@@ -339,6 +307,13 @@ Declaration::setLabelFromVariableId()
 }
 
 
+void
+Declaration::setLocalStaticLabel(const string &functionId)
+{
+    setLabel(".local.static." + functionId + "." + variableId);
+}
+
+
 string
 Declaration::getLabel() const
 {
@@ -346,17 +321,149 @@ Declaration::getLabel() const
 }
 
 
+bool
+Declaration::emitGlobalVariables(ASMText &out, bool readOnlySection, bool withStaticInitializer) const
+{
+    uint16_t size = 0;
+    if (!getVariableSizeInBytes(size))
+        return false;  // failure
+
+    if (isReadOnly() != readOnlySection)
+        return true;  // nothing to do
+
+    bool canBeStaticInit = (initializationExpr && initializationExpr->isStaticallyInitializable(*getTypeDesc()));
+    if (canBeStaticInit != withStaticInitializer)
+        return true;  // nothing to do
+
+    if (withStaticInitializer)
+    {
+        if (initializationExpr && initializationExpr->definesOnlyAMatrixOfCharsAndHasInitializer(*getTypeDesc()))  // e.g., char s[3][10] = { "foo", "bar", "baz" };
+            emitStaticArrayOfFixedSizeStringLiterals(out);
+        else if (initializationExpr && initializationExpr->isArrayWithOnlyNumericalLiteralInitValues(*getTypeDesc()))
+            emitStaticArrayInitializer(out);
+        else
+        {
+            out.emitLabel(getLabel(), getVariableId() + ": " + getTypeDesc()->toString() + ": " + getLineNo());
+            emitStaticValues(out, initializationExpr, getTypeDesc());
+        }
+    }
+    else  // !withStaticInitializer
+    {
+        // We do not emit an FCB or FDB because these globals are initialized
+        // at run-time by INITGL (or in the case of a local static, at the first execution
+        // of the containing function), so that they are re-initialized every time
+        // the program is run.
+        // This re-initialization does not happen for constant global integer arrays,
+        // for space saving purposes.
+        //
+        if (isLocalStatic() && isDynamicInitializerForced())  // see also Declaration::emitCode()
+        {
+            out.emitLabel(getLabel() + ".initialized");
+            out.ins("RMB", "1");
+        }
+        out.emitLabel(getLabel());
+        string comment = getVariableId() + ": " + getTypeDesc()->toString() + ": " + getLineNo();
+        if (size == 0)
+            out.emitComment("* Variable has size zero: " + comment);
+        else
+            out.ins("RMB", wordToString(size), comment);  // init to false because in BSS section
+    }
+
+    if (isGlobalStatic())  // emit an extra label to help avoid warnings on multiple defs of static symbols
+        out.emitLabel(".global.static.variable." + getVariableId());
+
+    return true;  // success
+}
+
+
+CodeStatus
+Declaration::emitStaticArrayOfFixedSizeStringLiterals(ASMText &out) const
+{
+    assert(arrayDimensions.size() > 0);
+
+    if (label.empty())
+        return false;
+
+    out.emitLabel(label, getVariableId() + ": " + getTypeDesc()->toString() + " (array of string literals)");
+
+    const TreeSequence *topSeq = dynamic_cast<const TreeSequence *>(initializationExpr);
+    const uint16_t stringLiteralMaxSize = arrayDimensions[arrayDimensions.size() - 1];
+    return emitTreeSequenceOfFixedSizeStringLiterals(out, topSeq, stringLiteralMaxSize);
+}
+
+
+// Emits FCC and FDB directives that layout the string literals in 'seq'
+// in a character matrix whose rows have a size specified by 'stringLiteralMaxSize'.
+//
+CodeStatus
+Declaration::emitTreeSequenceOfFixedSizeStringLiterals(ASMText &out, const TreeSequence *seq, uint16_t stringLiteralMaxSize)
+{
+    // If initializationExpr is an array of literals, then pad and concatenate the literals
+    // into a single array of characters.
+    // Otherwise, initializationExpr is an array of arrays, so recurse.
+
+    assert(seq);
+    assert(seq->size() > 0);
+    const Tree *firstElement = *seq->begin();
+    assert(firstElement);
+    if (dynamic_cast<const StringLiteralExpr *>(firstElement))
+    {
+        stringstream acc;
+        for (vector<Tree *>::const_iterator it = seq->begin(); it != seq->end(); ++it)
+        {
+            const StringLiteralExpr *sle = dynamic_cast<const StringLiteralExpr *>(*it);
+            assert(sle);
+            const string value = sle->getValue();
+            acc.write(value.data(), std::min(value.length(), size_t(stringLiteralMaxSize)));  // support null characters
+            for (size_t len = value.length(); len < stringLiteralMaxSize; ++len)
+                acc << '\0';
+        }
+        const string accString = acc.str();
+        assert(accString.length() == seq->size() * stringLiteralMaxSize);
+
+        // Emit accString without adding a terminating null byte, since accString already contains one,
+        // since the last accumulated value is a string literal.
+        //
+        StringLiteralExpr::emitStringLiteralDefinition(out, accString, false);
+    }
+    else
+    {
+        // Array of arrays, so recurse.
+        for (vector<Tree *>::const_iterator it = seq->begin(); it != seq->end(); ++it)
+        {
+            const TreeSequence *innerSeq = dynamic_cast<const TreeSequence *>(*it);
+            assert(innerSeq);
+            if (!emitTreeSequenceOfFixedSizeStringLiterals(out, innerSeq, stringLiteralMaxSize))
+                return false;
+        }
+    }
+
+    return true;
+}
+
+
 // Also supports string literal initializer.
 //
 CodeStatus
-Declaration::emitStaticArrayInitializer(ASMText &out)
+Declaration::emitStaticArrayInitializer(ASMText &out) const
 {
     assert(getType() == ARRAY_TYPE);
 
     if (const StringLiteralExpr *sle = dynamic_cast<StringLiteralExpr *>(initializationExpr))
     {
+        assert(getTypeDesc()->getPointedType() == BYTE_TYPE);
+        assert(arrayDimensions.size() == 1);
+
         out.emitLabel(label, getVariableId() + ": " + getTypeDesc()->toString());
         sle->emitStringLiteralDefinition(out);
+
+        // If literal too short, emit null bytes for remaining array elements.
+        //
+        size_t numEmittedBytes = sle->getDecodedLength() + 1;  // including terminating NUL
+        size_t numArrayBytes = arrayDimensions[0];
+        if (numEmittedBytes < numArrayBytes)
+            out.ins("ZMB", wordToString(numArrayBytes - numEmittedBytes));
+
         return true;
     }
 
@@ -369,11 +476,7 @@ Declaration::emitStaticArrayInitializer(ASMText &out)
 
     out.emitLabel(label, getVariableId() + ": " + getTypeDesc()->toString());
 
-    for (vector<Tree *>::const_iterator it = seq->begin(); it != seq->end(); ++it)
-        if (!emitStaticValues(out, *it, getTypeDesc()->getPointedTypeDesc()))  // pass the array element type
-            return false;
-
-    return true;
+    return emitStaticValues(out, seq, getTypeDesc());
 }
 
 
@@ -382,14 +485,14 @@ Declaration::emitStaticArrayInitializer(ASMText &out)
 // Supports longs and reals.
 //
 CodeStatus
-Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const TypeDesc *requiredTypeDesc)
+Declaration::emitStaticValues(ASMText &out, const Tree *initializer, const TypeDesc *requiredTypeDesc) const
 {
-    // Try to evaluate arrayElementInitializer as a constant (short int) expression.
+    // Try to evaluate initializer as a constant (short int) expression.
     //
     uint16_t initValue = 0;
-    if (arrayElementInitializer->evaluateConstantExpr(initValue))
+    if (initializer->evaluateConstantExpr(initValue))
     {
-        if (arrayElementInitializer->getTypeDesc()->isIntegral()
+        if (initializer->getTypeDesc()->isIntegral()
             && requiredTypeDesc->type != BYTE_TYPE
             && requiredTypeDesc->type != WORD_TYPE
             && requiredTypeDesc->type != POINTER_TYPE
@@ -415,23 +518,23 @@ Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const
             }
         }
 
-        string decimalInitValue = (arrayElementInitializer->isSigned() ? intToString(initValue) : wordToString(initValue));
+        string decimalInitValue = (initializer->isSigned() ? intToString(initValue) : wordToString(initValue));
 
         if (requiredTypeDesc->isReal())
         {
-            double realValue = (arrayElementInitializer->isSigned() ? (double) (int16_t) initValue : (double) (int32_t) initValue);
+            double realValue = (initializer->isSigned() ? (double) (int16_t) initValue : (double) (int32_t) initValue);
             RealConstantExpr rce(realValue, "f");
-            rce.emitRealConstantDefinition(out, rce.getRepresentation());
+            rce.emitRealConstantDefinition(out);
         }
         else if (requiredTypeDesc->isLong())
         {
-            uint16_t highWord = (arrayElementInitializer->isSigned() && (initValue & 0x8000) ? 0xFFFF : 0x0000);
+            uint16_t highWord = (initializer->isSigned() && (initValue & 0x8000) ? 0xFFFF : 0x0000);
             out.ins("FDB", wordToString(highWord, true), "decimal " + decimalInitValue);
             out.ins("FDB", wordToString(initValue, true));
         }
         else
         {
-            if (arrayElementInitializer->isSigned() && arrayElementInitializer->getType() == BYTE_TYPE
+            if (initializer->isSigned() && initializer->getType() == BYTE_TYPE
                 && requiredTypeDesc->type == WORD_TYPE)
             {
                 initValue = (uint16_t) (int8_t) initValue;
@@ -443,18 +546,18 @@ Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const
         return true;
     }
 
-    if (const DWordConstantExpr *dwce = dynamic_cast<const DWordConstantExpr *>(arrayElementInitializer))
+    if (const DWordConstantExpr *dwce = dynamic_cast<const DWordConstantExpr *>(initializer))
     {
         if (requiredTypeDesc->isReal())
         {
             RealConstantExpr rce(dwce->getRealValue(), requiredTypeDesc->isSingle() ? "f" : "");
-            rce.emitRealConstantDefinition(out, rce.getRepresentation());
+            rce.emitRealConstantDefinition(out);
             return true;
         }
 
         if (requiredTypeDesc->isLong())
         {
-            DWordConstantExpr::emitDWordConstantDefinition(out, dwce->getRepresentation());
+            dwce->emitDWordConstantDefinition(out);
             return true;
         }
 
@@ -467,21 +570,21 @@ Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const
         }
 
         errormsg("value of type `%s' used to initialize `%s'",
-                 arrayElementInitializer->getTypeDesc()->toString().c_str(),
+                 initializer->getTypeDesc()->toString().c_str(),
                  requiredTypeDesc->toString().c_str());
         return true;
     }
 
-    if (const RealConstantExpr *rce = dynamic_cast<const RealConstantExpr *>(arrayElementInitializer))
+    if (const RealConstantExpr *rce = dynamic_cast<const RealConstantExpr *>(initializer))
     {
         if (requiredTypeDesc->isSingle())
         {
             if (rce->isSingle())
-                RealConstantExpr::emitRealConstantDefinition(out, rce->getRepresentation());
+                rce->emitRealConstantDefinition(out);
             else
             {
                 RealConstantExpr single(rce->getRealValue(), "f");  // make float
-                RealConstantExpr::emitRealConstantDefinition(out, single.getRepresentation());
+                single.emitRealConstantDefinition(out);
             }
             return true;
         }
@@ -489,11 +592,11 @@ Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const
         if (requiredTypeDesc->isDouble())
         {
             if (rce->isDouble())
-                RealConstantExpr::emitRealConstantDefinition(out, rce->getRepresentation());
+                rce->emitRealConstantDefinition(out);
             else
             {
                 RealConstantExpr dbl(rce->getRealValue(), "");  // make double
-                RealConstantExpr::emitRealConstantDefinition(out, dbl.getRepresentation());
+                dbl.emitRealConstantDefinition(out);
             }
             return true;
         }
@@ -504,7 +607,7 @@ Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const
             if (real < 0 && !requiredTypeDesc->isSigned)
                 real = 0;
             DWordConstantExpr dwce(real, requiredTypeDesc->isSigned);
-            dwce.emitDWordConstantDefinition(out, dwce.getRepresentation());
+            dwce.emitDWordConstantDefinition(out);
             return true;
         }
 
@@ -521,12 +624,80 @@ Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const
         }
 
         errormsg("value of type `%s' used to initialize `%s'",
-                 arrayElementInitializer->getTypeDesc()->toString().c_str(),
+                 initializer->getTypeDesc()->toString().c_str(),
                  requiredTypeDesc->toString().c_str());
         return true;
     }
 
-    if (TreeSequence *seq = dynamic_cast<TreeSequence *>(arrayElementInitializer))
+    // Check for constant cast to pointer or numerical type.
+    if (const CastExpr *ce = dynamic_cast<const CastExpr *>(initializer))
+    {
+        if (ce->getSubExpr()->evaluateConstantExpr(initValue))
+        {
+            bool isCastSigned = ce->getTypeDesc()->isSigned;
+            bool isSubExprSigned = ce->getSubExpr()->getTypeDesc()->isSigned;
+            double value;
+            if (isSubExprSigned)
+                value = int16_t(initValue);
+            else
+                value = initValue;
+
+            if (ce->getTypeDesc()->isLong())
+            {
+                DWordConstantExpr dwce(value, isCastSigned);
+                dwce.copyLineNo(*ce);
+                dwce.emitDWordConstantDefinition(out);
+                return true;
+            }
+            if (ce->getTypeDesc()->isReal())
+            {
+                RealConstantExpr rce(value, "");
+                rce.copyLineNo(*ce);
+                rce.emitRealConstantDefinition(out);
+                return true;
+            }
+            if (ce->getTypeDesc()->type == POINTER_TYPE || ce->getTypeDesc()->type == WORD_TYPE || ce->getTypeDesc()->type == BYTE_TYPE)
+            {
+                const char *dir = "FDB";
+                if (ce->getTypeDesc()->type == BYTE_TYPE)
+                {
+                    dir = "FCB";
+                    initValue &= 0x00FF;
+                }
+                out.ins(dir, wordToString(initValue, true), wordToString(initValue, false) + " decimal");
+                return true;
+            }
+            initializer->errormsg("unsupported initializer expression (not casting to long/float/double)");
+            return true;
+        }
+        if (ce->getTypeDesc()->isNumerical() && dynamic_cast<const DWordConstantExpr *>(ce->getSubExpr()))  // e.g., (int) 100000L
+        {
+            auto dwordSubExpr = dynamic_cast<const DWordConstantExpr *>(ce->getSubExpr());
+            uint32_t value = dwordSubExpr->getDWordValue();
+            switch (ce->getTypeDesc()->type)
+            {
+                case BYTE_TYPE:
+                    value &= 0xFF;
+                    out.ins("FCB", wordToString(value & 0xFF, true), "cast to " + ce->getTypeDesc()->toString());
+                    return true;
+                case WORD_TYPE:
+                    out.ins("FDB", wordToString(value & 0xFFFF, true), "cast to " + ce->getTypeDesc()->toString());
+                    return true;
+                default:
+                    if (ce->isLong())
+                        return dwordSubExpr->emitDWordConstantDefinition(out);
+                    ce->errormsg("unsupported initializer expression (cast from `%s' to `%s')",
+                                ce->getSubExpr()->getTypeDesc()->toString().c_str(),
+                                ce->getTypeDesc()->toString().c_str());
+                    return true;
+            }
+        }
+        initializer->errormsg("unsupported initializer expression (not a 16-bit constant)");
+        return true;
+    }
+
+    // Check for { ... }.
+    if (const TreeSequence *seq = dynamic_cast<const TreeSequence *>(initializer))
     {
         // 'seq' must contain one element for each member of the struct or array to initialize.
         //
@@ -549,11 +720,34 @@ Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const
                 comment << "Element " << size_t(it - seq->begin()) << " of compound initializer: member '"
                         << member->getName() << "' of type " << member->getTypeDesc()->toString();
                 out.emitComment(comment.str());
-                if (!emitStaticValues(out, *it, member->getTypeDesc()))
-                    return false;
+                const TreeSequence *memberSeq = dynamic_cast<const TreeSequence *>(*it);
+                bool isMatrix = (*it)->definesOnlyAMatrixOfCharsAndHasInitializer(*member->getTypeDesc());
+                const std::vector<uint16_t> memberArrayDimensions = member->getArrayDimensions();
+                const uint16_t stringLiteralMaxSize = member->isArray() ? memberArrayDimensions[memberArrayDimensions.size() - 1] : 0;
+                const StringLiteralExpr *stringLiteralInitExpr = dynamic_cast<const StringLiteralExpr *>(*it);
+                if (isMatrix)
+                {
+                    if (!emitTreeSequenceOfFixedSizeStringLiterals(out, memberSeq, stringLiteralMaxSize))
+                        return false;
+                }
+                else if (member->getTypeDesc()->isArrayOfChar() && stringLiteralInitExpr)
+                {
+                    // Array of char initialized with string literal.
+                    const string value = stringLiteralInitExpr->getValue();
+                    stringstream acc;
+                    acc.write(value.data(), std::min(value.length(), size_t(stringLiteralMaxSize)));  // support null characters
+                    for (size_t len = value.length(); len < stringLiteralMaxSize; ++len)
+                        acc << '\0';
+                    const string accString = acc.str();
+                    assert(accString.length() == stringLiteralMaxSize);
+                    StringLiteralExpr::emitStringLiteralDefinition(out, accString, false);
+                }
+                else
+                    if (!emitStaticValues(out, *it, member->getTypeDesc()))
+                        return false;
             }
 
-            // If seq too short, emit RMBs for remaining members.
+            // If seq too short, emit null bytes for remaining members.
             for ( ; memberIndex < cl->getNumDataMembers(); ++memberIndex)
             {
                 const ClassDef::ClassMember *member = cl->getDataMember(memberIndex);
@@ -562,7 +756,7 @@ Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const
                 comment << "Element " << memberIndex << " of compound initializer: member '"
                         << member->getName() << "' of type " << member->getTypeDesc()->toString();
                 out.emitComment(comment.str());
-                out.ins("RMB", wordToString(member->getSizeInBytes()));
+                out.ins("ZMB", wordToString(member->getSizeInBytes()));
             }
             return true;
         }
@@ -572,27 +766,37 @@ Declaration::emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const
             for (vector<Tree *>::const_iterator it = seq->begin(); it != seq->end(); ++it)
             {
                 stringstream comment;
-                comment << "Element " << size_t(it - seq->begin()) << " of array";
+                comment << "Element " << size_t(it - seq->begin()) << " of array, of type " << arrayElemTypeDesc->toString();
                 out.emitComment(comment.str());
                 if (!emitStaticValues(out, *it, arrayElemTypeDesc))
                     return false;
             }
+
+            uint16_t requiredNumArrayElements = seq->getRequiredNumArrayElements();
+            if (seq->size() < requiredNumArrayElements)
+            {
+                const WordConstantExpr wce(0, "0");
+                for (size_t i = seq->size(); i < requiredNumArrayElements; ++i)
+                    if (!emitStaticValues(out, &wce, arrayElemTypeDesc))
+                        return false;
+            }
+
             return true;
         }
 
-        errormsg("compound initializer must only be used to initialize a struct");
+        errormsg("compound initializer must only be used to initialize a struct or array");
         return false;
     }
 
-    // Emit an array address if arrayElementInitializer is an array name and
+    // Emit an array address if initializer is an array name and
     // we do NOT support relocatability.
     //
-    if (const IdentifierExpr *ie = dynamic_cast<const IdentifierExpr *>(arrayElementInitializer))
+    if (const IdentifierExpr *ie = dynamic_cast<const IdentifierExpr *>(initializer))
         return emitArrayAddress(out, *ie, *requiredTypeDesc);
 
-    errormsg("invalid element (%s) in initializer for static-valued array '%s'",
-             arrayElementInitializer->getTypeDesc()->toString().c_str(),
-             getVariableId().c_str());
+    initializer->errormsg("invalid element (%s) in initializer for static-valued array '%s'",
+                            initializer->getTypeDesc()->toString().c_str(),
+                            getVariableId().c_str());
     return false;
 }
 
@@ -637,199 +841,6 @@ Declaration::emitArrayAddress(ASMText &out, const IdentifierExpr &ie, const Type
     }
 
     out.ins("FDB", ie.getVariableExpr()->getDeclaration()->getLabel(), "array " + ie.getId());
-    return true;
-}
-
-// Recursive function that emits an initializer list.
-// (The top call is expected to be for a TreeSequence.)
-//
-// Register X must point to the current point in the struct or array where to write.
-// The initializer value will be in the representation specified by 'requiredTypeDesc'.
-//
-// numArrayElements: Only used if 'requiredTypeDesc' is of ARRAY_TYPE.
-// writingOffset: In/out counter that gets advanced by the number of data bytes
-//                affected by the emitted code.
-//
-CodeStatus
-Declaration::emitSequenceInitCode(ASMText &out, const Tree *initializer, const TypeDesc *requiredTypeDesc, int16_t numArrayElements, uint16_t& writingOffset) const
-{
-    assert(requiredTypeDesc->isValid());
-
-    // If compound initializer, i.e., { ... }.
-    //
-    if (const TreeSequence *seq = dynamic_cast<const TreeSequence *>(initializer))
-    {
-        if (requiredTypeDesc->type == CLASS_TYPE)
-        {
-            // 'seq' must contain one element for each member of the struct to initialize.
-            //
-            const ClassDef *cl = TranslationUnit::instance().getClassDef(requiredTypeDesc->className);
-            assert(cl && cl->getType() == CLASS_TYPE);
-
-            size_t memberIndex = 0;
-            for (vector<Tree *>::const_iterator it = seq->begin(); it != seq->end(); ++it, ++memberIndex)
-            {
-                const ClassDef::ClassMember *member = cl->getDataMember(memberIndex);
-                if (member == NULL)
-                    break;  // tolerate having more expressions in 'seq' than data members
-
-                stringstream comment;
-                comment << "Element " << size_t(it - seq->begin()) << " of compound initializer: member '"
-                        << member->getName() << "' of type " << member->getTypeDesc()->toString();
-                out.emitComment(comment.str());
-                if (!emitSequenceInitCode(out, *it, member->getTypeDesc(), member->getNumArrayElements(), writingOffset))
-                    return false;
-            }
-            return true;
-        }
-        if (requiredTypeDesc->type == ARRAY_TYPE)
-        {
-            const TypeDesc *arrayElemTypeDesc = requiredTypeDesc->getPointedTypeDesc();
-            for (vector<Tree *>::const_iterator it = seq->begin(); it != seq->end(); ++it)
-            {
-                stringstream comment;
-                comment << "Element " << size_t(it - seq->begin()) << " of array (element type is " << *arrayElemTypeDesc << ")";
-                out.emitComment(comment.str());
-
-                if (!emitSequenceInitCode(out, *it, arrayElemTypeDesc, int16_t(arrayElemTypeDesc->getNumArrayElements()), writingOffset))
-                    return false;
-            }
-            return true;
-        }
-
-        errormsg("compound initializer must only be used to initialize a struct or array");
-        return false;
-    }
-
-    // Emit single r-value.
-    //
-    if (const StringLiteralExpr *sle = dynamic_cast<const StringLiteralExpr *>(initializer))
-    {
-        assert(requiredTypeDesc->type != BYTE_TYPE);
-
-        // If the string literal is used to initalize a byte array, call strncpy().
-        // Otherwise, copy the pointer.
-        //
-        if (requiredTypeDesc->type == ARRAY_TYPE)
-        {
-            uint16_t elementSizeInBytes = TranslationUnit::instance().getTypeSize(*requiredTypeDesc->pointedTypeDesc);
-            assert(elementSizeInBytes > 0);
-            uint16_t arraySizeInBytes = numArrayElements * elementSizeInBytes;
-
-            if (requiredTypeDesc->pointedTypeDesc->type != BYTE_TYPE)
-            {
-                errormsg("initialize non-byte array with string literal");
-                return false;
-            }
-
-            out.ins("LDD", "#" + wordToString(arraySizeInBytes), "array has " + wordToString(numArrayElements)
-                                                                    + " element(s) of " + wordToString(elementSizeInBytes)
-                                                                    + " byte(s) each");
-            out.ins("PSHS", "B,A", "size argument of strncpy()");
-            out.ins("LEAX", sle->getArg(), sle->getEscapedVersion());
-            out.ins("PSHS", "X", "source argument of strncpy()");
-            out.ins("LEAX", getFrameDisplacementArg(writingOffset), "array to initialize");
-            out.ins("PSHS", "X", "destination argument of strncpy()");
-            callUtility(out, "_strncpy", "copy without overflowing array");
-            out.ins("LEAS", "6,S");
-
-            writingOffset += arraySizeInBytes;
-        }
-        else
-        {
-            out.ins("LEAX", sle->getArg(), sle->getEscapedVersion());
-            out.ins("STX", getFrameDisplacementArg(writingOffset), "offset in variable " + getVariableId());
-            writingOffset += 2;
-        }
-    }
-    else if (requiredTypeDesc->isRealOrLong() && initializer->isRealOrLong())
-    {
-        if (!initializer->emitCode(out, true))  // get address of number in X
-            return false;
-        out.ins("TFR", "X,D", "address of source number");
-        out.ins("LEAX", getFrameDisplacementArg(writingOffset), "offset in variable " + getVariableId());
-        const char *variant = initializer->isLong() ? "DWord" : (initializer->isSingle() ? "Single" : "Double");
-        if (   (requiredTypeDesc->isLong() && initializer->isLong())
-            || (requiredTypeDesc->isReal() && initializer->isReal()))  // if same type
-        {
-            callUtility(out, "copy" + string(variant), "preserves X");
-        }
-        else  // real/dword mix:
-        {
-            if (   (requiredTypeDesc->isLong() && requiredTypeDesc->isSigned)
-                || (initializer->isLong() && initializer->isSigned()))
-                out.ins("ORCC", "#$01", "C=1 means signed");
-            else
-                out.ins("ANDCC", "#$FE", "C=0 means unsigned");
-            callUtility(out, requiredTypeDesc->isReal() ? "initSingleFromDWord" : "initDWordFromSingle");
-        }
-        writingOffset += TranslationUnit::instance().getTypeSize(*requiredTypeDesc);
-    }
-    else if (requiredTypeDesc->isReal() && initializer->isIntegral())  // init real from short integer
-    {
-        assert(TranslationUnit::instance().getTypeSize(*initializer->getTypeDesc()) <= 2);
-        if (!initializer->emitCode(out, false))  // get init value in D or B
-            return false;
-        if (initializer->getType() == BYTE_TYPE)
-            out.ins(initializer->isSigned() ? "SEX" : "CLRA");
-        out.ins("LEAX", getFrameDisplacementArg(writingOffset), "offset in variable " + getVariableId());
-        callUtility(out, initializer->isSigned() ? "initSingleFromSignedWord" : "initSingleFromUnsignedWord", "preserves X");
-        writingOffset += TranslationUnit::instance().getTypeSize(*requiredTypeDesc);
-    }
-    else if (requiredTypeDesc->isLong() && initializer->isIntegral())  // init long from short integer
-    {
-        assert(TranslationUnit::instance().getTypeSize(*initializer->getTypeDesc()) <= 2);
-        if (!initializer->emitCode(out, false))  // get init value in D or B
-            return false;
-        if (initializer->getType() == BYTE_TYPE)
-            out.ins(initializer->isSigned() ? "SEX" : "CLRA");
-        out.ins("LEAX", getFrameDisplacementArg(writingOffset), "offset in variable " + getVariableId());
-        callUtility(out, initializer->isSigned() ? "initDWordFromSignedWord" : "initDWordFromUnsignedWord", "preserves X");
-        writingOffset += TranslationUnit::instance().getTypeSize(*requiredTypeDesc);
-    }
-    else if (requiredTypeDesc->isIntegral() && initializer->isLong())  // init short integer from dword
-    {
-        assert(TranslationUnit::instance().getTypeSize(*requiredTypeDesc) <= 2);
-        if (!initializer->emitCode(out, true))  // get address of dword in X
-            return false;
-        bool varIsByte = (requiredTypeDesc->type == BYTE_TYPE);
-        out.ins(varIsByte ? "LDB" : "LDD", varIsByte ? "3,X" : "2,X");
-        out.ins("LEAX", getFrameDisplacementArg(writingOffset), "offset in variable " + getVariableId());
-        out.ins(varIsByte ? "STB" : "STD", ",X");
-        writingOffset += TranslationUnit::instance().getTypeSize(*requiredTypeDesc);
-    }
-    else if (requiredTypeDesc->isIntegral() && initializer->isReal())  // init short integer from real
-    {
-        assert(TranslationUnit::instance().getTypeSize(*requiredTypeDesc) <= 2);
-        if (!initializer->emitCode(out, true))  // get address of real in X
-            return false;
-        out.ins("TFR", "X,D", "address of source number in D");
-        out.ins("LEAX", getFrameDisplacementArg(writingOffset), "offset in variable " + getVariableId());
-        callUtility(out, string("init") + (requiredTypeDesc->isSigned ? "Signed" : "Unsigned")
-                                        + (requiredTypeDesc->type == BYTE_TYPE ? "Byte" : "Word")
-                                        + "FromSingle");
-        writingOffset += TranslationUnit::instance().getTypeSize(*requiredTypeDesc);
-    }
-    else
-    {
-        assert(TranslationUnit::instance().getTypeSize(*requiredTypeDesc) <= 2);
-        string storeIns = (requiredTypeDesc->type == BYTE_TYPE ? "STB" : "STD");
-        const VariableExpr *ve = initializer->asVariableExpr();
-        if (ve != NULL && initializer->getType() == ARRAY_TYPE)
-        {
-            out.ins("LEAX", ve->getFrameDisplacementArg(), "address of array " + ve->getId());
-            storeIns = "STX";
-        }
-        else if (!initializer->emitCode(out, false))
-            return false;
-
-        if (initializer->getType() == BYTE_TYPE && requiredTypeDesc->type != BYTE_TYPE)
-            out.ins(initializer->isSigned() ? "SEX" : "CLRA", "", "initializer of type byte, but field is 16 bits");
-
-        out.ins(storeIns, getFrameDisplacementArg(writingOffset), "offset in variable " + getVariableId());
-        writingOffset += (requiredTypeDesc->type == BYTE_TYPE ? 1 : 2);
-    }
-
     return true;
 }
 
@@ -895,7 +906,6 @@ isAddressOfVariable(const Tree &tree)
 static bool
 countVariablesAndConstantExpressions(const Tree &tree, size_t &numVariables, size_t &numConstantExpressions)
 {
-    assert(&tree);
     uint16_t value;
     if (tree.asVariableExpr())
         ++numVariables;
@@ -910,6 +920,8 @@ countVariablesAndConstantExpressions(const Tree &tree, size_t &numVariables, siz
             case BinaryOpExpr::MUL:
             case BinaryOpExpr::DIV:
             case BinaryOpExpr::MOD:
+                assert(bin->getLeft() != NULL);
+                assert(bin->getRight() != NULL);
                 if (!countVariablesAndConstantExpressions(*bin->getLeft(), numVariables, numConstantExpressions))
                     return false;
                 if (!countVariablesAndConstantExpressions(*bin->getRight(), numVariables, numConstantExpressions))
@@ -930,6 +942,10 @@ isConstantInitializer(const Tree &initExpr)
 {
     if (initExpr.isNumericalLiteral())  // includes longs, floats and doubles
         return true;
+    if (initExpr.isNumericalLiteralCastToOtherType())
+        return true;
+    if (initExpr.isStringLiteralCastToPtrToAnyChar())
+        return true;
     uint16_t value;
     if (initExpr.evaluateConstantExpr(value))
         return true;
@@ -945,7 +961,7 @@ isConstantInitializer(const Tree &initExpr)
             return true;
     }
     const TreeSequence *seq = dynamic_cast<const TreeSequence *>(&initExpr);
-    if (seq)
+    if (seq)  // if { ... }
     {
         for (vector<Tree *>::const_iterator it = seq->begin(); it != seq->end(); ++it)
             if (!isConstantInitializer(**it))
@@ -964,10 +980,12 @@ isConstantInitializer(const Tree &initExpr)
 
 /*virtual*/
 void
-Declaration::checkSemantics(Functor &f)
+Declaration::checkSemantics(Functor &)
 {
-    //cout << "# Declaration::checkSemantics: " << getLineNo() << ": " << getVariableId() << ": "
-    //     << getTypeDesc() << " '" << getTypeDesc()->toString() << "', extern=" << isExtern << ", const=" << isConst() << endl;
+    // cout << "# Declaration::checkSemantics: this=" << this << ", " << getLineNo() << ": " << getVariableId() << ": "
+    //      << getTypeDesc() << " '" << getTypeDesc()->toString() << "', extern=" << isExtern
+    //      << ", initializationExpr of type " << (initializationExpr ? initializationExpr->getTypeDesc()->toString() : "<none>")
+    //      << endl;
 
     // If this declaration is global, use a ScopeCreator to register it in the
     // global space and to set the declaration of each variable expression in
@@ -995,13 +1013,6 @@ Declaration::checkSemantics(Functor &f)
                 errormsg("initializer element is not constant");
         }
     }
-    else if (isStatic)
-    {
-        SemanticsChecker &checker = dynamic_cast<SemanticsChecker &>(f);
-        const FunctionDef *parentFunctionDef = checker.getCurrentFunctionDef();
-        if (parentFunctionDef)  // if declaration is local to a function
-            errormsg("local static variables are not supported");
-    }
 
     if (initializationExpr != NULL)
     {
@@ -1019,10 +1030,6 @@ Declaration::checkInitExpr(Tree *initializationExpr, const TypeDesc *varTypeDesc
 {
     assert(initializationExpr);
     assert(varTypeDesc);
-    /*cout << "# Declaration::checkInitExpr('" << typeid(*initializationExpr).name() << "', '" << varTypeDesc->toString() << "', " << variableId
-         << ", {" << join(", ", arrayDimensions) << "}, " << dimIndex << "): initializationExpr={"
-         << typeid(*initializationExpr).name() << ", " << initializationExpr->getTypeDesc()->toString() << "}"
-         << "\n";*/
     assert(!variableId.empty());
 
     BasicType varType = varTypeDesc->type;
@@ -1030,8 +1037,12 @@ Declaration::checkInitExpr(Tree *initializationExpr, const TypeDesc *varTypeDesc
     BasicType initExprType = initializationExpr->getType();
     const TypeDesc *initExprTD = initializationExpr->getTypeDesc();
 
+    // cout << "# Declaration::checkInitExpr(" << typeid(*initializationExpr).name() << ", '" << varTypeDesc->toString() << "', " << variableId
+    //      << ", {" << join(", ", arrayDimensions) << "}, " << dimIndex << "): initExprTD='" << initExprTD->toString()
+    //      << "'; line " << initializationExpr->getLineNo() << "\n";
+
     uint16_t value = 0;
-    bool initExprIsConst = initializationExpr->evaluateConstantExpr(value);
+    bool initExprIsConstant = initializationExpr->evaluateConstantExpr(value);
 
     if (varType == WORD_TYPE && initExprType == BYTE_TYPE)
         ;
@@ -1041,7 +1052,7 @@ Declaration::checkInitExpr(Tree *initializationExpr, const TypeDesc *varTypeDesc
         ; // do not care about signedness
     else if (varType == POINTER_TYPE && (initExprType == WORD_TYPE || initExprType == BYTE_TYPE))
     {
-        if (! initExprIsConst)  // if not constant
+        if (! initExprIsConstant)
             initializationExpr->warnmsg("initializing pointer '%s' from integer expression", variableId.c_str());
         else if (value >= 0x8000 && initExprTD->isSigned)
             initializationExpr->warnmsg("initializing pointer '%s' from negative constant", variableId.c_str());
@@ -1099,9 +1110,13 @@ Declaration::checkInitExpr(Tree *initializationExpr, const TypeDesc *varTypeDesc
                                  initExprTD->toString().c_str(),
                                  varTypeDesc->toString().c_str());
             break;
-        case FunctionCallExpr::WARN_PASSING_CONSTANT_FOR_PTR:
-            if (TranslationUnit::instance().isWarningOnPassingConstForFuncPtr())  // if -Wpass-const-for-func-pointer
-                initializationExpr->warnmsg("using non-zero numeric constant to initialize `%s'",
+        case FunctionCallExpr::WARN_PASSING_CHAR_CONSTANT_FOR_PTR:
+            initializationExpr->warnmsg("using character constant to initialize `%s'",
+                                 initExprTD->toString().c_str(),
+                                 varTypeDesc->toString().c_str());
+            break;
+        case FunctionCallExpr::WARN_PASSING_NON_ZERO_CONSTANT_FOR_PTR:
+            initializationExpr->warnmsg("using non-zero numeric constant to initialize `%s'",
                                  initExprTD->toString().c_str(),
                                  varTypeDesc->toString().c_str());
             break;
@@ -1129,6 +1144,11 @@ Declaration::checkInitExpr(Tree *initializationExpr, const TypeDesc *varTypeDesc
             initializationExpr->warnmsg("using `%s' to initialize `%s' (implicit cast of void pointer)",
                                 initExprTD->toString().c_str(),
                                 varTypeDesc->toString().c_str());
+            break;
+        case FunctionCallExpr::WARN_PTR_FOR_INTEGRAL:
+            initializationExpr->warnmsg("using pointer type `%s' to initialize `%s`",
+                              initExprTD->toString().c_str(),
+                              varTypeDesc->toString().c_str());
             break;
         case FunctionCallExpr::ERROR_MSG:
             initializationExpr->errormsg("using `%s' to initialize `%s'",
@@ -1160,19 +1180,29 @@ Declaration::checkArrayInitializer(Tree *initializationExpr, const TypeDesc *var
     {
         // Check that initializationExpr is not too long. Warn if too short.
         //
-        assert(dimIndex < arrayDimensions.size());
+        if (dimIndex >= arrayDimensions.size())
+        {
+            initializationExpr->errormsg("dimension index %u exceeds dimension array of size %u (variable `%s')",
+                                            dimIndex, arrayDimensions.size(), variableId.c_str());
+            return;
+        }
         uint16_t numArrayElements = arrayDimensions[dimIndex];
         if (seq->size() > size_t(numArrayElements))
         {
-            initializationExpr->errormsg("too many elements (%u) in initializer for array of %hu element(s)",
-                                        seq->size(), numArrayElements);
+            if (TranslationUnit::instance().warnTooManyElementsInInitializer())
+                initializationExpr->warnmsg("too many elements (%u) in initializer for array of %hu element(s)",
+                                            seq->size(), numArrayElements);
             return;
         }
         if (seq->size() < size_t(numArrayElements))
         {
             initializationExpr->warnmsg("only %u element(s) in initializer for array of %hu element(s)",
-                                        seq->size(), numArrayElements);
+                                            seq->size(), numArrayElements);
         }
+
+        // Tell the code generator how many array elements are supposed to be initialized.
+        //
+        seq->setRequiredNumArrayElements(numArrayElements);
 
         for (vector<Tree *>::const_iterator it = seq->begin(); it != seq->end(); ++it)
             checkInitExpr(*it, varTypeDesc->pointedTypeDesc, variableId, arrayDimensions, dimIndex + 1);
@@ -1182,8 +1212,7 @@ Declaration::checkArrayInitializer(Tree *initializationExpr, const TypeDesc *var
         // Require that the variable to initialize be a byte array and that the initializer be one too.
         //
         if (varTypeDesc->getPointedType() != BYTE_TYPE
-            || ! initializationExpr->getTypeDesc()->isPtrOrArray()
-            || initializationExpr->getTypeDesc()->getPointedType() != BYTE_TYPE)
+            || ! initializationExpr->getTypeDesc()->isArrayOfChar())
         {
             initializationExpr->errormsg("initializer for array `%s' is invalid", variableId.c_str());
         }
@@ -1219,7 +1248,7 @@ Declaration::checkClassInitializer(Tree *initializationExpr, const TypeDesc *var
     const string &className = varTypeDesc->className;
 
     TreeSequence *seq = dynamic_cast<TreeSequence *>(initializationExpr);
-    if (seq == NULL && *initializationExpr->getTypeDesc() != *varTypeDesc
+    if (seq == NULL && ! TypeDesc::sameTypesModuloConst(*initializationExpr->getTypeDesc(), *varTypeDesc)
                     && ! isRealOrLongInitWithNumber(varTypeDesc, *initializationExpr))
     {
         initializationExpr->errormsg("initializer for struct %s is of type `%s': must be list, or struct of same type",
@@ -1232,12 +1261,21 @@ Declaration::checkClassInitializer(Tree *initializationExpr, const TypeDesc *var
         const ClassDef *cl = TranslationUnit::instance().getClassDef(className);
         assert(cl);
 
-        if (seq->size() != cl->getNumDataMembers())
+        if (! cl->isUnion())
         {
-            seq->warnmsg("initializing struct %s, which has %u member(s), with initializer containing %u value(s)",
-                          className.c_str(), cl->getNumDataMembers(), seq->size());
+            if (seq->size() < cl->getNumDataMembers())
+            {
+                if (TranslationUnit::instance().warnOnMissingFieldInitializers())
+                    for (size_t fieldIndex = seq->size(); fieldIndex < cl->getNumDataMembers(); ++fieldIndex)
+                        seq->warnmsg("missing initializer for field `%s' of `%s'",
+                                        cl->getDataMember(fieldIndex)->getName().c_str(),
+                                        varTypeDesc->toString().c_str());
+            }
+            else if (seq->size() > cl->getNumDataMembers())
+            {
+                seq->warnmsg("excess elements in `%s' initializer", varTypeDesc->toString().c_str());
+            }
         }
-
 
         size_t memberIndex = 0;
         for (std::vector<Tree *>::const_iterator initExprIt = seq->begin(); initExprIt != seq->end(); ++initExprIt, ++memberIndex)
@@ -1284,190 +1322,214 @@ Declaration::isRealOrLongInitWithNumber(const TypeDesc *varTypeDesc, const Tree 
 }
 
 
-/*virtual*/
 CodeStatus
-Declaration::emitCode(ASMText &out, bool /*lValue*/) const
+Declaration::emitInitializationExprCode(ASMText &out) const
 {
-    if (initializationExpr != NULL)
+    const TypeDesc *declTD = getTypeDesc();
+    const TypeDesc *initExprTD = initializationExpr->getTypeDesc();
+    const StringLiteralExpr *sle = dynamic_cast<const StringLiteralExpr *>(initializationExpr);
+
+    uint16_t initExprConstValue = 0;
+    bool isInitExprConstant = initializationExpr->evaluateConstantExpr(initExprConstValue);
+
+    if (getType() == BYTE_TYPE && isInitExprConstant && initExprConstValue == 0)  // covers case where init expr is enum name (e.g., FALSE)
+        out.ins("CLR", getFrameDisplacementArg(), "init of variable " + variableId);
+    else if (dynamic_cast<const TreeSequence *>(initializationExpr))  // if init from { ... }
     {
-        writeLineNoComment(out, "init of variable " + variableId);
+        InitializerCodeEmitter emitter(*this);
+        if (!emitter.emitCode(out))
+            return false;
+    }
+    else if (getType() == ARRAY_TYPE && sle)  // if char[] init by string literal
+    {
+        // Emit a call to copyMem utility routine that reads from the string literal
+        // and writes to the array address.
+        //
+        out.ins("LEAX", sle->getArg(), sle->getEscapedVersion());
+        out.ins("PSHS", "X", "source array");
+        out.ins("LEAX", getFrameDisplacementArg(), "destination byte array " + variableId);
+        out.ins("LDD", "#" + wordToString(uint16_t(sle->getLiteral().length()) + 1), "length of string literal + terminating NUL");
+        callUtility(out, "copyMem");
+        out.ins("LEAS", "2,S");
+    }
+    else if (initializationExpr->getType() == CLASS_TYPE)  // if initialization from struct
+    {
+        if (!initializationExpr->emitCode(out, true))  // get address of expression in X
+            return false;
 
-        const TypeDesc *declTD = getTypeDesc();
-        const TypeDesc *initExprTD = initializationExpr->getTypeDesc();
-        const WordConstantExpr *wce = dynamic_cast<const WordConstantExpr *>(initializationExpr);
-        const StringLiteralExpr *sle = dynamic_cast<const StringLiteralExpr *>(initializationExpr);
-
-        if (wce != NULL && wce->getWordValue() == 0 && getType() == BYTE_TYPE)
-            out.ins("CLR", getFrameDisplacementArg(), "variable " + variableId);
-        else if (const TreeSequence *seq = dynamic_cast<const TreeSequence *>(initializationExpr))  // if init from { ... }
+        if (initExprTD->isRealOrLong())  // if expression is float or double or long
         {
-            uint16_t writingOffset = 0;
-            uint16_t numArrayElements = (arrayDimensions.size() > 0 ? arrayDimensions.front() : 1);
-            if (!emitSequenceInitCode(out, seq, declTD, numArrayElements, writingOffset))
-                return false;
-        }
-        else if (getType() == ARRAY_TYPE && sle)  // if char[] init by string literal
-        {
-            // Emit a call to memcpy() that reads from the string literal
-            // and writes to the array address.
-            //
-            out.ins("LDD", "#" + wordToString(uint16_t(sle->getLiteral().length()) + 1), "length of string literal + terminating NUL");
-            out.ins("PSHS", "B,A", "push length to _memcpy");
-            out.ins("LEAX", sle->getArg(), sle->getEscapedVersion());
-            out.ins("PSHS", "X", "source array");
-            out.ins("LEAX", getFrameDisplacementArg(), "byte array " + variableId);
-            out.ins("PSHS", "X", "destination array");
-            callUtility(out, "_memcpy");
-            out.ins("LEAS", "6,S");
-        }
-        else if (initializationExpr->getType() == CLASS_TYPE)  // if initialization from struct
-        {
-            if (!initializationExpr->emitCode(out, true))  // get address of expression in X
-                return false;
-
-            if (initExprTD->isRealOrLong())  // if expression is float or double or long
+            if (isReal())
             {
-                if (isReal())
+                out.ins("TFR", "X,D", "address of source number in D");
+                out.ins("LEAX", getFrameDisplacementArg(), "address of variable to init: " + variableId);
+
+                callUtility(out, "init" + string(declTD->isSingle() ? "Single" : "Double")
+                                    + "From" + (initExprTD->isLong()
+                                                    ? (initExprTD->isSigned ? "Signed" : "Unsigned") + string("DWord")
+                                                    : (initExprTD->isSingle() ? "Single" : "Double")));
+            }
+            else if (isLong())
+            {
+                if (initExprTD->isLong())
+                {
+                    out.ins("TFR", "X,D", "address of source number");
+                    out.ins("LEAX", getFrameDisplacementArg(), "variable " + variableId);
+                    callUtility(out, "copyDWord");
+                }
+                else  // long from real
+                {
+                    assert(initExprTD->isReal());
+
+                    out.ins("TFR", "X,D", "address of source number");
+                    out.ins("LEAX", getFrameDisplacementArg(), "variable " + variableId);
+                    callUtility(out, "init" + string(declTD->isSigned ? "Signed" : "Unsigned") + "DWordFrom" + (initExprTD->isSingle() ? "Single" : "Double"));
+                }
+            }
+            else if (getTypeSize() <= 2)  // if variable is byte-sized or word-sized
+            {
+                if (initExprTD->isReal())
                 {
                     out.ins("TFR", "X,D", "address of source number in D");
                     out.ins("LEAX", getFrameDisplacementArg(), "address of variable to init: " + variableId);
-
-                    if (initExprTD->isLong())
-                    {
-                        if (initExprTD->isSigned)
-                            out.ins("ORCC", "#$01", "C=1 means signed");
-                        else
-                            out.ins("ANDCC", "#$FE", "C=0 means unsigned");
-                    }
-
-                    callUtility(out, "init" + string(declTD->isSingle() ? "Single" : "Double")
-                                     + "From" + (initExprTD->isLong()
-                                                     ? "DWord"
-                                                     : (initExprTD->isSingle() ? "Single" : "Double")));
+                    callUtility(out, "init" + string(declTD->isSigned ? "Signed" : "Unsigned")
+                                            + (declTD->type == BYTE_TYPE ? "Byte" : "Word")
+                                            + "From" + (initExprTD->isSingle() ? "Single" : "Double"));
                 }
-                else if (isLong())
+                else if (getTypeSize() == 2)  // init word from long
                 {
-                    if (initExprTD->isLong())
-                    {
-                        out.ins("TFR", "X,D", "address of source number");
-                        out.ins("LEAX", getFrameDisplacementArg(), "variable " + variableId);
-                        callUtility(out, "copyDWord");
-                    }
-                    else  // long from real
-                    {
-                        assert(initExprTD->isReal());
-
-                        out.ins("TFR", "X,D", "address of source number");
-                        out.ins("LEAX", getFrameDisplacementArg(), "variable " + variableId);
-                        if (declTD->isSigned)
-                            out.ins("ORCC", "#$01", "C=1 means signed");
-                        else
-                            out.ins("ANDCC", "#$FE", "C=0 means unsigned");
-                        callUtility(out, "initDWordFrom" + string(initExprTD->isSingle() ? "Single" : "Double"));
-                    }
+                    out.ins("LDD", "2,X", "init word from low word of long");
+                    out.ins("STD", getFrameDisplacementArg(), "variable " + variableId);
                 }
-                else if (getTypeSize() <= 2)  // if variable is byte-sized or word-sized
+                else if (getTypeSize() == 1)
                 {
-                    if (initExprTD->isReal())
-                    {
-                        out.ins("TFR", "X,D", "address of source number in D");
-                        out.ins("LEAX", getFrameDisplacementArg(), "address of variable to init: " + variableId);
-                        callUtility(out, "init" + string(declTD->isSigned ? "Signed" : "Unsigned")
-                                                + (declTD->type == BYTE_TYPE ? "Byte" : "Word")
-                                                + "From" + (initExprTD->isSingle() ? "Single" : "Double"));
-                    }
-                    else if (getTypeSize() == 2)  // init word from long
-                    {
-                        out.ins("LDD", "2,X", "init word from low word of long");
-                        out.ins("STD", getFrameDisplacementArg(), "variable " + variableId);
-                    }
-                    else if (getTypeSize() == 1)
-                    {
-                        out.ins("LDB", "3,X", "init byte from low byte of long");
-                        out.ins("STB", getFrameDisplacementArg(), "variable " + variableId);
-                    }
-                    else
-                        assert(0);
+                    out.ins("LDB", "3,X", "init byte from low byte of long");
+                    out.ins("STB", getFrameDisplacementArg(), "variable " + variableId);
                 }
                 else
                     assert(0);
             }
-            else if (getType() == CLASS_TYPE)  // init a struct from a struct
+            else
+                assert(0);
+        }
+        else if (getType() == CLASS_TYPE)  // init a struct from a struct
+        {
+            out.ins("PSHS", "X", "source struct");
+            int16_t structSizeInBytes = TranslationUnit::instance().getTypeSize(*declTD);
+            out.ins("LDD", "#" + wordToString(structSizeInBytes), "size of struct " + declTD->className);
+            out.ins("LEAX", getFrameDisplacementArg(), "destination struct: " + variableId);
+            callUtility(out, "copyMem", "initialize struct");
+            out.ins("LEAS", "2,S");
+        }
+        else
+        {
+            assert(false);
+        }
+    }
+    else
+    {
+        // Evaluate the initializer and get its value in D or B.
+        //
+        if (isInitExprConstant)
+        {
+            if (getType() == BYTE_TYPE)
             {
-                out.ins("PSHS", "X", "source struct");
-                int16_t structSizeInBytes = TranslationUnit::instance().getTypeSize(*declTD);
-                out.ins("LDD", "#" + wordToString(structSizeInBytes), "size of struct " + declTD->className);
-                out.ins("LEAX", getFrameDisplacementArg(), "destination struct: " + variableId);
-                callUtility(out, "copyMem", "initialize struct");
-                out.ins("LEAS", "2,S");
+                initExprConstValue &= 0xFF;
+                if (initExprConstValue == 0)
+                    out.ins("CLRB");
+                else
+                    out.ins("LDB", "#" + wordToString(initExprConstValue, true), wordToString(initExprConstValue, false));
+            }
+            else if (initExprConstValue == 0)
+            {
+                out.ins("CLRA");
+                out.ins("CLRB");
             }
             else
             {
-                assert(false);
+                out.ins("LDD", "#" + wordToString(initExprConstValue, true), wordToString(initExprConstValue, false));
             }
         }
         else
         {
-            // Evaluate the initializer and get its value in D or B.
-            //
-            uint16_t val = 0;
-            if (initializationExpr->evaluateConstantExpr(val))
-            {
-                if (getType() == BYTE_TYPE)
-                {
-                    val &= 0xFF;
-                    if (val == 0)
-                        out.ins("CLRB");
-                    else
-                        out.ins("LDB", "#" + wordToString(val, true), wordToString(val, false));
-                }
-                else if (val == 0)
-                {
-                    out.ins("CLRA");
-                    out.ins("CLRB");
-                }
-                else
-                {
-                    out.ins("LDD", "#" + wordToString(val, true), wordToString(val, false));
-                }
-            }
-            else
-            {
-                if (!initializationExpr->emitCode(out, false))
-                    return false;
+            if (!initializationExpr->emitCode(out, false))
+                return false;
 
-                // If initializing word from byte expression, make sure MSB is 0.
-                if (getType() != BYTE_TYPE && initializationExpr->getType() == BYTE_TYPE)
-                    out.ins(initExprTD->isSigned ? "SEX" : "CLRA");
+            // If initializing word from byte expression, make sure MSB is 0.
+            if (getType() != BYTE_TYPE && initializationExpr->getType() == BYTE_TYPE)
+                out.ins(initExprTD->getConvToWordIns());
+        }
+
+        if (declTD->isReal())
+        {
+            out.ins("LEAX", getFrameDisplacementArg(), "address of variable " + variableId);
+            callUtility(out, "init" + string(declTD->isSingle() ? "Single" : "Double")
+                                + "From" + (initExprTD->isSigned ? "Signed" : "Unsigned") + "Word");
+        }
+        else if (declTD->isLong())
+        {
+            if (initExprTD->type == BYTE_TYPE)
+                out.ins(initExprTD->getConvToWordIns());
+
+            out.ins("LEAX", getFrameDisplacementArg(), "address of variable " + variableId);
+            callUtility(out, "initDWordFrom" + string(initExprTD->isSigned ? "Signed" : "Unsigned") + "Word");
+        }
+        else
+        {
+            string store = getStoreInstruction(getType());
+            if (store.empty())
+            {
+                assert(!"unknown type");
+                return false;
             }
 
-            if (declTD->isReal())
-            {
-                out.ins("LEAX", getFrameDisplacementArg(), "address of variable " + variableId);
-                callUtility(out, "init" + string(declTD->isSingle() ? "Single" : "Double")
-                                 + "From" + (initExprTD->isSigned ? "Signed" : "Unsigned") + "Word");
-            }
-            else if (declTD->isLong())
-            {
-                if (initExprTD->type == BYTE_TYPE)
-                    out.ins(initExprTD->isSigned ? "SEX" : "CLRA");
-
-                out.ins("LEAX", getFrameDisplacementArg(), "address of variable " + variableId);
-                callUtility(out, "initDWordFrom" + string(initExprTD->isSigned ? "Signed" : "Unsigned") + "Word");
-            }
-            else
-            {
-                string store = getStoreInstruction(getType());
-                if (store.empty())
-                {
-                    assert(!"unknown type");
-                    return false;
-                }
-
-                out.ins(store, getFrameDisplacementArg(), "variable " + variableId);
-            }
+            out.ins(store, getFrameDisplacementArg(), "variable " + variableId);
         }
     }
+    return true;
+}
+
+
+/*virtual*/
+CodeStatus
+Declaration::emitCode(ASMText &out, bool /*lValue*/) const
+{
+    if (isExternal())
+        out.emitImport(getLabel());
+
+    if (initializationExpr == NULL)
+        return true;  // nothing to do
+
+    if (isLocalStatic() && !isDynamicInitializerForced())
+        return true;  // nothing to do
+
+    string initLabel, postInitLabel;
+    if (isLocalStatic())
+    {
+        // This is a local static variable that whose initialization is being forced to be dynamic.
+        // This is because it contains string literals, whose address is only known as run-time,
+        // because the OS or the LOADM command may have loaded the program at an address that is
+        // only determined at run-time.
+        // In such a case, the initializer of the variable is run only the first time that execution
+        // passes through that variable's declaration.
+        // A global hidden boolean is used to remember if the variable has already been initialized.
+        //
+        initLabel = getLabel() + ".initialized";
+        postInitLabel = TranslationUnit::instance().generateLabel('L');
+        out.ins("TST", initLabel, "has `" + variableId + "' been initialized?");
+        out.ins("BNE", postInitLabel, "if yes, skip init code");
+    }
+
+    writeLineNoComment(out, "init of variable " + variableId);
+
+    emitInitializationExprCode(out);
+
+    if (isLocalStatic())
+    {
+        out.ins("INC", initLabel, "mark `" + variableId + "' as initialized");
+        out.emitLabel(postInitLabel);
+    }
+
     return true;
 }
 

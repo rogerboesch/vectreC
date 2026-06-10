@@ -1,7 +1,5 @@
-/*  $Id: ConditionalExpr.cpp,v 1.9 2016/06/21 04:28:52 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2026 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,6 +17,8 @@
 
 #include "ConditionalExpr.h"
 
+#include "BinaryOpExpr.h"
+#include "WordConstantExpr.h"
 #include "TranslationUnit.h"
 
 using namespace std;
@@ -43,16 +43,16 @@ ConditionalExpr::~ConditionalExpr()
 
 
 void
-ConditionalExpr::promoteIfNeeded(ASMText &out, const Tree &exprToPromote, const Tree &otherExpr)
+ConditionalExpr::promoteIfNeeded(ASMText &out, const TypeDesc &typeToPromote, const TypeDesc &targetTypeDesc)
 {
-    if (exprToPromote.getTypeDesc()->isPtrOrArray())
-        return;  // both expressions are ptr/array, so promotion needed
+    if (typeToPromote.isPtrOrArray())
+        return;
 
     const TranslationUnit &tu = TranslationUnit::instance();
-    if (tu.getTypeSize(*exprToPromote.getTypeDesc()) < tu.getTypeSize(*otherExpr.getTypeDesc()))
+    if (tu.getTypeSize(typeToPromote) < tu.getTypeSize(targetTypeDesc))
     {
-        const char *extendIns = (exprToPromote.getTypeDesc()->isSigned ? "SEX" : "CLRA");  // as in C
-        out.ins(extendIns, "", "cast from byte (conditional expression)");
+        const char *extendIns = (typeToPromote.getConvToWordIns());  // as in C
+        out.ins(extendIns, "", "promote from byte (conditional expression)");
     }
 }
 
@@ -67,31 +67,53 @@ ConditionalExpr::emitCode(ASMText &out, bool lValue) const
             << " " << trueExpr->getType()
             << " " << falseExpr->getType()
             << endl;*/
-    if (!condition->emitCode(out, false))  // condition is r-value
-        return false;
 
+    condition->writeLineNoComment(out, "conditional expression");
+
+    string trueLabel = TranslationUnit::genLabel('L');
     string falseLabel = TranslationUnit::genLabel('L');
-    if (condition->getType() == BYTE_TYPE)
-        out.ins("TSTB");
-    else
-        out.emitCMPDImmediate(0);
-    out.ins("LBEQ", falseLabel, "if conditional expression is false");
-    
-    if (!trueExpr->emitCode(out, lValue))
+    string endLabel = TranslationUnit::genLabel('L');
+
+    if (!BinaryOpExpr::emitBoolJumps(out, condition, trueLabel, falseLabel))
         return false;
 
-    promoteIfNeeded(out, *trueExpr, *falseExpr);
+    out.emitLabel(trueLabel);
+    if (!emitSubExpr(out, lValue, *trueExpr))
 
-    string endLabel = TranslationUnit::genLabel('L');
+        return false;
+
+    promoteIfNeeded(out, *trueExpr->getTypeDesc(), *falseExpr->getTypeDesc());
+
     out.ins("LBRA", endLabel, "end of true expression of conditional");
 
     out.emitLabel(falseLabel);
-    if (!falseExpr->emitCode(out, lValue))
+    if (!emitSubExpr(out, lValue, *falseExpr))
         return false;
 
-    promoteIfNeeded(out, *falseExpr, *trueExpr);
+    promoteIfNeeded(out, *falseExpr->getTypeDesc(), *trueExpr->getTypeDesc());
 
     out.emitLabel(endLabel);
+    return true;
+}
+
+
+// Try to emit code for a single byte, if possible, otherwise, emit normally.
+//
+CodeStatus
+ConditionalExpr::emitSubExpr(ASMText &out, bool lValue, const Tree &subExpr) const
+{
+    uint16_t value = 0;
+    if (lValue
+            || getType() != BYTE_TYPE
+            || ! subExpr.is8BitConstant(&value))
+        return subExpr.emitCode(out, lValue);
+
+    // subExpr fits a byte, so load it in B.
+    const char *comment = "constant value in conditional expression";
+    if (value == 0)
+        out.ins("CLRB", "", comment);
+    else
+        out.ins("LDB", "#" + wordToString(value, true), comment);
     return true;
 }
 
@@ -124,6 +146,13 @@ ConditionalExpr::replaceChild(Tree *existingChild, Tree *newChild)
     if (deleteAndAssign(falseExpr, existingChild, newChild))
         return;
     assert(!"child not found");
+}
+
+
+const Tree *
+ConditionalExpr::getConditionExpression() const
+{
+    return condition;
 }
 
 

@@ -1,7 +1,5 @@
-/*  $Id: ASMText.h,v 1.68 2020/05/13 23:23:50 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2018 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2023 Pierre Sarrazin <http://sarrazip.com/>
     Copyright (C) 2016 Jamie Cho <https://github.com/jamieleecho>
 
     This program is free software: you can redistribute it and/or modify
@@ -22,10 +20,7 @@
 #define _H_ASMText
 
 #include "util.h"
-#include <stack>
 #include <utility>
-#include <algorithm>
-#include <map>
 
 
 // Internal representation of the assembly language program.
@@ -36,7 +31,12 @@
 class ASMText
 {
 public:
-    ASMText();
+
+    // Allow using the Y register for optimizations unless the targeted platform or
+    // the calling convention disallows it.
+    //
+    ASMText(bool _yRegAllowed);
+
     void ins(const std::string &instr, const std::string &arg = "", const std::string &comment = "");
     void emitCMPDImmediate(uint16_t immediateValue, const std::string &comment = "");  // calls ins()
     void emitFunctionStart(const std::string &functionId, const std::string &lineNo);
@@ -44,7 +44,21 @@ public:
     void emitInlineAssembly(const std::string &text);
     void emitLabel(const std::string &label, const std::string &comment = "");
     void emitComment(const std::string &text);
+
+    // The comment returned by this function must be used on a PSHS instruction
+    // that passes an argument to a C function (but not to a CMOC utility routine).
+    // argIndex: 1-based.
+    // functionId: Allowed to be empty.
+    //
+    static std::string getArgumentPassingComment(uint16_t argIndex, const std::string &functionId, const TypeDesc &argTypeDesc);
+
+    static bool isArgumentPassingComment(const std::string &comment);
+
     void emitSeparatorComment();
+    void emitCallConventionMarker(CallConvention callConv);
+    void emitParameterSaveInstruction(const char *regToSpill,
+                                      const std::string &frameDisplacementArg,
+                                      const std::string &functionLineNo);
     void emitInclude(const std::string &filename);
     void startSection(const char *sectionName);
     void endSection();
@@ -55,18 +69,40 @@ public:
     void emitEnd();
 
     void optimizeWholeFunctions();
-    void peepholeOptimize(bool useStage2Optims);
+    void peepholeOptimize(size_t optimizationLevel, FramePointerOption framePointerOption);
+
+    // Special optimizations methods to be called from emitCode() methods.
+    //
+    void optimizeXParameterLoad();
+    void optimizeConsecutiveFunctionArguments();
+    void optimizeTFRXD();
 
     // Writes assembly text into 'out'.
     // Does not close 'out'.
     // Returns out.good().
     //
-    bool writeFile(std::ostream &out);
+    bool writeFile(std::ostream &out) const;
 
     // ins: Comparison is case-insensitive. Long branches are also recognized.
     //      BRA and BRN are not considered to be conditional branches.
     //
     static bool isConditionalBranch(const char *ins);
+
+    // Calls isConditionalBranch(const char *) with the instruction at the given index in elements[].
+    //
+    bool isConditionalBranchAtIndex(size_t index) const;
+
+    // Conditional or unconditional branch.
+    //
+    bool isBranchAtIndex(size_t index) const;
+
+    // Conditional or unconditional branch, or call to a subroutine via [L]BSR or JSR.
+    // 
+    bool isBranchOrCallAtIndex(size_t index) const;
+
+    static uint8_t parsePushPullArg(const std::string &arg);
+
+    static bool extractConstantLiteral(const std::string &s, int &val);
 
     enum Type { INSTR, LABEL, INLINE_ASM, COMMENT, SEPARATOR, INCLUDE,
                 FUNCTION_START, FUNCTION_END, SECTION_START, SECTION_END, EXPORT, IMPORT, END };
@@ -81,6 +117,7 @@ public:
 
         Element() : type(COMMENT), fields(), liveRegs(0) {}
         bool isCommentLike() const { return type != INSTR && type != LABEL && type != INLINE_ASM && type != INCLUDE; }
+        std::string toString() const { return fields[0] + " " + fields[1] + " " + fields[2]; }
     };
 
     // Effects of an instruction on some registers.
@@ -94,7 +131,6 @@ public:
         InsEffects(const Element &e);
         std::string toString() const;
     private:
-        static uint8_t parsePushPullArg(const std::string &arg);
         static bool onlyDecimalDigits(const std::string &s);
         static bool onlyHexDigits(const std::string &s, size_t offset);
     };
@@ -109,32 +145,34 @@ private:
 
     void addElement(Type type, const std::string &field0 = "", const std::string &field1 = "", const std::string &field2 = "");
 
-    // Actual assembly writing methods:
-    void writeElement(std::ostream &out, const Element &e);
-    void writeIns(std::ostream &out, const Element &e);
-    void writeLabel(std::ostream &out, const Element &e);
-    void writeInlineAssembly(std::ostream &out, const Element &e);
-    void writeComment(std::ostream &out, const Element &e);
-    void writeSeparatorComment(std::ostream &out, const Element &e);
-    void writeInclude(std::ostream &out, const Element &e);
+    // Methods that write actual assembly language to 'out'.
+    void writeElement(std::ostream &out, const Element &e) const;
+    void writeIns(std::ostream &out, const Element &e) const;
+    void writeLabel(std::ostream &out, const Element &e) const;
+    void writeInlineAssembly(std::ostream &out, const Element &e) const;
+    void writeComment(std::ostream &out, const Element &e) const;
+    void writeSeparatorComment(std::ostream &out, const Element &e) const;
+    void writeInclude(std::ostream &out, const Element &e) const;
 
-    // Optimization names:
+    // Optimization methods:
     bool branchToNextLocation(size_t index);
-    bool instrFollowingUncondBranch(size_t index);
     bool lddToLDB(size_t index);
-    bool pushLoadDiscardAdd(size_t index) const;
-    bool pushBLoadAdd(size_t index) const;
-    bool pushDLoadAdd(size_t index) const;
-    bool pushLoadDLoadX(size_t index) const;
-    bool pushDLoadXLoadD(size_t index) const;
+    bool pushLoadDiscardAdd(size_t index);
+    bool pushBLoadAdd(size_t index);
+    bool pushDLoadAdd(size_t index);
+    bool pushLoadDLoadX(size_t index);
+    bool pushDLoadX(size_t index);
+    bool pushDLoadXLoadD(size_t index);
     bool loadCmpZeroBeqOrBne(size_t index);
     bool pushWordForByteComparison(size_t index);
     bool stripConsecOppositeTFRs(size_t index);
     bool stripOpToDeadReg(size_t index);
     bool stripUselessPushPull(size_t index);
-    bool stripConsecutiveLoadsToSameReg(size_t &index);
-    bool storeLoad(size_t &index);
-    bool condBranchOverUncondBranch(size_t &index);
+    bool stripUselessBitwiseOp(size_t index);
+    bool replaceLDDZero(size_t index);
+    bool stripConsecutiveLoadsToSameReg(size_t index);
+    bool storeLoad(size_t index);
+    bool condBranchOverUncondBranch(size_t index);
     bool shortenBranch(size_t index);
     bool fasterPointerIndexing(size_t index);
     bool fasterPointerPushing(size_t index);
@@ -152,13 +190,18 @@ private:
     bool optimizeStackOperations3(size_t index);
     bool optimizeStackOperations4(size_t index);
     bool optimizeStackOperations5(size_t index);
+    bool mergePushXPushD(size_t index);
+    bool mergeConsecutivePushXs(size_t index);
     bool removeClr(size_t index);
     bool removeAndOrMulAddSub(size_t index);
+    bool replaceCMPWithTST(size_t index);
     bool optimizeLoadDX(size_t index);
+    bool optimizeLoadXX(size_t index);
     bool optimizeTfrPush(size_t index);
     bool optimizeTfrOp(size_t index);
     bool removePushB(size_t index);
     bool optimizeLdbTfrClrb(size_t index);
+    bool optimizeLoadTest(size_t index);
     bool remove16BitStackOperation(size_t index);
     bool optimizePostIncrement(size_t index);
     bool removeUselessOps(size_t index);
@@ -190,33 +233,65 @@ private:
     bool removeUselessClrb(size_t index);
     bool optimizeDXAliases(size_t index);
     bool removeLoadInComparisonWithTwoValues(size_t index);
+    bool removePCRIfRelocatabilityNotSupported(size_t index);
+    bool removeCMPZeroAfterLDIfBHI(size_t index);
+    bool replaceBranchToUncondBranch(size_t index);
+    bool ldbBranchLdbCompare(size_t index);
+    bool removePushBFromLdbPushLdbCmp(size_t index);
+    bool removeLDDAfterPushingD(size_t index);
+    bool arrayIndexMul(size_t index);
+    bool removeClrAFromArrayIndexMul(size_t index);
+    bool removeRepeatedLDX(size_t index);
+    bool avoidPushingDoubledD(size_t index);
+    bool removePushBPullABeforeMul(size_t index);
+    bool removePushBBeforeSubB(size_t index);
+    bool avoidSavingConstantRegisterPassedParameter(size_t index);
+    bool removeUselessGCCCallLoads(size_t index);
+    bool functionPointerGCCCall1(size_t index);
+    bool functionPointerGCCCall2(size_t index);
+    bool removeConsecutiveLEASInstructions(size_t index);
+    bool tightenArrayElementAddressComputation(size_t index);
+    bool mul16ByConstant(size_t index);
+    bool negbToSubb(size_t index);
+    bool removeUnneededLEAS(size_t index);
 
     // Whole-function optimizer:
     bool isBasicBlockEndingInstruction(const Element &e) const;
+    bool isFunctionEndingInstruction(const Element &e) const;
     void createBasicBlock(size_t startIndex, size_t endIndex);
     void processBasicBlocks(const std::string &functionId);
     size_t findBlockIndex(size_t elementIndex) const;
 
+    void removeUselessParameterSaves();
+
+    bool removeFramePointer(size_t &index);
+
+    bool isYRegisterAllowed() const;
+
     // Utilities:
-    void removeUselessLabels();
+    size_t passCallConventionMarker(size_t index);
+    bool removeUselessLabels();
     bool isInstr(size_t index, const char *ins, const char *arg) const;
     bool isInstrAnyArg(size_t index, const char *ins) const;
     bool isInstrWithImmedArg(size_t index, const char *ins) const;
     bool isInstrWithVarArg(size_t index, const char *ins) const;
     const char *getInstr(size_t index) const;
     const char *getInstrArg(size_t index) const;
-    bool isConditionalBranch(size_t index, char inverseBranchInstr[8]) const;
+    bool isConditionalBranch(size_t index, char inverseBranchInstr[8], bool forceLongBranch = false) const;
     bool isRelativeSizeConditionalBranch(size_t index, char invertedOperandsBranchInstr[8]) const;
     uint16_t extractImmedArg(size_t index) const;
+    static int16_t extractNumericalPrefix(const std::string &s);
     void replaceWithInstr(size_t index, const char *ins, const char *arg, const char *comment);
     void replaceWithInstr(size_t index, const char *ins, const std::string &arg, const char *comment);
     void replaceWithInstr(size_t index, const char *ins, const std::string &arg = "", const std::string &comment = "");
     void insertInstr(size_t index, const char *ins, const std::string &arg = "", const std::string &comment = "");
     void commentOut(size_t index, const std::string &comment = "");
     static bool isDataDirective(const std::string &instruction);
-    size_t findNextInstrBeforeLabel(size_t index) const;
+    size_t findNextInstrBeforeLabel(size_t index, CallConvention *callConvention = NULL) const;
     size_t findNextInstr(size_t index) const;
-    size_t findLabelIndex(const std::string &label) const;
+    size_t findLabelIndex(const std::string &label, size_t startIndex = 0, size_t numElementsToSearch = 0) const;
+    size_t findLabelAroundIndex(const std::string &label, size_t index, size_t span) const;
+    bool isLabel(size_t index) const;
     bool isLabel(size_t index, const std::string &label) const;
     bool isInstrWithPreDecrOrPostIncr(size_t index) const;
     bool parseRelativeOffset(const std::string &s, int &offset);
@@ -246,24 +321,30 @@ private:
         // Key: Assembly label from a LABEL-type Element.
         // Value: Index in elements[].
 
-    struct Task
-    {
-        size_t blockIndex;  // index in basicBlocks[]
-        uint8_t liveRegsAtEnd;  // registers that are live at the end of basicBlocks[blockIndex]
-
-        Task(size_t bi, uint8_t lr) : blockIndex(bi), liveRegsAtEnd(lr) {}
-    };
-
 
     std::vector<Element> elements;
 
     std::string currentSection;  // contains non empty name when an assembly SECTION is currently open
-
-    // Used by whole-function optimizer.
+    CallConvention currentCallConvention;
+    bool yRegAllowed;
 
     LabelTable labelTable;  // key: label; value: index in elements[]
     std::vector<BasicBlock> basicBlocks;
+
+
+    typedef bool (ASMText::*OptimizingMethod)(size_t index);
+
+    static const OptimizingMethod level1OptimFuncs[];
+    static const OptimizingMethod level2OptimFuncs[];
+
+
+    static const char parameterSaveCommentPrefix[];
+    static const char cFunctionArgumentPassingCommentPrefix[];
+
 };
+
+
+std::ostream &operator << (std::ostream &out, const ASMText::Element &el);
 
 
 #endif  /* _H_ASMText */

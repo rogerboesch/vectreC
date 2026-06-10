@@ -6,7 +6,7 @@ byte textScreenWidth;
 byte textScreenHeight;
 
 
-void initCoCoSupport()
+void initCoCoSupport(void)
 {
     #ifdef _COCO_BASIC_
     word irqServiceRoutineAddress = * (word *) 0xFFF8;

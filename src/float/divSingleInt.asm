@@ -1,21 +1,25 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 divSingleInt	EXPORT
 
-divByZeroSingle         IMPORT
+divByZeroSingle_singleDividend IMPORT
 unpackXToFPA1AndDiv     IMPORT
 
 
+; Preserves X.
+;
 divSingleInt
 	ldd	4,s		; check right operand (divisor)
-	lbeq	divByZeroSingle
+        lbeq    divByZeroSingle_singleDividend
 	pshs	u,y,x
 	ldd	10,s		; right (unsigned int)
-	jsr	$B4F4		; load D (signed) into FPA0
+	flt_loadSignedDIntoFPA0
 	ldx	8,s		; left (single)
 	lbsr	unpackXToFPA1AndDiv
 	ldx	,s		; result address
-	jsr	$BC35		; pack FPA0 into X
+	flt_packFPA0ToX
 	puls	x,y,u,pc
 
 

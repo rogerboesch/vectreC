@@ -35,8 +35,8 @@ signedDivDWordDWord
 	std	6,x
 
 	ldb	8,s		; look at input B: is quotient negative?
-	bitb	#8		; N flag
-	beq	@notNeg		; branche if quotient non-negative
+	bitb	#8
+	beq	@notNeg		; branch if quotient non-negative
 	lbsr	negateDWord	; negative quotient (at X)
 @notNeg
 	leas	8,s

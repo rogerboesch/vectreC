@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 addSingleSingle	        EXPORT
@@ -16,11 +18,13 @@ binOpSingleSingle       IMPORT
 ;
 addSingleSingle
 	pshs	u,y,x
-	ldu	#$B9C2		; unpack from X to FPA1; FPA0 += FPA1
+	leau    @addNumberAtXToFPA0,PCR
 	lbsr	binOpSingleSingle
 	puls	x,y,u,pc
-
-
+;
+@addNumberAtXToFPA0
+	flt_addNumberAtXToFPA0
+	rts
 
 
 	ENDSECTION

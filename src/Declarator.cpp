@@ -1,7 +1,5 @@
-/*  $Id: Declarator.cpp,v 1.38 2020/04/04 17:41:44 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2016 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2026 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -33,6 +31,7 @@ using namespace std;
 
 
 Declarator::Declarator(const std::string &_id,
+                       size_t _functionPointerLevel,
                        const std::string &_srcFilename, int _lineno)
   : id(_id),
     srcFilename(_srcFilename),
@@ -42,6 +41,7 @@ Declarator::Declarator(const std::string &_id,
     formalParamList(NULL),
     type(SINGLETON),
     typeQualifierBitFieldVector(NULL),
+    functionPointerLevel(_functionPointerLevel),
     bitFieldWidth(NOT_BIT_FIELD)
 {
 }
@@ -53,8 +53,7 @@ Declarator::~Declarator()
     delete formalParamList;
     delete initExpr;
 
-    for (vector<Tree *>::iterator it = arraySizeExprList.begin(); it != arraySizeExprList.end(); ++it)
-        delete *it;
+    deleteVectorElements(arraySizeExprList);
 }
 
 
@@ -66,12 +65,20 @@ Declarator::setInitExpr(Tree *_initExpr)
 }
 
 
+const Tree *
+Declarator::getInitExpr() const
+{
+    return initExpr;
+}
+
+
 void
 Declarator::checkForFunctionReturningArray() const
 {
-    if (type == FUNCPTR)
+    if (isFunctionPointer())
         errormsg("`%s' declared as function returning an array", id.c_str());
 }
+
 
 void
 Declarator::addArraySizeExpr(Tree *_arraySizeExpr)
@@ -101,8 +108,8 @@ void
 Declarator::setFormalParamList(FormalParamList *_formalParamList)
 {
     //cout << "# Declarator::setFormalParamList: id='" << id << "', type=" << type << "\n";
-    assert(type == SINGLETON || type == FUNCPTR);
-    assert(!formalParamList || type == FUNCPTR);
+    assert(type == SINGLETON);
+    assert(!formalParamList || isFunctionPointer());
 
     formalParamList = _formalParamList;
 
@@ -167,28 +174,17 @@ Declarator::getNumDimensions(size_t &numDimensions) const
 }
 
 
-// Upon success, returns the size of each dimension of the array.
-// Does not return any dimension for a non-array declaration.
-//
-// Displays an error message upon failure.
-//
-// arrayDimensions: NOT cleared before elements are added, if any.
-// allowUnknownFirstDimension: if true, this unknown 1st dimension is assumed to be 1.
-//
-// declarationTree: Tree on which to call errormsg() or warnmsg(), so that
-//                  the right line number appears in the message. Allowed to be null.
-//
 bool
 Declarator::computeArrayDimensions(vector<uint16_t> &arrayDimensions,
                                    bool allowUnknownFirstDimension,
                                    const vector<Tree *> &arraySizeExprList,
                                    const string &id,
                                    const Tree *initExpr,
-                                   const Tree *declarationTree)
+                                   const Tree *errorLocation)
 {
     if (arraySizeExprList.size() == 0)
     {
-        Tree::errormsg(declarationTree, "array %s: no dimensions", id.c_str());
+        Tree::errormsg(errorLocation, "array %s: no dimensions", id.c_str());
         return false;
     }
 
@@ -197,7 +193,7 @@ Declarator::computeArrayDimensions(vector<uint16_t> &arrayDimensions,
     for (vector<Tree *>::const_iterator it = arraySizeExprList.begin(); it != arraySizeExprList.end(); ++it)
         if (*it == NULL && it != arraySizeExprList.begin())
         {
-            Tree::errormsg(declarationTree, "array %s: dimension other than first one is unspecified", id.c_str());
+            Tree::errormsg(errorLocation, "array %s: dimension other than first one is unspecified", id.c_str());
             return false;
         }
 
@@ -221,11 +217,6 @@ Declarator::computeArrayDimensions(vector<uint16_t> &arrayDimensions,
             }
             arrayDimensions.push_back(uint16_t(len));
         }
-        else if (!allowUnknownFirstDimension)
-        {
-            Tree::warnmsg(declarationTree, "array `%s' assumed to have one element", id.c_str());
-            arrayDimensions.push_back(1);
-        }
     }
 
     for (vector<Tree *>::const_iterator it = arraySizeExprList.begin(); it != arraySizeExprList.end(); ++it)
@@ -234,7 +225,14 @@ Declarator::computeArrayDimensions(vector<uint16_t> &arrayDimensions,
         if (arraySizeExpr == NULL)
         {
             if (initExpr == NULL)
+            {
+                if (it == arraySizeExprList.begin()
+                        && !allowUnknownFirstDimension
+                        && TranslationUnit::instance().warnArrayWithUnknownFirstDimension())
+                    Tree::warnmsg(errorLocation, "array `%s' assumed to have one element", id.c_str());
+
                 arrayDimensions.push_back(1);
+            }
             continue;
         }
 
@@ -253,8 +251,8 @@ Declarator::computeArrayDimensions(vector<uint16_t> &arrayDimensions,
                 arraySizeExpr->errormsg("pointer or array expression used for size of array `%s'", id.c_str());
                 return false;
             }
-            uint16_t value;
-            if (!arraySizeExpr->evaluateConstantExpr(value))
+            uint16_t value = 0;
+            if (!arraySizeExpr->evaluateConstantExpr(value))  // if size not compile-time expr
             {
                 size_t dim = it - arraySizeExprList.begin() + 1;
                 arraySizeExpr->errormsg("invalid size expression for dimension %u of array `%s'", dim, id.c_str());
@@ -280,16 +278,44 @@ Declarator::getId() const
 }
 
 
-uint16_t
-Declarator::getNumArrayElements() const
+bool
+Declarator::isFunctionPrototype() const
+{
+    return !isFunctionPointer() && functionPointerLevel == 0 && !isArray() && getFormalParamList() != NULL;
+}
+
+
+bool
+Declarator::isFunctionPointer() const
+{
+    return type == SINGLETON && functionPointerLevel == 1 && formalParamList != NULL;
+}
+
+
+bool
+Declarator::isArrayOfFunctionPointers() const
+{
+    return type == ARRAY && functionPointerLevel == 1 && formalParamList != NULL;
+}
+
+
+size_t
+Declarator::getFunctionPointerLevel() const
+{
+    return functionPointerLevel;
+}
+
+
+size_t
+Declarator::getTotalNumArrayElements(const Tree *errorLocation) const
 {
     vector<uint16_t> arrayDimensions;
-    if (!computeArrayDimensions(arrayDimensions, false, NULL))  // arrayDimensions will be empty if non-array
-        return 0;
+    if (!computeArrayDimensions(arrayDimensions, false, errorLocation))  // arrayDimensions will be empty if non-array
+        return size_t(-1);
     if (arrayDimensions.size() == 0)
-        return 0;
+        return size_t(-1);
 
-    uint16_t product = 1;
+    size_t product = 1;
     for (vector<uint16_t>::const_iterator it = arrayDimensions.begin(); it != arrayDimensions.end(); ++it)
         product *= *it;
     return product;
@@ -301,7 +327,7 @@ Declarator::setAsFunctionPointer(FormalParamList *params)
 {
     assert(params);
 
-    type = FUNCPTR;
+    type = SINGLETON;
     setFormalParamList(params);
 }
 
@@ -309,16 +335,14 @@ Declarator::setAsFunctionPointer(FormalParamList *params)
 void
 Declarator::setAsArrayOfFunctionPointers(FormalParamList *params, TreeSequence *_subscripts)
 {
-    assert(params);
     assert(_subscripts);
 
-    type = FUNCPTR;
-    setFormalParamList(params);
+    setAsFunctionPointer(params);
 
     for (vector<Tree *>::iterator it = _subscripts->begin(); it != _subscripts->end(); ++it)
-        addArraySizeExpr(*it);  // Tree ownership transfered to 'this' Declarator
+        addArraySizeExpr(*it);  // Tree ownership transferred to 'this' Declarator
 
-    _subscripts->clear();  // so that following 'delete' does not destroy the Trees, which are now owner by 'this'
+    _subscripts->clear();  // so that the following 'delete' does not destroy the Trees, which are now owned by 'this'
 
     delete _subscripts;  // does not destroy any Trees
 }
@@ -357,7 +381,7 @@ Declarator::createFormalParameter(DeclarationSpecifierList &dsl) const
 
     if (isFunctionPointer() || isArrayOfFunctionPointers())
     {
-        td = tm.getFunctionPointerType(td, *formalParamList, dsl.isInterruptServiceFunction(), dsl.isFunctionReceivingFirstParamInReg());
+        td = tm.getFunctionPointerType(td, *formalParamList, dsl.isInterruptServiceFunction(), dsl.getCallConvention());
                 // Last line does not transfer ownership of formalParamList, so still owned by 'this'.
 
         //cout << "# Declarator::createFormalParameter:   getFunctionPointerType -> {" << td->toString() << "}\n";
@@ -372,7 +396,7 @@ Declarator::createFormalParameter(DeclarationSpecifierList &dsl) const
         {
             td->appendDimensions(arrayDimensions);
 
-            // Make td point to the what td is an array (of arrays) of.
+            // Make td point to what td is an array (of arrays) of.
             while (td->isArray())
                 td = td->getPointedTypeDesc();
         }
@@ -394,7 +418,7 @@ Declarator::createFormalParameter(DeclarationSpecifierList &dsl) const
 }
 
 
-static const char *typeNames[] = { "SINGLETON", "ARRAY", "FUNCPTR" };
+static const char *typeNames[] = { "SINGLETON", "ARRAY" };
 
 
 string
@@ -406,7 +430,7 @@ Declarator::toString() const
        ss << ", with init expr";
     if (type == ARRAY)
         ss << ", array with " << arraySizeExprList.size() << " size expression(s)";
-    else if (type == FUNCPTR)
+    else if (isFunctionPointer())
         ss << ", function pointer";
     if (typeQualifierBitFieldVector != NULL)
     {
@@ -450,7 +474,7 @@ Declarator::setBitFieldWidth(Tree &bitFieldWidthExpr)
 
 
 void
-Declarator::checkBitField(const TypeDesc &typeDesc) const
+Declarator::checkBitField(const TypeDesc *typeDesc) const
 {
     if (bitFieldWidth == NOT_BIT_FIELD)
         return;
@@ -469,16 +493,79 @@ Declarator::checkBitField(const TypeDesc &typeDesc) const
         ::errormsgEx(srcFilename, lineno, "zero width for bit-field `%s'", getId().c_str());
         return;
     }
-    if (   (typeDesc.type == BYTE_TYPE && bitFieldWidth >  8)
-        || (typeDesc.type == WORD_TYPE && bitFieldWidth > 16)
-        || (typeDesc.isLong()          && bitFieldWidth > 32))
+    if (typeDesc != NULL)
     {
-        ::errormsgEx(srcFilename, lineno, "width of `%s' exceeds its type (`%s')", id.c_str(), typeDesc.toString().c_str());
+        if (   (typeDesc->type == BYTE_TYPE && bitFieldWidth >  8)
+            || (typeDesc->type == WORD_TYPE && bitFieldWidth > 16)
+            || (typeDesc->isLong()          && bitFieldWidth > 32))
+        {
+            ::errormsgEx(srcFilename, lineno, "width of `%s' exceeds its type (`%s')", id.c_str(), typeDesc->toString().c_str());
+            return;
+        }
+        if (!typeDesc->isIntegral())
+        {
+            ::errormsgEx(srcFilename, lineno, "bit-field `%s' has invalid type (`%s')", id.c_str(), typeDesc->toString().c_str());
+            return;
+        }
+    }
+    if (bitFieldWidth > 32)
+    {
+        ::errormsgEx(srcFilename, lineno, "width of bit-field `%s' exceeds maximum of 32", getId().c_str());
         return;
     }
-    if (!typeDesc.isIntegral())
+}
+
+
+void
+Declarator::processKAndRFunctionParameters(const vector<string> &paramNameList,
+                                           FormalParamList *krFormalParamList)
+{
+    assert(krFormalParamList);
+
+    // Create a FormalParamList from paramNameList and krFormalParamList.
+    // Example: In foo(a, b) char a; int b; {}
+    //          paramNameList is {"A", "B"};
+    //          krFormalParamList is "char a" and "int b".
+    //          Any parameter not specified in krFormalParamList is assumed to be int.
+    //
+    auto newFormalParamList = new FormalParamList();
+    for (const string &paramId : paramNameList)
     {
-        ::errormsgEx(srcFilename, lineno, "bit-field `%s' has invalid type (`%s')", id.c_str(), typeDesc.toString().c_str());
-        return;
+        auto jt = krFormalParamList->begin();
+        for ( ; jt != krFormalParamList->end(); ++jt)
+        {
+            const FormalParameter *fp = dynamic_cast<const FormalParameter *>(*jt);
+            assert(fp);
+            if (fp->getId() == paramId)  // if name found in kr_parameter_list_opt
+                break;
+        }
+        if (jt != krFormalParamList->end())  // if name found
+        {
+            Tree *formalParameter = *jt;
+            krFormalParamList->detachChild(formalParameter);
+            newFormalParamList->addTree(formalParameter);
+        }
+        else  // name not found, so assume int:
+        {
+            const TypeDesc *td = TranslationUnit::getTypeManager().getIntType(WORD_TYPE, true);
+            vector<uint16_t> arrayDims;  // empty means not an array
+            auto fp = new FormalParameter(td, paramId, arrayDims, string());
+            newFormalParamList->addTree(fp);
+        }
     }
+
+    // If krFormalParamList not empty, then some declarations refer to none of the names
+    // in the parenthesis: issue an error message.
+    //
+    for (auto jt = krFormalParamList->begin(); jt != krFormalParamList->end(); ++jt)
+    {
+        const FormalParameter *fp = dynamic_cast<const FormalParameter *>(*jt);
+        errormsg("declaration for parameter `%s' but function %s() has no such parameter",
+                                            fp->getId().c_str(), getId().c_str());
+    }
+
+    delete krFormalParamList;  // does not delete the trees that are now in newFormalParamList
+                               // because they were detached from krFormalParamList
+
+    setFormalParamList(newFormalParamList);
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 #
-#   $Id: install-coco-boot-loader,v 1.2 2018/03/18 17:03:52 sarrazip Exp $
+#   $Id: install-coco-boot-loader,v 1.3 2022/08/05 18:36:00 sarrazip Exp $
 #
 #   install-coco-boot-loader - A tool to write a CoCo DECB .bin file
 #                              to track 34 of a DECB disk image.
@@ -169,7 +169,7 @@ if ($install)
     
     close(BIN);
     
-    printf("Read total of \$%X (%u) null bytes of content from %s\n",
+    printf("Read total of \$%X (%u) bytes of content from %s\n",
             length($content), length($content), $binFilename) if $verbose;
 
     if (0)  # debugging: dump $contents in hex

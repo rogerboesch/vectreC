@@ -9,7 +9,7 @@
 void paletteRGB(byte slot, byte red, byte green, byte blue)
 {
     #ifdef _COCO_BASIC_
-    if (!isCoCo3)
+    if (* (word *) 0xFFF8 != 0xFEF7)  // if not CoCo 3
         return;
     if (slot > 15)
         return;
@@ -19,7 +19,5 @@ void paletteRGB(byte slot, byte red, byte green, byte blue)
                                    | ((green & 1) << 1)
                                    | ((blue  & 2) << 2)
                                    |  (blue  & 1);
-    #else
-    return;
     #endif
 }

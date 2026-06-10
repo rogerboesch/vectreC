@@ -5,9 +5,9 @@ _strstr EXPORT
 
 * char *strstr(const char *haystack, const char *needle)
 *
-_strstr pshs    u,x
-        ldx     6,s             haystack
-        ldu     8,s             needle
+_strstr pshs    u
+        ldx     4,s             haystack
+        ldu     6,s             needle
         tst     ,u              is needle empty string?
         beq     @returnX        yes: empty string found at start of haystack
 @mainLoop
@@ -25,7 +25,7 @@ _strstr pshs    u,x
         beq     @subLoop
 @badCandidate
         puls    x               back to main loop with position after candidate position
-        ldu     8,s             point to start of needle again
+        ldu     6,s             point to start of needle again
         bra     @mainLoop
 @notFound
         clra
@@ -37,7 +37,7 @@ _strstr pshs    u,x
 @returnX
         tfr     x,d
 @end
-        puls    x,u,pc
+        puls    u,pc
 
 
         ENDSECTION

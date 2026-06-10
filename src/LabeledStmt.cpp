@@ -1,7 +1,7 @@
-/*  $Id: LabeledStmt.cpp,v 1.6 2016/06/18 18:14:20 sarrazip Exp $
+/*  $Id: LabeledStmt.cpp,v 1.10 2025/09/27 23:44:50 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@
 #include "LabeledStmt.h"
 
 #include "TranslationUnit.h"
+#include "DeclarationSequence.h"
 
 using namespace std;
 
@@ -27,27 +28,28 @@ using namespace std;
 LabeledStmt::LabeledStmt(Tree *_caseExpr, Tree *_statement)
   : Tree(),
     id(),
-    asmLabel(),
+    asmLabel(TranslationUnit::instance().generateLabel('L')),
     expression(_caseExpr),
     statement(_statement)
 {
+    assert(statement);
 }
 
 
 LabeledStmt::LabeledStmt(Tree *_defaultStatement)
   : Tree(),
     id(),
-    asmLabel(),
+    asmLabel(TranslationUnit::instance().generateLabel('L')),
     expression(NULL),
     statement(_defaultStatement)
 {
 }
 
 
-LabeledStmt::LabeledStmt(const char *_id, const string &_asmLabel, Tree *_statement)
+LabeledStmt::LabeledStmt(const char *_id, Tree *_statement)
   : Tree(),
     id(_id),
-    asmLabel(_asmLabel),
+    asmLabel(TranslationUnit::instance().generateLabel('L')),
     expression(NULL),
     statement(_statement)
 {
@@ -87,8 +89,7 @@ LabeledStmt::emitCode(ASMText &out, bool lValue) const
         comment = "default statement";
     statement->writeLineNoComment(out, comment);
 
-    if (isId())
-        out.emitLabel(asmLabel, "label " + id + ", declared at " + getLineNo());
+    out.emitLabel(asmLabel, "label " + id + ", declared at " + getLineNo());
 
     if (! statement->emitCode(out, lValue))
         return false;
@@ -109,4 +110,16 @@ LabeledStmt::iterate(Functor &f)
     if (!f.close(this))
         return false;
     return true;
+}
+
+
+void
+LabeledStmt::checkSemantics(Functor &)
+{
+    if (TranslationUnit::instance().warnLabelOnDeclaration()
+        && dynamic_cast<const DeclarationSequence *>(statement) != NULL)
+    {
+        // With GCC 9.4.0, this would be an error.
+        warnmsg("a label can only be part of a statement and a declaration is not a statement");
+    }
 }

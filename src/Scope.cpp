@@ -1,4 +1,4 @@
-/*  $Id: Scope.cpp,v 1.16 2020/05/06 02:40:26 sarrazip Exp $
+/*  $Id: Scope.cpp,v 1.19 2025/09/06 18:14:20 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -87,11 +87,30 @@ Scope::getParent()
 }
 
 
+bool
+Scope::iterateDeclarations(DeclarationFunctor &f, bool processSubScopes) const
+{
+    assert(this != NULL);
+    for (DeclarationTable::const_reverse_iterator itd = declTable.rbegin(); itd != declTable.rend(); ++itd)
+        if (! f(*itd->second))  // virtual call
+            return false;  // stop iteration at request of functor call
+
+    if (processSubScopes)
+        for (vector<Scope *>::const_iterator its = subScopes.begin();
+                                             its != subScopes.end(); ++its)
+        {
+            assert(*its != NULL);
+            if (! (*its)->iterateDeclarations(f, processSubScopes))
+                return false;
+        }
+
+    return true;
+}
+
+
 int16_t
 Scope::allocateLocalVariables(int16_t displacement, bool processSubScopes, size_t &numLocalVariablesAllocated)
 {
-    /*cerr << "# Scope(" << this << ")::allocateLocalVariables("
-        << displacement << ", " << processSubScopes << "): " << subScopes.size() << " subscopes\n";*/
     for (DeclarationTable::reverse_iterator itd = declTable.rbegin(); itd != declTable.rend(); itd++)
     {
         Declaration *decl = itd->second;
@@ -100,7 +119,7 @@ Scope::allocateLocalVariables(int16_t displacement, bool processSubScopes, size_
         if (decl->hasFunctionParameterFrameDisplacement())
             continue;  // function parameter, i.e., already allocated by FunctionDef::declareFormalParams()
 
-        if (decl->isExtern)
+        if (decl->isExtern || decl->isStatic())
             continue;
 
         if (decl->isGlobal())
@@ -183,7 +202,7 @@ Scope::declareVariable(Declaration *d)
     {
         found = getVariableDeclaration(id, true);  // look in ancestor Scopes
         if (found != NULL && ! found->isGlobal())
-            d->warnmsg("Local variable `%s' hides local variable `%s' declared at %s",
+            d->warnmsg("local variable `%s' hides local variable `%s' declared at %s",
                         id.c_str(), found->getVariableId().c_str(), found->getLineNo().c_str());
     }
 
@@ -193,14 +212,22 @@ Scope::declareVariable(Declaration *d)
 
 
 Declaration *
-Scope::getVariableDeclaration(const string &id, bool lookInAncestors) const
+Scope::getVariableDeclaration(const string &id, bool lookInAncestors, bool processSubScopes) const
 {
     for (DeclarationTable::const_iterator it = declTable.begin(); it != declTable.end(); ++it)
         if (it->first == id)
             return it->second;
 
     if (lookInAncestors && parent != NULL)
-        return parent->getVariableDeclaration(id, lookInAncestors);
+    {
+        if (Declaration *decl = parent->getVariableDeclaration(id, lookInAncestors))
+            return decl;
+    }
+
+    if (processSubScopes)
+        for (vector<Scope *>::const_iterator its = subScopes.begin(); its != subScopes.end(); ++its)
+            if (Declaration *decl = (*its)->getVariableDeclaration(id, false, true))
+                return decl;
 
     return NULL;
 }
@@ -245,8 +272,12 @@ Scope::getClassDef(const std::string &className) const
 
 
 void
-Scope::getDeclarationIds(std::vector<std::string> &dest) const
+Scope::getDeclarationIds(std::vector<std::string> &dest, bool processSubScopes) const
 {
     for (DeclarationTable::const_iterator it = declTable.begin(); it != declTable.end(); it++)
         dest.push_back(it->first);
+
+    if (processSubScopes)
+        for (vector<Scope *>::const_iterator its = subScopes.begin(); its != subScopes.end(); ++its)
+            (*its)->getDeclarationIds(dest, true);
 }

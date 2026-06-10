@@ -1,7 +1,5 @@
-/*  $Id: Declaration.h,v 1.29 2019/08/17 19:52:21 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -74,25 +72,20 @@ public:
     std::string getFrameDisplacementArg(int16_t offset = 0) const;
     bool hasFunctionParameterFrameDisplacement() const;
     bool hasLocalVariableFrameDisplacement() const;
+    const Tree *getInitExpr() const;
     Tree *getInitExpr();
 
     void setGlobal(bool g);
     bool isGlobal() const;
+    bool isStatic() const;  // may be global or local
+    bool isGlobalStatic() const { return isGlobal() && isStatic(); }
+    bool isLocalStatic() const { return !isGlobal() && isStatic(); }
+    bool isDynamicInitializerForced() const { return dynamicInitializerForced; }
+    void forceDynamicInitializer() { dynamicInitializerForced = true; }
+    bool isExternal() const;
     bool isArray() const;
     void setReadOnly(bool ro);  // only used to place global variable in separate section
     bool isReadOnly() const;
-
-    // Returns true only if this object declares an array that has
-    // an initializer that only contains integer values, and no
-    // string literals.
-    //
-    bool isArrayWithOnlyNumericalLiteralInitValues() const;
-
-    // Returns true only if this object declares a struct or union that has
-    // an initializer that only contains integer values, and no
-    // string literals.
-    //
-    bool isStructWithOnlyNumericalLiteralInitValues() const;
 
     bool hasOnlyNumericalLiteralInitValues() const;
 
@@ -103,33 +96,45 @@ public:
 
     void setLabelFromVariableId();
 
+    // functionId: The ID of the function in which the local static variable is declared.
+    // A local static variable's label contains the function ID so that two functions in the
+    // same translation unit can define a local static of the same name.
+    //
+    void setLocalStaticLabel(const std::string &functionId);
+
     std::string getLabel() const;
+
+    bool emitGlobalVariables(ASMText &out, bool readOnlySection, bool withStaticInitializer) const;
+
+    // See definesOnlyAMatrixOfCharsAndHasInitializer().
+    //
+    CodeStatus emitStaticArrayOfFixedSizeStringLiterals(ASMText &out) const;
 
     // Emits FCB or FDB directives, but only if isArrayWithIntegerInitValues()
     // is true. Fails otherwise and writes nothing.
     // Returns true on success, false on failure.
     //
-    CodeStatus emitStaticArrayInitializer(ASMText &out);
+    CodeStatus emitStaticArrayInitializer(ASMText &out) const;
 
-    virtual void checkSemantics(Functor &f);
+    virtual void checkSemantics(Functor &f) override;
 
-    virtual CodeStatus emitCode(ASMText &out, bool lValue) const;
+    virtual CodeStatus emitCode(ASMText &out, bool lValue) const override;
 
-    virtual bool iterate(Functor &f);
+    virtual bool iterate(Functor &f) override;
 
-    virtual void replaceChild(Tree *existingChild, Tree *newChild)
+    virtual void replaceChild(Tree *existingChild, Tree *newChild) override
     {
         if (deleteAndAssign(initializationExpr, existingChild, newChild))
             return;
         assert(!"child not found");
     }
 
-    CodeStatus emitStaticValues(ASMText &out, Tree *arrayElementInitializer, const TypeDesc *requiredTypeDesc);
+    CodeStatus emitStaticValues(ASMText &out, const Tree *arrayElementInitializer, const TypeDesc *requiredTypeDesc) const;
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
     // Creates a Declaration and puts it in the current scope.
-    // The TypeDesc of the Declaration will 'typeDesc' unless it is null,
+    // The TypeDesc of the Declaration will be 'typeDesc' unless it is null,
     // then it will be that of 'parentExpression'.
     // The caller is responsible for deleting the returned object.
     //
@@ -145,9 +150,10 @@ public:
     std::string label;           // useful only with global declarations
     bool global;                 // true iff declaration is global
     bool readOnly;               // if true, can be put in ROM
-    bool isStatic;               // if true, the 'static' keyword was used on this declaration
+    bool hasStaticKeyword;               // if true, the 'static' keyword was used on this declaration
     bool isExtern;
     bool needsFinish;    // true means init to be completed by DeclarationFinisher after parsing done
+    bool dynamicInitializerForced;  // used for local static vars that must be init dynamically b/c of string literals
     std::vector<Tree *> arraySizeExprList;  // used by DeclarationFinisher; Tree objects owned by this Declaration
 
 private:
@@ -162,9 +168,9 @@ private:
     static void checkArrayInitializer(Tree *initializationExpr, const TypeDesc *varTypeDesc, const std::string &variableId, const std::vector<uint16_t> &arrayDimensions, size_t dimIndex);
     static void checkClassInitializer(Tree *initializationExpr, const TypeDesc *varTypeDesc, const std::string &variableId);
     static bool isRealOrLongInitWithNumber(const TypeDesc *varTypeDesc, const Tree &initializationExpr);
-    static bool isTreeSequenceWithOnlyNumericalLiterals(const TreeSequence *seq);
-    CodeStatus emitSequenceInitCode(ASMText &out, const Tree *initializer, const TypeDesc *requiredTypeDesc, int16_t arraySizeInBytes, uint16_t& writingOffset) const;
     static bool emitArrayAddress(ASMText &out, const IdentifierExpr &ie, const TypeDesc &requiredTypeDesc);
+    static CodeStatus emitTreeSequenceOfFixedSizeStringLiterals(ASMText &out, const TreeSequence *seq, uint16_t stringLiteralMaxSize);
+    CodeStatus emitInitializationExprCode(ASMText &out) const;
 
 };
 

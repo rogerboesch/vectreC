@@ -1,1 +1,6 @@
 See the AUTHORS file.
+
+Thanks to Ray Bellis for writing USim, the 6809 simulator that
+CMOC uses in its unit test system:
+
+    https://github.com/raybellis/usim

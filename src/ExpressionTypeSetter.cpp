@@ -1,7 +1,5 @@
-/*  $Id: ExpressionTypeSetter.cpp,v 1.74 2020/04/05 03:16:01 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2024 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -31,6 +29,7 @@
 #include "IdentifierExpr.h"
 #include "CommaExpr.h"
 #include "Declaration.h"
+#include "FunctionDef.h"
 
 using namespace std;
 
@@ -42,6 +41,45 @@ ExpressionTypeSetter::ExpressionTypeSetter()
 
 ExpressionTypeSetter::~ExpressionTypeSetter()
 {
+}
+
+
+void
+ExpressionTypeSetter::checkForByteOperandsGivingByte(BinaryOpExpr *bin)
+{
+    if (!TranslationUnit::instance().warnOnBinaryOpGivingByte())
+        return;
+    switch (bin->getOperator())
+    {
+        case BinaryOpExpr::ADD:
+        case BinaryOpExpr::SUB:
+        case BinaryOpExpr::MUL:
+        case BinaryOpExpr::DIV:
+        case BinaryOpExpr::MOD:
+        {
+            if (   dynamic_cast<CastExpr *>(bin->getLeft())  != NULL
+                || dynamic_cast<CastExpr *>(bin->getRight()) != NULL)
+                break;  // no warning if one of the operands has a cast
+
+            if (bin->getType() == BYTE_TYPE && bin->getLeft()->getType()  == BYTE_TYPE
+                                            && bin->getRight()->getType() == BYTE_TYPE)
+            {
+                bin->warnmsg("operator `%s' on two byte-sized arguments gives byte under CMOC, unlike under Standard C",
+                            bin->getOperatorName());
+            }
+            break;
+        }
+        default:
+            ;
+    }
+}
+
+
+static bool
+is0To127Constant(const Tree &expr)
+{
+    uint16_t result = 0;
+    return expr.evaluateConstantExpr(result) && result <= 127;
 }
 
 
@@ -64,13 +102,17 @@ ExpressionTypeSetter::close(Tree *t)
     {
         if (tu.isWarningOnSignCompareEnabled()
             && bin->isOrderComparisonOperator()
-            && bin->getLeft()->isSigned() != bin->getRight()->isSigned())
+            && bin->getLeft()->isSigned() != bin->getRight()->isSigned()
+            && ! is0To127Constant(*bin->getRight()))  // patch: do not warn in case of e.g., unsignedInt > 100
         {
             bin->warnmsg("comparison of integers of different signs (`%s' vs `%s'); using unsigned comparison",
                          bin->getLeft()->getTypeDesc()->toString().c_str(),
                          bin->getRight()->getTypeDesc()->toString().c_str());
         }
-        return processBinOp(bin);
+        if (!processBinOp(bin))
+            return false;
+        checkForByteOperandsGivingByte(bin);
+        return true;
     }
 
     UnaryOpExpr *un = dynamic_cast<UnaryOpExpr *>(t);
@@ -168,7 +210,16 @@ ExpressionTypeSetter::close(Tree *t)
             return true;  // error message issued
 
         assert(mi->getTypeDesc()->type != VOID_TYPE);
-        om->setTypeDesc(mi->getTypeDesc());
+        const TypeDesc *td = mi->getTypeDesc();
+
+        // Make the type 'const' in some situations.
+        if (   ( om->isDirect() && subExpr->getTypeDesc()->isConstAtFirstLevel())  // if 'const Object obj' and 'om' is 'obj.member'
+            || (!om->isDirect() && subExpr->getTypeDesc()->isPointerToOrArrayOfConst()))  // if ptr to object is 'const' type, e.g., p->x where p is const Complex *
+        {
+            td = TranslationUnit::getTypeManager().getConst(td);
+        }
+        om->setTypeDesc(td);
+
         return true;
     }
 
@@ -212,6 +263,7 @@ ExpressionTypeSetter::close(Tree *t)
                 t->setTypeDesc(td);
 
         }
+        return true;
     }
 
     // Comma expression (e.g., "x = 1, y = 2;").
@@ -227,6 +279,7 @@ ExpressionTypeSetter::close(Tree *t)
             else
                 t->setTypeDesc(subExprTD);
         }
+        return true;
     }
 
     return true;
@@ -306,6 +359,18 @@ assigningNullToPointer(const TypeDesc &leftTD, const Tree &right)
 }
 
 
+static bool
+isVoidButNotEnumeratorName(const Tree &tree)
+{
+    if (tree.getTypeDesc()->type != VOID_TYPE)
+        return false;
+    const IdentifierExpr *ie = dynamic_cast<const IdentifierExpr *>(&tree);
+    if (ie == NULL)
+        return true;  // not an enum name because not an ID
+    return ! TranslationUnit::getTypeManager().isEnumeratorName(ie->getId());
+}
+
+
 // This function always return true, to allow all parts of a tree to have
 // their expression type set.
 //
@@ -319,11 +384,14 @@ ExpressionTypeSetter::processBinOp(BinaryOpExpr *bin)
     const TypeDesc *leftTD = left->getTypeDesc();
     const TypeDesc *rightTD = right->getTypeDesc();
 
+    // Reject a void operand unless it is an enumerated name.
+    // In the parsing stage, enumerated names have not necessarily been processed yet.
+    //
     assert(leftTD);
     assert(rightTD);
-    if (leftTD->type == VOID_TYPE)
+    if (isVoidButNotEnumeratorName(*left))
         left->errormsg("left side of operator %s is of type void", ot);
-    if (rightTD->type == VOID_TYPE)
+    if (isVoidButNotEnumeratorName(*right))
         right->errormsg("right side of operator %s is of type void", ot);
 
     switch (oper)
@@ -479,9 +547,11 @@ ExpressionTypeSetter::processBinOp(BinaryOpExpr *bin)
                     else
                         right->warnmsg("assigning non-pointer/array (%s) to `%s'", rightTD->toString().c_str(), leftTD->toString().c_str());
                     break;
-                case FunctionCallExpr::WARN_PASSING_CONSTANT_FOR_PTR:
-                    if (TranslationUnit::instance().isWarningOnPassingConstForFuncPtr())  // if -Wpass-const-for-func-pointer
-                        right->warnmsg("assigning non-zero numeric constant to `%s'", leftTD->toString().c_str());
+                case FunctionCallExpr::WARN_PASSING_CHAR_CONSTANT_FOR_PTR:
+                    right->warnmsg("assigning character constant to `%s'", leftTD->toString().c_str());
+                    break;
+                case FunctionCallExpr::WARN_PASSING_NON_ZERO_CONSTANT_FOR_PTR:
+                    right->warnmsg("assigning non-zero numeric constant to `%s'", leftTD->toString().c_str());
                     break;
                 case FunctionCallExpr::WARN_ARGUMENT_TOO_LARGE:
                     right->warnmsg("assigning to `%s' from larger type `%s'", leftTD->toString().c_str(), rightTD->toString().c_str());
@@ -497,6 +567,9 @@ ExpressionTypeSetter::processBinOp(BinaryOpExpr *bin)
                     break;
                 case FunctionCallExpr::WARNING_VOID_POINTER:
                     right->warnmsg("assigning `%s' to `%s' (implicit cast of void pointer)", rightTD->toString().c_str(), leftTD->toString().c_str());
+                    break;
+                case FunctionCallExpr::WARN_PTR_FOR_INTEGRAL:
+                    right->warnmsg("assigning pointer type `%s' to `%s`", rightTD->toString().c_str(), leftTD->toString().c_str());
                     break;
                 case FunctionCallExpr::ERROR_MSG:
                     if (leftTD->type != VOID_TYPE && !assigningNullToPointer(*leftTD, *right))  // error message issued elsewhere

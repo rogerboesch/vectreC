@@ -16,11 +16,11 @@ my @testCaseList =
 
 {
 title => q{Empty source file},
-suspended => 1,  # Suspended b/c Mac OS X cpp appears to generate 1-line output, so error line no is 2 instead of 1.  
 program => q!!,
 expected => [
     qq!lwlink: __error__: External symbol program_start not found!,
     qq!lwlink: __error__: Cannot resolve exec address 'program_start'!,
+    qq!cmoc: __fatal error__: linker failed.!,
     ]
 },
 
@@ -71,11 +71,13 @@ program => q!
     void h() { return 42; }
     int i() { return; }
     asm int a() { asm { ldd #1844 } }  // OK because function is asm only 
+        int b() { f(); asm { ldd #1844 } }  // OK because last statement is asm{}
+        int c() { asm { ldd #1844 } }  // same
     !,
 expected => [ qq!,check-prog.c:3: __warning__: function 'f' is not void but does not have any return statement!,
               qq!,check-prog.c:4: __warning__: function 'g' is not void but does not have any return statement!,
               qq!,check-prog.c:5: __error__: returning expression of type `int', which differs from function's return type (`void')!,
-              qq!,check-prog.c:6: __error__: return without argument in a non-void function!,
+              qq!,check-prog.c:6: __warning__: return without argument in a non-void function!,
             ]
 },
 
@@ -95,7 +97,7 @@ program => q!
 expected => [
     qq!,check-prog.c:4: __warning__: initializing pointer 'p0' from negative constant!,
     qq!,check-prog.c:6: __warning__: initializing pointer 'p2' from integer expression!,
-    qq!,check-prog.c:6: __error__: calling undeclared function f()!,
+    qq!,check-prog.c:6: __warning__: calling undeclared function f()!,
     ]
 },
 
@@ -260,31 +262,39 @@ expected => [
 
 
 {
-title => q{Global variable too large},
+title => q{Invalid dimensions for array},
 program => q!
-    int w[50000];
+    int global0[50000];
+    int global1[-1];
+    char globalMatrix[1000][2000];
+    struct S
+    {
+        char member0[-1];  // this must give an err msg even if struct not instantiated
+        char member1[45000];  // ditto
+    };
+    struct T  // this struct gets instantiatied; compiler not assert on that instance
+    {
+        char m[-1];
+    };
     int main()
     {
+        char local0[40000];
+        char local1[-1];
+        char localMatrix[1000][2000];
+        struct T t;  // must not assert on this line
         return 0;
     }
     !,
 expected => [
-    qq!,check-prog.c:2: __error__: invalid dimensions for array `w'!,
-    ]
-},
-
-
-{
-title => q{Local variable too large},
-program => q!
-    int main()
-    {
-        char b[40000];
-        return 0;
-    }
-    !,
-expected => [
-    qq!,check-prog.c:4: __error__: invalid dimensions for array `b'!,
+    qq!,check-prog.c:7: __error__: invalid dimensions for member array `member0' in struct `S'!,
+    qq!,check-prog.c:8: __error__: invalid dimensions for member array `member1' in struct `S'!,
+    qq!,check-prog.c:12: __error__: invalid dimensions for member array `m' in struct `T'!,
+    qq!,check-prog.c:2: __error__: invalid dimensions for array `global0'!,
+    qq!,check-prog.c:3: __error__: invalid dimensions for array `global1'!,
+    qq!,check-prog.c:4: __error__: invalid dimensions for array `globalMatrix'!,
+    qq!,check-prog.c:18: __error__: invalid dimensions for array `localMatrix'!,
+    qq!,check-prog.c:17: __error__: invalid dimensions for array `local1'!,
+    qq!,check-prog.c:16: __error__: invalid dimensions for array `local0'!,
     ]
 },
 
@@ -441,8 +451,8 @@ program => q!
 expected => [
     qq!,check-prog.c:15: __error__: undeclared identifier `obligatory_error'!,
     qq!,check-prog.c:10: __warning__: not enough arguments to printf() to match its format string!,
-    qq!,check-prog.c:11: __warning__: no letter follows last % in printf() format string!,
-    qq!,check-prog.c:12: __warning__: no letter follows last % in printf() format string!,
+    qq!,check-prog.c:11: __warning__: no conversion specifier follows % in printf() format string!,
+    qq!,check-prog.c:12: __warning__: no conversion specifier follows % in printf() format string!,
     qq!,check-prog.c:13: __warning__: too many arguments for printf() format string!,
     ]
 },
@@ -481,8 +491,6 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:2: __error__: using `const char[]' to initialize `char'!,
-    qq!,check-prog.c:2: __error__: using `const char[]' to initialize `char'!,
     qq!,check-prog.c:2: __error__: using `const char[]' to initialize `char'!,
     ]
 },
@@ -625,26 +633,22 @@ program => q!
     {
         f0();
         f1();
-
-
         return 0;
     }
     void f1()
     {
     }
-    void f4(int n)
+    void f4(int n)  // tolerated since CMOC 0.1.75 to help compile old programs
     {
     }
     void f5(int a);
     void f5(int a, ...);
     !,
 expected => [
-    qq!,check-prog.c:4: __error__: formal parameters for f3() are different from previously declared at ,check-prog.c:3!,
-    qq!,check-prog.c:17: __error__: formal parameters for f4() are different from previously declared at ,check-prog.c:5!,
-    qq!,check-prog.c:21: __error__: formal parameters for f5() are different from previously declared at ,check-prog.c:20!,
-    qq!,check-prog.c:8: __error__: undeclared identifier `f0'!,
-    qq!,check-prog.c:8: __error__: calling undeclared function f0()!,
-    qq!,check-prog.c:9: __error__: calling undeclared function f1()!,
+    qq!,check-prog.c:4: __error__: formal parameters for f3() are different from previously declared at ,check-prog.c:3: `void f3(...)' vs `void f3(int)'!,
+    qq!,check-prog.c:19: __error__: formal parameters for f5() are different from previously declared at ,check-prog.c:18: `void f5(int, ...)' vs `void f5(int)'!,
+    qq!,check-prog.c:8: __warning__: calling undeclared function f0()!,
+    qq!,check-prog.c:9: __warning__: calling undeclared function f1()!,
     ]
 },
 
@@ -712,30 +716,28 @@ program => q!
             case 3:  // duplicate case value
                 ;
         }
-        switch ((long) 0) { default: ; }
-        switch ((float) 0) { default: ; }
-        switch ((double) 0) { default: ; }
+        switch ((long) 0) { default: ; }  // long supported in switch expression
+        switch (1) { case 100000: ; }  // long supported in case
+        switch (1) { case 42UL: ; }  // unsigned long supported in case
+        break;
         return 0;
     }
     !,
 expected => [
-    qq!,check-prog.c:22: __warning__: floating-point arithmetic is not supported on this platform!,
-    qq!,check-prog.c:23: __warning__: `double' is an alias for `float' for this compiler!,
     qq!,check-prog.c:6: __error__: case statement has a variable expression!,
-    qq!,check-prog.c:7: __error__: statement in switch precedes first `case' or `default' statement!,
+    qq!,check-prog.c:7: __warning__: statement in switch precedes first `case' or `default' statement!,
     qq!,check-prog.c:9: __warning__: switch expression is signed char but case value is not in range -128..127!,
     qq!,check-prog.c:11: __warning__: switch expression is unsigned char but case value is not in range 0..255!,
     qq!,check-prog.c:12: __error__: more than one default statement in switch!,
     qq!,check-prog.c:18: __error__: duplicate case value (first used at ,check-prog.c:16)!,
-    qq!,check-prog.c:21: __error__: switch() expression of type `long' is not supported!,
-    qq!,check-prog.c:22: __error__: switch() expression of type `float' is not supported!,
-    qq!,check-prog.c:23: __error__: switch() expression of type `float' is not supported!,
+    qq!,check-prog.c:13: __error__: continue statement not within a loop!,
+    qq!,check-prog.c:24: __error__: break statement not within loop or switch!,
     ]
 },
 
 
 {
-title => q{Continue in a switch (not supported)},
+title => q{Continue in a switch not within a loop},
 program => q!
     int f() { return 42; }
     int main()
@@ -746,7 +748,7 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:5: __error__: continue statement is not supported in a switch!,
+    qq!,check-prog.c:5: __error__: continue statement not within a loop!,
     ]
 },
 
@@ -769,6 +771,27 @@ expected => [
 },
 
 
+{
+title => q{continue/break outside of a breakable statement},
+program => q!
+    void f(void)
+    {
+        continue;
+    }
+    int main()
+    {
+        f();
+        break;
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:4: __error__: continue statement not within a loop!,
+    qq!,check-prog.c:9: __error__: break statement not within loop or switch!,
+    ]
+},
+
+
 
 {
 title => q{Invalid usage of "#pragma org"},
@@ -780,7 +803,7 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:2: __error__: invalid pragma directive: org pizza!,
+    qq!,check-prog.c:2: __warning__: invalid pragma directive: org pizza!,
     ]
 },
 
@@ -790,6 +813,7 @@ title => q{Passing a wrong type to a function expecting a non-void pointer},
 program => q!
     struct S {};
     void f(struct S *p) {}
+    void g(const char *s) {}
     struct T {}; union U {};
     int main()
     {
@@ -804,13 +828,17 @@ program => q!
         f(&s);  // OK
         union U u;
         f(&u);
+        g(' ');
+        g(32);  // OK
+        g(1000);  // OK
         return 0;
     }
     !,
 expected => [
-    qq!,check-prog.c:11: __error__: `int *' used as parameter 1 (p) of function f() which is `struct S *'!,
-    qq!,check-prog.c:13: __error__: `struct T *' used as parameter 1 (p) of function f() which is `struct S *'!,
-    qq!,check-prog.c:17: __error__: `union U *' used as parameter 1 (p) of function f() which is `struct S *'!,
+    qq!,check-prog.c:12: __error__: `int *' used as parameter 1 (p) of function f() which is `struct S *'!,
+    qq!,check-prog.c:14: __error__: `struct T *' used as parameter 1 (p) of function f() which is `struct S *'!,
+    qq!,check-prog.c:18: __error__: `union U *' used as parameter 1 (p) of function f() which is `struct S *'!,
+    qq!,check-prog.c:19: __warning__: passing character constant as parameter 1 (s) of function g(), which is `const char *'!,
     ]
 },
 
@@ -848,7 +876,7 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:5: __error__: reference to member `n' of undefined class `S'!,
+    qq!,check-prog.c:5: __error__: reference to member `n' of undefined struct `S'!,
     qq!,check-prog.c:5: __error__: left side of operator = is of type void!,
     ]
 },
@@ -1044,6 +1072,31 @@ expected => [
 
 
 {
+title => q{Wrong signature on OS-9 interrupt handler},
+target => "os9",
+program => q!
+    interrupt void isr0() {}  // tolerated for backward compatibility
+    interrupt void isr1(void) {}  // ditto
+    interrupt void isr2(char a) {}  // wrong signedness
+    interrupt void isr3(int i) {}  // wrong size
+    interrupt void isr4(char a, long b) {}  // too may parameters
+    interrupt void isr5(unsigned char x) {}  // wrong calling convention
+    interrupt _CMOC_fpir_ void isr6(unsigned char x) {}  // OK
+    int main()
+    {
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:4: __warning__: interrupt service routine isr2() on targeted platform OS-9 should receive a single `unsigned char' parameter and use the __gcccall keyword!,
+    qq!,check-prog.c:5: __warning__: interrupt service routine isr3() on targeted platform OS-9 should receive a single `unsigned char' parameter and use the __gcccall keyword!,
+    qq!,check-prog.c:6: __warning__: interrupt service routine isr4() on targeted platform OS-9 should receive a single `unsigned char' parameter and use the __gcccall keyword!,
+    qq!,check-prog.c:7: __warning__: interrupt service routine isr5() on targeted platform OS-9 should receive a single `unsigned char' parameter and use the __gcccall keyword!,
+    ]
+},
+
+
+{
 title => q{Struct with field of undefined struct},
 program => q!
     struct Outer
@@ -1177,7 +1230,7 @@ expected => [
 
 
 {
-title => q{Function prototype local to a function body},
+title => q{Return type for function prototype different from previously declared},
 program => q!
     void f() {}
     int g()
@@ -1191,7 +1244,23 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:5: __error__: invalid declaration!,
+    qq!,check-prog.c:5: __error__: return type for f() is different from previously declared at ,check-prog.c:2: `char *f(...)' vs `void f(...)'!,
+    ]
+},
+
+
+{
+title => q{Wrong type of pointer to point to a function declared by a local prototype},
+program => q!
+    int main()
+    {
+        char *f(int, long *);
+        int *p = f;
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:5: __error__: using `char *(*)(int, long *)' to initialize `int *'!,
     ]
 },
 
@@ -1199,7 +1268,7 @@ expected => [
 {
 title => q{Correct line number in error message when using function address to initialize char},
 program => q!
-    char f() { return 42; }
+    char f(void) { return 42; }
     int main()
     {
         char b = f;
@@ -1207,7 +1276,7 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:5: __error__: using `char (*)()' to initialize `char'!,
+    qq!,check-prog.c:5: __error__: using `char (*)(void)' to initialize `char'!,
     ]
 },
 
@@ -1248,11 +1317,9 @@ program => q!
     !,
 expected => [
     qq!,check-prog.c:4: __error__: undeclared identifier `a'!,
-    qq!,check-prog.c:4: __error__: undeclared identifier `a'!,
     qq!,check-prog.c:4: __error__: argument of sizeof operator is of type void!,
     qq!,check-prog.c:4: __error__: left side of operator [] is of type void!,
     qq!,check-prog.c:4: __error__: array reference on non array or pointer!,
-    qq!,check-prog.c:4: __error__: argument of sizeof operator is of type void!,
     qq!,check-prog.c:4: __error__: l-value required as left operand of array reference!,
     ]
 },
@@ -1405,7 +1472,7 @@ program => q!
     {
         char *p;
         int i;
-        g(i > 0 ? p : i);
+        i > 0 ? p : i;
         g(i > 0 ? (char) 0x12 : i);
         unsigned char ub = 42;
         g(i > 0 ? 256 : ub);  // warning because 256 is signed
@@ -1515,10 +1582,11 @@ program => q!
     static int g1;  // duplicates previous declaration
     static int g2;
     extern int g2;
+    int f();
     int main()
     {
         extern int g3;
-        static int g4;  // local static not supported
+        static int g4 = f();  // local static vars supported by CMOC >= 0.1.76, but C does not support run-time initializers
         g4 = 1;
         return 0;
     }
@@ -1526,7 +1594,7 @@ program => q!
 expected => [
     qq!,check-prog.c:3: __error__: global variable `g0' already declared at global scope at ,check-prog.c:2!,
     qq!,check-prog.c:5: __error__: global variable `g1' already declared at global scope at ,check-prog.c:4!,
-    qq!,check-prog.c:11: __error__: local static variables are not supported!,
+    qq!,check-prog.c:12: __error__: initializer for local static variable `g4' is not constant!,
     ]
 },
 
@@ -1667,14 +1735,14 @@ program => q!
         enum { X } localEnumVar;
         enum E { E0 } otherLocalEnumVar;
         funcTakingA(A0);  // ok
-        funcTakingA(5);   // error: 5 not member of enum A
-        funcTakingA(D0);  // error: D0 not member of enum A
+        funcTakingA(5);   // warning: 5 not member of enum A
+        funcTakingA(D0);  // warning: D0 not member of enum A
         return 0;
     }
     !,
 expected => [
-    qq!,check-prog.c:15: __error__: parameter 1 of function funcTakingA() must be a member of enum A!,
-    qq!,check-prog.c:16: __error__: `D0' used as parameter 1 of function funcTakingA() but is not a member of enum A!,
+    qq!,check-prog.c:15: __warning__: parameter 1 of function funcTakingA() is not a member of enum A!,
+    qq!,check-prog.c:16: __warning__: `D0' used as parameter 1 of function funcTakingA() but is not a member of enum A!,
     qq!,check-prog.c:12: __error__: non-global enum not supported!,
     qq!,check-prog.c:13: __error__: non-global enum not supported!,
     ]
@@ -1692,31 +1760,7 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:3: __error__: syntax error: E!,
-    ]
-},
-
-
-{
-title => q{Using an enum name, defined by multiplying two integers, before having declared that name},
-program => q!
-    enum
-    {
-        S = 75,
-        E = 1000,
-        B = E,
-        T = B - S,
-        G = T - P,
-        P = 4 * 2000
-    };
-    int main()
-    {
-        return 0;
-    }
-    !,
-expected => [
-    qq!,check-prog.c:8: __error__: right side of operator - is of type void!,
-        # Not a good error message: we should mention that "P" is undeclared.
+    qq!,check-prog.c:3: __error__: syntax error: e!,
     ]
 },
 
@@ -1743,6 +1787,7 @@ title => q{Named argument required before ellipsis of variadic function declarat
 program => q!
     void functionWithNoNamedArg(...) {}
     void prototypeWithNoNamedArg(...);
+    void prototypeWithEmptyParenAsInKandRC();  // no error because ellipsis is not explicit
     int main()
     {
         return 0;
@@ -1809,6 +1854,10 @@ expected => [
 {
 title => q{Various array errors},
 program => q!
+    struct S
+    {
+        char a[];
+    };
     int main()
     {
         int a0[];
@@ -1816,14 +1865,33 @@ program => q!
         int a3["foo"];
         int n = 5;
         int a4[n];
+        struct S s0;
+        struct S s1;
+        struct S s2;
         return 0;
     }
     !,
 expected => [
-    qq!,check-prog.c:4: __warning__: array `a0' assumed to have one element!,
-    qq!,check-prog.c:5: __error__: array a1: dimension other than first one is unspecified!,
-    qq!,check-prog.c:6: __error__: pointer or array expression used for size of array `a3'!,
-    qq!,check-prog.c:8: __error__: invalid size expression for dimension 1 of array `a4'!,
+    qq!,check-prog.c:4: __warning__: array `a' assumed to have one element!,
+    qq!,check-prog.c:8: __warning__: array `a0' assumed to have one element!,
+    qq!,check-prog.c:9: __error__: array a1: dimension other than first one is unspecified!,
+    qq!,check-prog.c:10: __error__: pointer or array expression used for size of array `a3'!,
+    qq!,check-prog.c:12: __error__: invalid size expression for dimension 1 of array `a4'!,
+    ]
+},
+
+
+{
+title => q{-Wno-unknown-first-dim},
+options => "-Wno-unknown-first-dim",
+program => q!
+    int main()
+    {
+        int a0[];
+        return 0;
+    }
+    !,
+expected => [
     ]
 },
 
@@ -1947,16 +2015,35 @@ program => q!
         int empty[] = {};
         return 0;
     }
+    struct S1 { int emptyMemberArray[0]; };
     !,
 expected => [
-    qq!,check-prog.c:3: __error__: invalid dimensions for array `gEmpty'!,
-    qq!,check-prog.c:6: __error__: too many elements (4) in initializer for array of 3 element(s)!,
+    qq!,check-prog.c:16: __warning__: array member `emptyMemberArray' of struct `S1' has size zero!,
+    qq!,check-prog.c:3: __warning__: array variable `gEmpty` has size zero!,
+    qq!,check-prog.c:13: __warning__: array variable `empty` has size zero!,
+    qq!,check-prog.c:6: __warning__: too many elements (4) in initializer for array of 3 element(s)!,
     qq!,check-prog.c:7: __warning__: only 2 element(s) in initializer for array of 3 element(s)!,
     qq!,check-prog.c:8: __error__: too many characters (4) in string literal initializer for array of 3 character(s)!,
     qq!,check-prog.c:9: __error__: too many characters (7) in string literal initializer for array of 3 character(s)!,
-    qq!,check-prog.c:11: __error__: too many elements (4) in initializer for array of 3 element(s)!,
+    qq!,check-prog.c:11: __warning__: too many elements (4) in initializer for array of 3 element(s)!,
     qq!,check-prog.c:12: __warning__: only 2 element(s) in initializer for array of 3 element(s)!,
-    qq!,check-prog.c:13: __error__: invalid dimensions for array `empty'!,
+    ]
+},
+
+
+{
+title => q{Option -Wno-array-size-zero},
+options => "-Wno-array-size-zero",
+program => q!
+    struct S { int emptyMemberArray[0]; };
+    int gEmpty[0];
+    int main()
+    {
+        int empty[0];
+        return 0;
+    }
+    !,
+expected => [
     ]
 },
 
@@ -2050,12 +2137,12 @@ expected => [
 {
 title => q{Function name used where function pointer pointer expected},
 program => q`
-    typedef char (*FuncPtrType)();
+    typedef char (*FuncPtrType)(void);
     struct S1
     {
         FuncPtrType *funcPtrPtr;  // pointer to pointer to function
     };
-    char f() { return 0; }  // of type FuncPtrType
+    char f(void) { return 0; }  // of type FuncPtrType
     int main()
     {
         struct S1 s1 = { f };  // error: assigning void * to pointer to pointer to function
@@ -2063,7 +2150,7 @@ program => q`
     }
     `,
 expected => [
-    qq!,check-prog.c:10: __error__: using `char (*)()' to initialize `char (*)()*'!,
+    qq!,check-prog.c:10: __error__: using `char (*)(void)' to initialize `char (**)(void)'!,
     ]
 },
 
@@ -2101,16 +2188,15 @@ program => q!
             }
             break;
         }
-        asm { clr :ch }  // error: ch not declared yet
+        asm { clr :ch }  // not an error but not recommended: ch not declared yet
         char ch;
         return 0;
     }
     !,
 expected => [
-    qq!,check-prog.c:7: __error__: undeclared identifier `' in assembly language statement!,
-    qq!,check-prog.c:7: __error__: undeclared identifier `foo' in assembly language statement!,
     qq!,check-prog.c:7: __error__: undeclared identifier `y' in assembly language statement!,
-    qq!,check-prog.c:15: __error__: undeclared identifier `ch' in assembly language statement!,
+    qq!,check-prog.c:7: __error__: undeclared identifier `foo' in assembly language statement!,
+    qq!,check-prog.c:7: __error__: undeclared identifier `' in assembly language statement!,
     ]
 },
 
@@ -2174,7 +2260,7 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:4: __warning__: floating-point arithmetic is not supported on this platform!,
+    qq!,check-prog.c:4: __warning__: floating-point arithmetic is not supported on the targeted platform!,
     qq!,check-prog.c:5: __warning__: `double' is an alias for `float' for this compiler!,
     qq!,check-prog.c:7: __error__: assigning `float *' to `float'!,
     qq!,check-prog.c:8: __warning__: assigning non-pointer/array (float) to `float *'!,
@@ -2187,7 +2273,7 @@ expected => [
 
 
 {
-title => q{Floating-point arithmetic},
+title => q{Signed and unsigned modifiers applied to float or double},
 program => q!
     int main()
     {
@@ -2199,7 +2285,7 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:4: __warning__: floating-point arithmetic is not supported on this platform!,
+    qq!,check-prog.c:4: __warning__: floating-point arithmetic is not supported on the targeted platform!,
     qq!,check-prog.c:4: __error__: signed and unsigned modifiers can only be applied to integral type!,
     qq!,check-prog.c:5: __error__: signed and unsigned modifiers can only be applied to integral type!,
     qq!,check-prog.c:6: __warning__: `double' is an alias for `float' for this compiler!,
@@ -2224,6 +2310,25 @@ program => q!
     !,
 expected => [
     qq!,check-prog.c:3: __warning__: static function unused() is not called!,
+    ]
+},
+
+
+{
+title => q{Uncalled static function, with warning disabled},
+options => "-Wno-uncalled-static",
+linkerModeOnly => 1,
+program => q!
+    static void used() {}
+    static void unused() {}  // warning expected
+    void usedButExported() {}  // no warning expected
+    int main()
+    {
+        used();
+        return 0;
+    }
+    !,
+expected => [
     ]
 },
 
@@ -2290,18 +2395,14 @@ program => q!
             return 1;
         if (a == 1UL)
             return 1;
-        if (a == 0.0f)
-            return 1;
-        if (a == 1.5f)
-            return 1;
+
+
+
+
         int *b; 
         if (0UL == b)
             return 1;
         if (-4L == b)
-            return 1;
-        if (b == 1.5f)
-            return 1;
-        if (1.5f == b)
             return 1;
         return 0;
     }
@@ -2309,11 +2410,7 @@ program => q!
 expected => [
     qq!,check-prog.c:9: __error__: comparison between pointer (int[]) and integer (long)!,
     qq!,check-prog.c:11: __error__: comparison between pointer (int[]) and integer (unsigned long)!,
-    qq!,check-prog.c:13: __error__: comparison between pointer (int[]) and integer (float)!,
-    qq!,check-prog.c:15: __error__: comparison between pointer (int[]) and integer (float)!,
     qq!,check-prog.c:20: __error__: comparison between pointer (int *) and integer (long)!,
-    qq!,check-prog.c:22: __error__: comparison between pointer (int *) and integer (float)!,
-    qq!,check-prog.c:24: __error__: comparison between pointer (int *) and integer (float)!,
     ]
 },
 
@@ -2423,7 +2520,7 @@ expected => [
     qq!,check-prog.c:20: __warning__: assigning `char *' to `char * const' is not const-correct!,
     qq!,check-prog.c:26: __warning__: assigning `const char[]' to `char *' is not const-correct!,
     qq!,check-prog.c:30: __warning__: assigning `char' to `const char' is not const-correct!,
-    qq!,check-prog.c:13: __warning__: incrementing a constant expression (type is `const int')!,
+    qq!,check-prog.c:13: __warning__: incrementing expression of type `const int' is not const-correct!,
     qq!,check-prog.c:25: __warning__: initializing non-constant `char *' (yourbuf) from `const char[]'!,
     qq!,check-prog.c:40: __warning__: assigning `int' to `const int' is not const-correct!,
     qq!,check-prog.c:43: __warning__: assigning `const int *' to `int *' is not const-correct!,
@@ -2432,13 +2529,13 @@ expected => [
     qq!,check-prog.c:52: __warning__: `const int *' used as parameter 1 (p) of function takesNonConstIntPtr() which is `int *' (not const-correct)!,
     qq!,check-prog.c:53: __warning__: `const int *' used as parameter 1 (p) of function takesNonConstIntPtr() which is `int *' (not const-correct)!,
     qq!,check-prog.c:55: __warning__: `const int *' used as parameter 1 (p) of function takesNonConstIntPtr() which is `int *' (not const-correct)!,
-    qq!,check-prog.c:38: __warning__: incrementing a constant expression (type is `const int')!,
+    qq!,check-prog.c:38: __warning__: incrementing expression of type `const int' is not const-correct!,
     qq!,check-prog.c:41: __warning__: using `const int *' to initialize `int *' is not const-correct!,
-    qq!,check-prog.c:51: __warning__: incrementing a constant expression (type is `const int')!,
+    qq!,check-prog.c:51: __warning__: incrementing expression of type `const int' is not const-correct!,
     qq!,check-prog.c:67: __warning__: assigning `const char[]' to `char *' is not const-correct!,
     qq!,check-prog.c:68: __warning__: assigning `int' to `const int' is not const-correct!,
     qq!,check-prog.c:66: __warning__: initializing non-constant `char *' (s) from `const char[]'!,
-    qq!,check-prog.c:69: __warning__: incrementing a constant expression (type is `const int')!,
+    qq!,check-prog.c:69: __warning__: incrementing expression of type `const int' is not const-correct!,
     qq!,check-prog.c:78: __warning__: assigning `int' to `const int' is not const-correct!,
     qq!,check-prog.c:80: __warning__: using `const int *' to initialize `int *' is not const-correct!,
     qq!,check-prog.c:92: __warning__: using `const char *' to initialize `char *' is not const-correct!,
@@ -2487,20 +2584,20 @@ expected => [
 {
 title => q{Mixing interrupt/non-interrupt function pointer types},
 program => q!
-    interrupt void isr() {}
-    void regular() {}
+    interrupt void isr(void) {}
+    void regular(void) {}
     int main()
     {
-        void (*pfRegular)() = isr;
+        void (*pfRegular)(void) = isr;
         (*pfRegular)();
-        interrupt void (*pfISR)() = isr;
+        interrupt void (*pfISR)(void) = isr;
         (*pfISR)();
         return 0;
     }
     !,
 expected => [
     qq!,check-prog.c:9: __error__: calling an interrupt service routine is forbidden!,
-    qq!,check-prog.c:6: __error__: using `interrupt void (*)()' to initialize `void (*)()'!,
+    qq!,check-prog.c:6: __error__: using `interrupt void (*)(void)' to initialize `void (*)(void)'!,
     ]
 },
 
@@ -2628,7 +2725,7 @@ expected => [
 
 
 {
-title => q{wrong main() parameters},
+title => q{wrong main() parameters on OS-9},
 target => "os9",
 linkerModeOnly => 1,
 program => q!
@@ -2638,7 +2735,23 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:2: __error__: main() must receive (int, char **) or no parameters!,
+    qq!,check-prog.c:2: __error__: main() must receive (int, char **)!,
+    ]
+},
+
+
+{
+title => q{wrong main() parameters on FLEX},
+target => "flex",
+linkerModeOnly => 1,
+program => q!
+    int main(int bogus)
+    {
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:2: __error__: main() must receive (int, char **)!,
     ]
 },
 
@@ -2679,7 +2792,7 @@ program => q!
 expected => [
     qq!,check-prog.c:5: __warning__: array `x' assumed to have one element!,
     qq!,check-prog.c:9: __error__: invalid application of `sizeof' to incomplete type `int[]'!,
-    qq!,check-prog.c:11: __error__: invalid application of `sizeof' to incomplete type `int[][]'!,
+    qq!,check-prog.c:11: __error__: invalid application of `sizeof' to incomplete type `int[]'!,
     ]
 },
 
@@ -2687,8 +2800,8 @@ expected => [
 {
 title => q{Assignment to const function pointer},
 program => q!
-    void f() {}
-    typedef void (*FuncPtr)();
+    void f(void) {}
+    typedef void (*FuncPtr)(void);
     const FuncPtr funcPtr = f;
     const FuncPtr fpArray[] = { f };
     typedef void *VoidPtr;
@@ -2702,8 +2815,8 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:10: __warning__: assigning `void (*)()' to `void (* const)()' is not const-correct!,
-    qq!,check-prog.c:11: __warning__: assigning `void (*)()' to `void (* const)()' is not const-correct!,
+    qq!,check-prog.c:10: __warning__: assigning `void (*)(void)' to `void (* const)(void)' is not const-correct!,
+    qq!,check-prog.c:11: __warning__: assigning `void (*)(void)' to `void (* const)(void)' is not const-correct!,
     qq!,check-prog.c:12: __warning__: assigning `void *' to `void * const' is not const-correct!,
     ]
 },
@@ -2726,17 +2839,10 @@ program => q!
     !,
 expected => [
     qq!,check-prog.c:2: __error__: empty declarator name!,
-    qq!,check-prog.c:2: __error__: empty declarator name!,
     qq!,check-prog.c:3: __error__: empty typename!,
     qq!,check-prog.c:4: __error__: empty typename!,
-    qq!,check-prog.c:4: __error__: empty typename!,
-    qq!,check-prog.c:5: __error__: empty typename!,
     qq!,check-prog.c:5: __error__: empty typename!,
     qq!,check-prog.c:9: __error__: empty declarator name!,
-    qq!,check-prog.c:9: __error__: empty declarator name!,
-    qq!,check-prog.c:9: __error__: empty declarator name!,
-    qq!,check-prog.c:10: __error__: empty declarator name!,
-    qq!,check-prog.c:10: __error__: empty declarator name!,
     qq!,check-prog.c:10: __error__: empty declarator name!,
     ]
 },
@@ -2783,7 +2889,7 @@ expected => [
     qq!,check-prog.c:8: __error__: width of `alsoTooWideForShort' exceeds its type (`unsigned int')!,
     qq!,check-prog.c:9: __error__: width of `tooWideForChar' exceeds its type (`char')!,
     qq!,check-prog.c:10: __error__: negative width in bit-field `negativeWidth'!,
-    qq!,check-prog.c:11: __warning__: floating-point arithmetic is not supported on this platform!,
+    qq!,check-prog.c:11: __warning__: floating-point arithmetic is not supported on the targeted platform!,
     qq!,check-prog.c:11: __error__: bit-field `f' has invalid type (`float')!,
     qq!,check-prog.c:12: __error__: invalid width in bit-field `z'!,
     ]
@@ -2827,11 +2933,10 @@ program => q!
     int main()
     {
         int *a;
-        return a[2.0f] + a[-3L] + a[4UL];
+        return a[-3L] + a[4UL];
     }
     !,
 expected => [
-    qq!,check-prog.c:5: __error__: array subscript is not an integer (`float')!,
     qq!,check-prog.c:5: __warning__: array subscript is long (only low 16 bits used)!,
     qq!,check-prog.c:5: __warning__: array subscript is unsigned long (only low 16 bits used)!,
     ]
@@ -2893,13 +2998,16 @@ expected => [
 {
 title => q{First parameter too large to be received in register},
 program => q!
-    _CMOC_fpir_ void takesLong1(long a, int b)
-    {
-    }
-    struct S { int x; };
-    _CMOC_fpir_ void takesLong2(struct S a, int b)
-    {
-    }
+    _CMOC_fpir_ void takesLong1(long a, int b) {}
+    struct OneByte { char x; };
+    _CMOC_fpir_ void takes1ByteStruct(struct OneByte a, int b) {}
+    struct TwoBytes { int x; };
+    _CMOC_fpir_ void takes2ByteStruct(struct TwoBytes a, int b) {}
+    _CMOC_fpir_ void takesPtrTo2ByteStruct(struct TwoBytes *a, int b) {}  // OK
+    struct ThreeBytes { char x[3]; };
+    _CMOC_fpir_ void takes3ByteStruct(struct ThreeBytes a, int b) {}
+    union U { int x; };
+    _CMOC_fpir_ void takesUnion(union U a, int b) {}
     int main()
     {
         return 0;
@@ -2907,7 +3015,28 @@ program => q!
     !,
 expected => [
     qq!,check-prog.c:2: __error__: _CMOC_fpir_ not allowed on function whose first parameter is struct, union or larger than 2 bytes!,
+    qq!,check-prog.c:4: __error__: _CMOC_fpir_ not allowed on function whose first parameter is struct, union or larger than 2 bytes!,
     qq!,check-prog.c:6: __error__: _CMOC_fpir_ not allowed on function whose first parameter is struct, union or larger than 2 bytes!,
+    qq!,check-prog.c:9: __error__: _CMOC_fpir_ not allowed on function whose first parameter is struct, union or larger than 2 bytes!,
+    qq!,check-prog.c:11: __error__: _CMOC_fpir_ not allowed on function whose first parameter is struct, union or larger than 2 bytes!,
+    ]
+},
+
+
+{
+title => q{Assigning to a member of a const struct through a pointer},
+program => q!
+    struct A { int x; };
+    int main()
+    {
+        struct A a = { 999 };
+        const struct A *pA = &a;
+        pA->x = 888;  // bad: pA points to a const struct
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:7: __warning__: assigning `int' to `const int' is not const-correct!,
     ]
 },
 
@@ -2933,12 +3062,40 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:8: __error__: assigning to member `x' of `const struct Couple' is not const-correct!,
-    qq!,check-prog.c:10: __error__: assigning to member `y' of `const struct Couple' is not const-correct!,
-    qq!,check-prog.c:11: __error__: assigning to member `y' of `const struct Couple' is not const-correct!,
-    qq!,check-prog.c:13: __error__: assigning to member `x' of `const struct Couple' is not const-correct!,
-    qq!,check-prog.c:14: __error__: incrementing member `y' of `const struct Couple' is not const-correct!,
-    qq!,check-prog.c:15: __error__: decrementing member `y' of `const struct Couple' is not const-correct!,
+    qq!,check-prog.c:8: __warning__: assigning `int' to `const int' is not const-correct!,
+    qq!,check-prog.c:10: __warning__: assigning `int' to `const int' is not const-correct!,
+    qq!,check-prog.c:11: __warning__: assigning `int' to `const int' is not const-correct!,
+    qq!,check-prog.c:13: __warning__: assigning `int' to `const int' is not const-correct!,
+    qq!,check-prog.c:14: __warning__: incrementing expression of type `const int' is not const-correct!,
+    qq!,check-prog.c:15: __warning__: decrementing expression of type `const int' is not const-correct!,
+    ]
+},
+
+
+{
+title => q{Assigning to a const pointer},
+program => q!
+    struct A { int x; };
+    int main()
+    {
+        struct A a, b;
+        struct A * const pA = &a;
+        pA = &b;  // bad: the pointer itself is const, and cannot point to something else after declaration
+        pA->x = 999;    // ok
+        ++pA->x;        // ok
+        int m, n;
+        int * const pInt = &m;
+        pInt = &n;      // bad
+        *pInt = 888;    // ok
+        ++pInt;         // bad
+        ++*pInt;        // ok
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:7: __warning__: assigning `struct A *' to `struct A * const' is not const-correct!,
+    qq!,check-prog.c:12: __warning__: assigning `int *' to `int * const' is not const-correct!,
+    qq!,check-prog.c:14: __warning__: incrementing expression of type `int * const' is not const-correct!,
     ]
 },
 
@@ -2968,6 +3125,8 @@ expected => [
 title => q{Warning about binary operation on byte-sized arguments},
 options => "-Wgives-byte",
 program => q!
+    enum { N = 100 };
+    struct S { char s[4]; };
     int main()
     {
         char a = 100, b = 200;
@@ -2975,11 +3134,15 @@ program => q!
         int p1 = (int) a * b;
         int p2 = a * (int) b;
         int p3 = (int) a * (int) b;
+        int p4 = (char) a * (char) b;  // yields byte, but no warning because both operands have a cast
+        int p5 = a * (char) b;  // yields byte, but no warning because one of the operands has a cast
+        int p6 = (char) a * b;  // yields byte, but no warning because one of the operands has a cast
+        unsigned p = N * sizeof(struct S);  // no warning because enum name is int and sizeof() is size_t
         return 0;
     }
     !,
 expected => [
-    qq!,check-prog.c:5: __warning__: operator `multiplication' on two byte-sized arguments gives byte under CMOC, unlike under Standard C!,
+    qq!,check-prog.c:7: __warning__: operator `multiplication' on two byte-sized arguments gives byte under CMOC, unlike under Standard C!,
     ]
 },
 
@@ -3037,7 +3200,874 @@ program => q!
     }
     !,
 expected => [
-    qq!,check-prog.c:8: __warning__: Local variable `local' hides local variable `local' declared at ,check-prog.c:5!,
+    qq!,check-prog.c:8: __warning__: local variable `local' hides local variable `local' declared at ,check-prog.c:5!,
+    ]
+},
+
+
+{
+title => q{Struct with a void member},
+program => q!
+    struct S0
+    {
+        void m;
+    };
+
+    struct S1
+    {
+        void m;
+    } s1;
+
+    int
+    main()
+    {
+        struct S0 *s0 = 1;
+        s0->m;
+        s1.m;
+        return 0;
+    }
+   !,
+expected => [
+   qq!,check-prog.c:4: __error__: member of struct is void!,
+   qq!,check-prog.c:9: __error__: member of struct is void!,
+   ]
+},
+
+
+{
+title => q{Correct line number on error message following asm with cpp line number directive},
+program => q!
+    int main()
+    {
+        asm
+        {
+            nop
+            
+            //foo
+            //bar
+            //baz
+
+            #if 0 // This may generate a line of the form '# <num> "<filename>"'
+            nop
+            #endif
+
+            nop
+        }
+        return 100000;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:18: __error__: returning expression of type `long', which differs from function's return type (`int')!,
+    ]
+},
+
+
+{
+title => q{printf() placeholder does not match actual argument},
+options => "-Werror",  # to avoid letting assembler try to assemble invalid usim .asm
+program => q!
+    #include <cmoc.h>
+    int main()
+    {
+        printf("%f\n", 42);
+
+        printf("%ld\n", 42);
+        printf("%d\n", 42L);
+        printf("%s\n", 42);
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:5: __warning__: argument 2 of printf() is of type `int' but the placeholder is %f!,
+    qq!,check-prog.c:7: __warning__: argument 2 of printf() is of type `int' but the placeholder has the `l' modifier!,
+    qq!,check-prog.c:8: __warning__: argument 2 of printf() is of type `long' but the placeholder does not have the `l' modifier!,
+    qq!,check-prog.c:9: __warning__: argument 2 of printf() is of type `int' but the placeholder is %s!,
+    ]
+},
+
+
+{
+title => q{Invalid printf() format string},
+options => "-Werror",  # to avoid letting assembler try to assemble invalid usim .asm
+program => q!
+    #include <cmoc.h>
+    int main()
+    {
+        printf("foo %04 bar\n", 42);
+        printf("foo %04Q bar\n", 42);
+        printf("foo %ls bar\n", "x");
+        return 0;
+    }
+    !,
+expected => [
+    q!,check-prog.c:5: __warning__: no conversion specifier follows % in printf() format string!,
+    q!,check-prog.c:6: __warning__: no valid conversion specifier follows % in printf() format string!,
+    q!,check-prog.c:7: __warning__: unsupported use of `l' flag used on `s' conversion specifier in printf() format string!,
+    ]
+},
+
+
+{
+title => q{Pass pointer to integer parameter},
+program => q!
+    void f(unsigned n) {}
+    void g(long n) {}
+    int main()
+    {
+        unsigned k = 0;
+        f(&k);
+        long m = 0;
+        g(&m);
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:7: __warning__: passing pointer type `unsigned int *' for parameter 1 (n) of function f(), which is `unsigned int`!,
+    qq!,check-prog.c:9: __warning__: passing pointer type `long *' for parameter 1 (n) of function g(), which is `long`!,
+    ]
+},
+
+
+{
+title => q{Reference to undefined external global variable},
+program => q!
+    extern int g;
+    int main()
+    {
+        extern int l;
+        return g + l;
+    }
+    !,
+expected => [
+    qq!lwlink: __error__: External symbol _g not found in ,check-prog.o:code!,
+    qq!lwlink: __error__: External symbol _g not found in ,check-prog.o:code!,
+    qq!lwlink: __error__: Incomplete reference at ,check-prog.o:code+02!,
+    qq!lwlink: __error__: External symbol _l not found in ,check-prog.o:code!,
+    qq!lwlink: __error__: External symbol _l not found in ,check-prog.o:code!,
+    qq!lwlink: __error__: Incomplete reference at ,check-prog.o:code+06!,
+    qq!cmoc: __fatal error__: linker failed.!,
+    ]
+},
+
+
+{
+title => q{Passing pointer to function expecting pointer to pointer},
+program => q!
+    void func(const char **pp) {}
+    int main()
+    {
+        func((const char *) 0);
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:5: __error__: `const char *' used as parameter 1 (pp) of function func() which is `const char **'!,
+    ]
+},
+
+
+{
+title => q{Casting a long to a pointer that gets assigned to a const long},
+program => q!
+    int main()
+    {
+        const long a = 0xDE0000EF, b = 0x00ADBE00;
+        a = (unsigned char *) b;
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:5: __warning__: assigning pointer type `unsigned char *' to `const long`!,
+    ]
+},
+
+
+{
+title => q{K&R function definition with extra parameter declaration},
+program => q!
+    foo1(a, b) int a; long b; char c; {}
+    foo2(a) int a; long b; {}
+    foo3() unsigned a; {}
+    long bar1(a, b) int a; long b; char c; {}
+    long bar2(a) int a; long b; {}
+    long bar3() unsigned a; {}
+
+    int main()
+    {
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:2: __error__: declaration for parameter `c' but function foo1() has no such parameter!,
+    qq!,check-prog.c:3: __error__: declaration for parameter `b' but function foo2() has no such parameter!,
+    qq!,check-prog.c:4: __error__: declaration for parameter `a' but function foo3() has no such parameter!,
+    qq!,check-prog.c:5: __error__: declaration for parameter `c' but function bar1() has no such parameter!,
+    qq!,check-prog.c:6: __error__: declaration for parameter `b' but function bar2() has no such parameter!,
+    qq!,check-prog.c:7: __error__: syntax error: unsigned!,  # a better error message would require reworking the grammar
+    ]
+},
+
+
+{
+title => q{K&R function prototype that has no return type vs. taking a pointer to it with wrong type},
+program => q!
+    undefinedFunction();  // return type assumed to be 'int'
+    undefinedFunctionWithParams(a, b);  // parameter names accepted
+    //undefinedFunctionWithParams(a) char a;  // types for the parameter names: not supported: causes syntax error on '{'
+    int main()
+    {
+        long (*funcPtr0)() = undefinedFunction;
+        long (*funcPtr1)() = undefinedFunctionWithParams;
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:7: __error__: using `int (*)(void)' to initialize `long (*)(...)'!,
+    qq!,check-prog.c:8: __error__: using `int (*)(int, int)' to initialize `long (*)(...)'!,
+    ]
+},
+
+
+{
+title => q{Passing a float to a function expecting integral},
+target => "coco",
+program => q!
+    void fi(int x) {}
+    void fc(char x) {}
+    int main()
+    {
+        fi(-1234.98f);
+        fc(-1234.98f);
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:6: __warning__: passing real type `float' for parameter 1 (x) of function fi(), which is `int`!,
+    qq!,check-prog.c:7: __warning__: `float' argument is too large for parameter 1 (x) of function fc(), which is `char`!,
+    ]
+},
+
+
+{
+title => q{Trying to increment or decrement a function pointer},
+program => q!
+    void f(void) {}
+    int main()
+    {
+        void (*pf)(void) = f;
+        ++pf;
+        --pf;
+        pf++;
+        pf--;
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:6: __warning__: incrementing a function pointer!,
+    qq!,check-prog.c:7: __warning__: decrementing a function pointer!,
+    qq!,check-prog.c:8: __warning__: incrementing a function pointer!,
+    qq!,check-prog.c:9: __warning__: decrementing a function pointer!,
+    ]
+},
+
+
+{
+title => q{Declaring a void variable},
+program => q!
+    void f(void) {}
+    void a;
+    int main()
+    {
+        * (void **) a = (void *) f;  // CMOC 0.1.77 failed an assert on 'a' here b/c 'void a'
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:3: __error__: variable `a` is declared with type void!,
+    ]
+},
+
+
+{
+title => q{Missing struct field initializers},
+program => q!
+    struct S { int a, b; };
+    int main()
+    {
+        struct S s0 = {};
+        struct S s1 = { 42 };
+        struct S s2 = { 42, 43 };  // right number, so no warning
+        struct S s3 = { 42, 43, 44 };
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:5: __warning__: missing initializer for field `a' of `struct S'!,
+    qq!,check-prog.c:5: __warning__: missing initializer for field `b' of `struct S'!,
+    qq!,check-prog.c:6: __warning__: missing initializer for field `b' of `struct S'!,
+    qq!,check-prog.c:8: __warning__: excess elements in `struct S' initializer!,
+    ]
+},
+
+
+{
+title => q{Suspending warning about missing struct field initializers},
+options => "-Wno-missing-field-initializers",
+program => q!
+    struct S { int a, b; };
+    int main()
+    {
+        struct S s0 = {};
+        struct S s1 = { 42 };
+        struct S s2 = { 42, 43 };  // right number, so no warning
+        struct S s3 = { 42, 43, 44 };
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:8: __warning__: excess elements in `struct S' initializer!,
+    ]
+},
+
+
+{
+title => q{Correct notation for pointer-to-pointer-to-function in a diagnotic message},
+program => q!
+    int main()
+    {
+        void (**ppf)(void) = 1L;
+        void (**appf[1])(void) = { 1L };
+        int i = appf;
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:4: __warning__: using non-pointer/array (long) to initialize `void (**)(void)`!,
+    qq!,check-prog.c:5: __warning__: using non-pointer/array (long) to initialize `void (**)(void)`!,
+    qq!,check-prog.c:6: __warning__: using pointer type `void (**[])(void)' to initialize `int`!,
+    ]
+},
+
+
+{
+title => q{Index in inline assembler array reference taken as element index, not byte index},
+program => q!
+    int main()
+    {
+        int v[2];
+        asm
+        {
+            clr     :v[1]
+        }
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:6: __warning__: index `1' into array `v' in inline assembly statement taken as element index, not byte index!,
+    ]
+},
+
+
+{
+title => q{-Wno-inline-asm-array-indexes},
+options => "-Wno-inline-asm-array-indexes",
+program => q!
+    int main()
+    {
+        int v[2];
+        asm
+        {
+            clr     :v[1]
+        }
+        return 0;
+    }
+    !,
+expected => [
+    ]
+},
+
+
+{
+title => q{for() loop with byte control variable and word limit},
+options => "-Wfor-condition-sizes",
+program => q!
+    int main()
+    {
+        unsigned limit = 256;
+        for (unsigned char b = 0; b < limit; ++b)  // suspicious: different sizes
+            ;
+        for (unsigned char b = 0; b < 42; ++b)  // ok: 42 is an int (2 bytes) but 42 actually fits a byte
+            ;
+        for (unsigned w = 0; w < limit; ++w)  // ok: same sizes
+            ;
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:5: __warning__: for loop condition compares expressions of different sizes (`unsigned char' vs `unsigned int')!,
+    ]
+},
+
+
+{
+title => q{No warning if -Wfor-condition-sizes not passed},
+program => q!
+    int main()
+    {
+        unsigned limit = 256;
+        for (unsigned char b = 0; b < limit; ++b)  // suspicious: different sizes
+            ;
+        for (unsigned w = 0; w < limit; ++w)  // ok: same sizes
+            ;
+        return 0;
+    }
+    !,
+expected => [
+    ]
+},
+
+
+{
+title => q{Parenthesised function name keeps function call from matching macro with same same},
+options => "-Werror",  # to avoid letting assembler complain about external symbols not being found
+program => q!
+    #define foo() 99
+    #define bar(n) ((n) + 1)
+    #define baz() 88
+    #define quux(...) 77
+    int main()
+    {
+        (foo)();
+        (bar)(42);
+        (baz)(1, 2, 3);
+        (quux)(1, 2, 3);
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:8: __warning__: calling undeclared function foo()!,
+    qq!,check-prog.c:9: __warning__: calling undeclared function bar()!,
+    qq!,check-prog.c:10: __warning__: calling undeclared function baz()!,
+    qq!,check-prog.c:11: __warning__: calling undeclared function quux()!,
+    ]
+},
+
+
+{
+title => q{Assigning a to constant pointer to an array, or to the array},
+program => q!
+    int a[3] = { 10, 11, 12 };
+    typedef int ArrayType[3];
+    ArrayType * const ptrToArray = a;  // not an array, but a pointer to an array
+    typedef const int ConstArrayType[3];
+    ConstArrayType * const ptrToConstArray = a;  // not an array, but a pointer to an array
+    int main()
+    {
+        ptrToArray = 0;
+        *ptrToArray = 0;
+        (*ptrToArray)[2] = 13;  // ok
+        ptrToConstArray = 0;
+        *ptrToConstArray = 0;
+        (*ptrToConstArray)[2] = 13;
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:4: __warning__: initializing `int[3] * const' (ptrToArray) from incompatible `int[]'!,
+    qq!,check-prog.c:6: __warning__: initializing `const int[3] * const' (ptrToConstArray) from incompatible `int[]'!,
+    qq!,check-prog.c:9: __warning__: assigning `int' to `int[3] * const' is not const-correct!,
+    qq!,check-prog.c:12: __warning__: assigning `int' to `const int[3] * const' is not const-correct!,
+    qq!,check-prog.c:13: __warning__: assigning `int' to `const int[3]' is not const-correct!,
+    qq!,check-prog.c:14: __warning__: assigning `int' to `const int' is not const-correct!,
+    qq!,check-prog.c:10: __error__: cannot assign to array name!,
+    qq!,check-prog.c:13: __error__: cannot assign to array name!,
+    ]
+},
+
+
+{
+title => q{Initializing a pointer from an array of incompatible type},
+program => q!
+    static const int y_startpositions[2][3] =
+        {{120, 110, 90},
+        {20, 110, 90}};
+    typedef const char ArrayType[3];
+    static ArrayType * const y_startpos = y_startpositions;
+    int main()
+    {
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:6: __warning__: initializing `const char[3] * const' (y_startpos) from incompatible `const int[][]'!,
+    ]
+},
+
+
+{
+title => q{typedef with initializer},
+program => q!
+    typedef int a = 42;
+    typedef int b = 43, c = 44;
+    int main()
+    {
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:2: __error__: typedef `a' is initialized!,
+    qq!,check-prog.c:3: __error__: typedef `b' is initialized!,
+    qq!,check-prog.c:3: __error__: typedef `c' is initialized!,
+    ]
+},
+
+
+{
+title => q{Bit shifts that always give zero},
+program => q!
+    int main()
+    {
+        unsigned char uc = 0;
+        unsigned char ucl = (uc << 8);
+        unsigned char ucr = (uc >> 8);
+        char sc = 0;
+        char scl = (sc << 8);
+        char scr = (sc >> 8);  // no Warning b/c result depends on sign of 'sc'
+
+        unsigned int ui = 0;
+        unsigned int uil = (uc << 16);
+        unsigned int uir = (uc >> 16);
+        int si = 0;
+        int sil = (sc << 16);
+        int sir = (sc >> 16);  // no Warning b/c result depends on sign of 'sc'
+
+        unsigned long ul = 0;
+        unsigned long ull = (uc << 32);
+        unsigned long ulr = (uc >> 32);
+        long sl = 0;
+        long sll = (sc << 32);
+        long slr = (sc >> 32);  // no Warning b/c result depends on sign of 'sc'
+
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:5: __warning__: shift always gives zero!,
+    qq!,check-prog.c:6: __warning__: shift always gives zero!,
+    qq!,check-prog.c:8: __warning__: shift always gives zero!,
+    qq!,check-prog.c:12: __warning__: shift always gives zero!,
+    qq!,check-prog.c:13: __warning__: shift always gives zero!,
+    qq!,check-prog.c:15: __warning__: shift always gives zero!,
+    qq!,check-prog.c:19: __warning__: shift always gives zero!,
+    qq!,check-prog.c:20: __warning__: shift always gives zero!,
+    qq!,check-prog.c:22: __warning__: shift always gives zero!,
+    ]
+},
+
+
+{
+title => q{Undefined enum name used in array size causes error message instead of crash},
+program => q`
+    struct S
+    {
+        char a[BOGUS];  // BOGUS is not defined
+    };
+    int main()
+    {
+        struct S mv;
+        mv.a[BOGUS] = 'X';
+        return 0;
+    }
+    `,
+expected => [
+    qq!,check-prog.c:4: __error__: invalid size expression for dimension 1 of array `a'!,
+    qq!,check-prog.c:4: __error__: invalid dimensions for member array `a' in struct `S'!,
+    qq!,check-prog.c:9: __error__: undeclared identifier `BOGUS'!,
+    qq!,check-prog.c:9: __error__: right side of operator [] is of type void!,
+    qq!,check-prog.c:4: __error__: failed to compute array dimensions of struct member `a'!,
+    qq!,check-prog.c:9: __error__: array subscript is not an integer (`void')!,
+    ]
+},
+
+
+{
+title => q{Assigning long to int},
+program => q`
+    int main()
+    {
+        unsigned short v0 = (unsigned long) 1;
+        unsigned short v1 = 1UL;
+        v0 = (unsigned long) 2;
+        v0 = 100000UL;
+        return 0;
+    }
+    `,
+expected => [
+    qq!,check-prog.c:6: __warning__: assigning to `unsigned int' from larger type `unsigned long'!,
+    qq!,check-prog.c:7: __warning__: assigning to `unsigned int' from larger type `unsigned long'!,
+    qq!,check-prog.c:4: __warning__: initializer of type `unsigned long' is too large for `unsigned int`!,
+    qq!,check-prog.c:5: __warning__: initializer of type `unsigned long' is too large for `unsigned int`!,
+    ]
+},
+
+
+{
+title => q{Option -Wshadow warns about a local variable shadowing another},
+options => "-Wshadow",
+program => q!
+    int main()
+    {
+        int x = 1;
+        {
+            int x = 2;
+        }
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:6: __warning__: local variable `x' hides local variable `x' declared at ,check-prog.c:4!,
+    ]
+},
+
+
+{
+title => q{Warning on label on declaration},
+program => q!
+    int f() { return 42; }
+    int main()
+    {
+        switch (f())
+        {
+            case 0:
+                int n = 0;  // GCC 9.4.0 gives an error here
+                break;
+            case 1:
+                f();
+                break;
+        }
+    L0:
+        int m = 0;  // GCC 9.4.0 gives an error here
+    L1:
+        m++;
+        return 0;
+    }
+    !,
+expected => [
+   qq!,check-prog.c:7: warning: a label can only be part of a statement and a declaration is not a statement!,
+   qq!,check-prog.c:14: warning: a label can only be part of a statement and a declaration is not a statement!,
+   ]
+},
+
+
+{
+title => q{A member of a const struct is also const},
+program => q!
+    struct A
+    {
+        int n;
+    };
+    struct B
+    {
+        struct A a;
+    };
+    void f(struct A *pa)
+    {
+        pa->n++;
+    }
+    int main()
+    {
+        const struct B b = { { 42 } };
+        f(&b.a);  // bad
+        const struct B *pb = &b;
+        f(&pb->a);  // bad
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:17: __warning__: `const struct A *' used as parameter 1 (pa) of function f() which is `struct A *' (not const-correct)!,
+    qq!,check-prog.c:19: __warning__: `const struct A *' used as parameter 1 (pa) of function f() which is `struct A *' (not const-correct)!,
+    ]
+},
+
+
+{
+title => q{Assignment used as condition},
+program => q!
+    int f() { return 1; }
+    int main()
+    {
+        int x = 0;
+        if (x = f())
+            x = 0;
+        if (x >>= 1)
+            x = 0;
+
+        while (x = f())
+            break;
+
+        do
+            break;
+        while (x = f());
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:6: __warning__: assignment used as condition!,
+    qq!,check-prog.c:8: __warning__: assignment used as condition!,
+    qq!,check-prog.c:11: __warning__: assignment used as condition!,
+    qq!,check-prog.c:16: __warning__: assignment used as condition!,
+    ]
+},
+
+
+{
+title => q{Option to avoid warning on assignment used as condition},
+options => "-Wno-assign-in-condition",
+program => q!
+    int f() { return 1; }
+    int main()
+    {
+        int x = 0;
+        if (x = f())
+            x = 0;
+        if (x >>= 1)
+            x = 0;
+
+        while (x = f())
+            break;
+
+        do
+            break;
+        while (x = f());
+        return 0;
+    }
+    !,
+expected => [
+    ]
+},
+
+
+{
+title => q{More than one calling convention keyword on the same function },
+program => q!
+    __gcccall _CMOC_fpir_ void f() {}
+    int main()
+    {
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:2: __error__: mixing more than one calling convention keywords!,
+    ]
+},
+
+
+{
+title => q{Mismatched calling conventions on function pointer initialization or assignment},
+program => q!
+    int def(void) { return 0; }
+    __gcccall int gcc(void) { return 0; }
+    interrupt int intr(void) { return 0; }
+    int main()
+    {
+        __gcccall int (*pgcc0)(void) = def;
+        pgcc0 = def;
+        interrupt int (*pintr0)(void) = def;
+        pintr0 = def;
+
+        int (*pdef0)(void) = gcc;
+        pdef0 = gcc;
+        interrupt int (*pintr1)(void) = gcc;
+        pintr1 = gcc;
+
+        int (*pdef1)(void) = intr;
+        pdef1 = intr;
+        __gcccall int (*pgcc1)(void) = intr;
+        pgcc1 = intr;
+
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:8: __error__: assigning `int (*)(void)' to `__gcccall int (*)(void)'!,
+    qq!,check-prog.c:10: __error__: assigning `int (*)(void)' to `interrupt int (*)(void)'!,
+    qq!,check-prog.c:13: __error__: assigning `__gcccall int (*)(void)' to `int (*)(void)'!,
+    qq!,check-prog.c:15: __error__: assigning `__gcccall int (*)(void)' to `interrupt int (*)(void)'!,
+    qq!,check-prog.c:18: __error__: assigning `interrupt int (*)(void)' to `int (*)(void)'!,
+    qq!,check-prog.c:20: __error__: assigning `interrupt int (*)(void)' to `__gcccall int (*)(void)'!,
+    qq!,check-prog.c:7: __error__: using `int (*)(void)' to initialize `__gcccall int (*)(void)'!,
+    qq!,check-prog.c:9: __error__: using `int (*)(void)' to initialize `interrupt int (*)(void)'!,
+    qq!,check-prog.c:12: __error__: using `__gcccall int (*)(void)' to initialize `int (*)(void)'!,
+    qq!,check-prog.c:14: __error__: using `__gcccall int (*)(void)' to initialize `interrupt int (*)(void)'!,
+    qq!,check-prog.c:17: __error__: using `interrupt int (*)(void)' to initialize `int (*)(void)'!,
+    qq!,check-prog.c:19: __error__: using `interrupt int (*)(void)' to initialize `__gcccall int (*)(void)'!,
+    ]
+},
+
+
+{
+title => q{Missing semi-colon between one enum and the next one},
+program => q!
+    enum
+    {
+        A
+    }  /* missing semi-colon */
+
+    enum
+    {
+        B
+    };
+
+    int main()
+    {
+        return A;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:10: __error__: unexpected type combination!,
+    ]
+},
+
+
+{
+title => q{Array initialized with a pointer},
+program => q!
+    char f0(const char *a)
+    {
+        char v[2] = a;
+        return v[0] + v[1];
+    }
+    char f1(const char a[2])
+    {
+        char v[2] = a;
+        return v[0] + v[1];
+    }
+    int main()
+    {
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:4: __error__: initializer for array `v' is invalid!,
+    qq!,check-prog.c:9: __error__: initializer for array `v' is invalid!,
+    ]
+},
+
+
+{
+title => q{static_assert},
+program => q!
+    #include <assert.h>
+    enum { N = 20 };
+    int main()
+    {
+        static_assert(N < 30);  // success
+        static_assert(N < 10);  // failure
+        return 0;
+    }
+    !,
+expected => [
+    qq!,check-prog.c:7: __error__: invalid size for array typedef `_StaticAssertDummyArray_7'!,
     ]
 },
 
@@ -3123,9 +4153,13 @@ sub indexi
 }
 
 
-sub compileProgram
+sub compileProgram($$)
 {
-    my ($program, $extraCompilerOptions, $target) = @_;
+    my ($testNo, $rhTestCase) = @_;
+
+    my $program = $rhTestCase->{program};
+    my $extraCompilerOptions = $rhTestCase->{options};
+    my $target = $rhTestCase->{target};
 
     $target = $target || "usim"; 
 
@@ -3137,6 +4171,9 @@ sub compileProgram
     }
 
     print $cFile $program;
+
+    print $cFile "\n/* Test #$testNo: ", $rhTestCase->{title}, " */\n";
+
     if (!close($cFile))
     {
         print "$0: ERROR: failed to close source file $cFilename: $!\n";
@@ -3165,7 +4202,7 @@ sub compileProgram
     print "--- Compilation command: $compCmd\n";
     print "--- Actual compilation errors:\n";
     my $fh;
-    if (!open($fh, "$compCmd 2>&1 |"))
+    if (!open($fh, "env CMOCFLOATLIBDIR=float $compCmd 2>&1 |"))
     {
         print "$0: ERROR: failed to start compilation command $compCmd: $!\n";
         return undef;
@@ -3177,18 +4214,13 @@ sub compileProgram
     my $line;
     while ($line = <$fh>)
     {
-        next if $line =~ /^# /;  # ignore debugging traces
+        next if $line =~ /^#+ /;  # ignore debugging traces
 
         $line =~ s/\s+$//s;
         
-        if (0 && $line =~ /^#/)  # activate this to ignore debugging output lines
-        {
-            $numDebuggingLines++;
-            next;
-        }
-
         # Mask errors and warnings to keep auto build system from complaining.
         $line =~ s/: error:/: __error__:/gi;
+        $line =~ s/: fatal error:/: __fatal error__:/gi;
         $line =~ s/: warning:/: __warning__:/g;
 
         push @compOutput, $line;
@@ -3229,6 +4261,7 @@ sub runTestNumber
     }
     
     my $lineNum = 0;
+    die unless defined $rhTestCase->{program};
     for my $line (split /\n/, $rhTestCase->{program})
     {
         printf("%3u%5s%s\n", ++$lineNum, "", $line);
@@ -3242,7 +4275,7 @@ sub runTestNumber
         return 1;
     }
 
-    my $raActualOutput = compileProgram($rhTestCase->{program}, $rhTestCase->{options}, $rhTestCase->{target});
+    my $raActualOutput = compileProgram($i, $rhTestCase);
 
     my $raExpected = $rhTestCase->{expected};
     if (defined $raExpected)
@@ -3276,10 +4309,17 @@ sub runTestNumber
         last if $j >= @$raExpected;
         my $act = $raActualOutput->[$j];
         my $exp = $raExpected->[$j];
+
+        # Patch: tolerate source line number differences in diagnostics of the form
+        #   [...] but function expects <N> (declared at <FILE>:<NUMBER>)
+        $act =~ s/( but function expects (at least )?\d+) \(declared at .*?:\d+\)/$1/;
+
         if ($act ne $exp)
         {
             print "$0: ERROR: program #$i: actual output differs at line ",
                     $j + 1, " from expected output\n";
+            #print "  act=[$act]\n";
+            #print "  exp=[$exp]\n";
             $success = 0;
             last;
         }
@@ -3449,9 +4489,9 @@ if ($cleanUp)
     print "\n";
     print "Cleaning up:\n";
     my $success = 1;
-    for my $ext (qw(c asm s i lst hex bin srec map link o))
+    for my $ext (qw(.c .asm .s .i .lst .hex .bin .srec .map .link .o), "")  # no extension on OS-9 executables
     {
-        my $fn = ",check-prog.$ext";
+        my $fn = ",check-prog$ext";
         if (-f $fn)
         {
             print "  erasing $fn\n";

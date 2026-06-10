@@ -3,24 +3,22 @@
 _strupr	EXPORT
 
 
-* byte *strupr(byte *)
-_strupr	pshs	x
-	ldx	4,s		string address
-	bra	_strupr_020
-_strupr_010
+* char *strupr(char *str)
+_strupr
+	ldx	2,s		str
+	bra	@loopCond
+@loop
 	cmpa	#97		'a'
-	blo	_strupr_020
+	blo	@loopCond
 	cmpa	#122		'z'
-	bhi	_strupr_020
+	bhi	@loopCond
 	suba	#32		make uppercase
 	sta	-1,x
-_strupr_020
+@loopCond
 	lda	,x+
-	bne	_strupr_010
-	ldd	4,s		return string address
-	puls	x,pc
-
-
+	bne	@loop
+	ldd	2,s		return str
+	rts
 
 
 	ENDSECTION

@@ -38,7 +38,7 @@ MUL168_TO24
 *
 _mulwb
 	pshs	u
-	tfr	s,u
+	leau	,s
 
 	ldx	6,u	load w
 	ldb	9,u	load b
@@ -48,7 +48,7 @@ _mulwb
 	stb	,x	return high byte of product
 	puls	a,b	retrieve and return low word of product
 
-	tfr	u,s
+	leas	,u
 	puls	u,pc
 
 

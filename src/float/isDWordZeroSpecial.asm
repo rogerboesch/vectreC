@@ -4,7 +4,7 @@ isDWordZeroSpecial	EXPORT
 
 
 ; Input: 4,S (before call) => dword.
-; Output: Z is set iff divisor is zero.
+; Output: Z is set iff dword is zero.
 ; Preserves X. Trashes D.
 ;
 isDWordZeroSpecial

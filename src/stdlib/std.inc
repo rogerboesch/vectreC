@@ -1,7 +1,6 @@
 ; Equates.
 
 
-PRINTF_FLOAT_SIZE	EQU	5	size of a %f argument
 LBUFMX			EQU	250	number of available bytes in LINBUF buffer
 
 	IFDEF _COCO_OR_DRAGON_BASIC_

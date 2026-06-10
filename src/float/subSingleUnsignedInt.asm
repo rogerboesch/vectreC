@@ -13,17 +13,15 @@ subSingleUnsignedInt
 
 	ldd	10,s		; load right operand
 	lbsr	loadUnsignedDInFPA0
-	com	FP0SGN		; negate FPA0
+	flt_invertFPA0Sign
 
 	; The left operand is loaded second in case the
 	; preceding call trashes FPA1.
 
 	ldx	8,s		; left (single)
-	jsr	$BB2F		; unpack from X to FPA1
+	flt_unpackFromXToFPA1
 
 	lbra	subSingle_common_add
-
-
 
 
 	ENDSECTION

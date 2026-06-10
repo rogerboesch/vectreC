@@ -5,25 +5,62 @@
 initSignedWordFromSingle	EXPORT
 
 
-; Based on Color Basic's routine at $B3ED.
+; Location of 5 bytes that represent -32768.0 in the packed float format.
+;
+        IFDEF _COCO_BASIC_
+packedMinus32768        EQU     $B3DF
+        ENDC
+        IFDEF DRAGON
+packedMinus32768        EQU     $8B1C
+        ENDC
+        IFDEF _CMOC_NATIVE_FLOAT_
+packedMinus32768:
+        fcb     $90,$80,$00,$00,$00             ; ECB has this at $B3DF
+        ENDC
+
+        IFDEF _CMOC_MC6839_
+packedMinus32768:
+        fdb     $C700,$0000
+        ENDC
+
+
 ; Input: D => address of source number. X => address of destination number.
 ;
 initSignedWordFromSingle
+
+        IFDEF _CMOC_MC6839_
+
+        pshs    u,y
+        leay    FPCB_SINGLE,pcr
+        exg     d,y             ; point Y to source real, point D to FPCB
+        lbsr    FPREG
+        fcb     FFIXS
+        puls    y,u,pc
+
+        ELSE
+
+; Based on Color Basic's routine at $B3ED.
 	pshs	u,y,x		; save X that points to destination
 	tfr	d,x		; point X to source real
-	jsr	$BC14		; load FPA0 from X
+	flt_unpackFromXToFPA0
 ;
-	lda	FP0EXP
-	cmpa	#$80+16		; is FPA0 >= 32768?
+	flt_loadAFromFPA0BiasedExp
+        beq     @zero
+	cmpa	#EXPBIAS+16     ; is |FPA0| >= 32768?
 	bhs	@tooHigh
-	ldx	#$B3DF		; packed -32768
-	jsr	$BC96		; compare FPA0 to -32768
+; Here, real exponent is in -127..15.
+        IFDEF _CMOC_MS_FLOAT_
+	ldx	#packedMinus32768
+        ELSE
+        leax    packedMinus32768,pcr
+        ENDC
+	flt_compareFPA0ToX	; compare FPA0 to -32768
 	blt	@tooLow
 ;
 ; Shift the mantissa right until the binary point is 16 bits from the left of the mantissa.
 ; We do not use Color Basic's $BCC8 routine because it is off by one on negative values, for C.
-        lda     FP0EXP
-        suba    #$80            ; real exponent in A (0..15); we want to increase it to 16
+        flt_loadAFromFPA0BiasedExp
+        suba    #EXPBIAS        ; real exponent in A (0..15); we want to increase it to 16
         bls     @zero
         cmpa    #8
         bhi     @byteShiftDone
@@ -42,7 +79,7 @@ initSignedWordFromSingle
         cmpa    #16
         blo     @shiftLoop
 ; Absolute value of result is in FP0MAN. Apply the sign.
-        tst     FP0SGN
+        flt_testFPA0Sign
         bpl     @nonNeg
         clra
         clrb
@@ -56,7 +93,7 @@ initSignedWordFromSingle
         clrb
 	bra	@store
 @tooHigh
-        tst     FP0SGN
+        flt_testFPA0Sign
         bpl     @max
         ldd     #-32768
         bra     @store
@@ -69,7 +106,7 @@ initSignedWordFromSingle
 	std	[,s]		; get dest address from stack, store word there
 	puls	x,y,u,pc
 
-
+        ENDC
 
 
 	ENDSECTION

@@ -1,7 +1,5 @@
-/*  $Id: TypeDesc.cpp,v 1.43 2019/08/17 19:52:21 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -32,9 +30,9 @@ TypeDesc::TypeDesc(BasicType _basicType,
                    const string &_className,
                    bool _isSigned,
                    bool _isUnion,
-                   uint16_t _numArrayElements)
+                   size_t _numArrayElements)
   : type(_basicType), pointedTypeDesc(_pointedTypeDesc),
-    returnTypeDesc(NULL), formalParamTypeDescList(), isISR(false), ellipsis(false), receivesFirstParamInReg(false), isConst(false),
+    returnTypeDesc(NULL), formalParamTypeDescList(), isISR(false), ellipsis(false), callConvention(DEFAULT_CMOC_CALL_CONV), isConst(false),
     className(_className), numArrayElements(_numArrayElements), isSigned(_isSigned), isUnion(_isUnion)
 {
     assert(!pointedTypeDesc || pointedTypeDesc->isValid());
@@ -45,9 +43,9 @@ TypeDesc::TypeDesc(BasicType _basicType,
 // Forms a FUNCTION_TYPE.
 // _returnTypeDesc: Must not be null.
 //
-TypeDesc::TypeDesc(const TypeDesc *_returnTypeDesc, bool _isISR, bool _endsWithEllipsis, bool _receivesFirstParamInReg)
+TypeDesc::TypeDesc(const TypeDesc *_returnTypeDesc, bool _isISR, bool _endsWithEllipsis, CallConvention _callConvention)
   : type(FUNCTION_TYPE), pointedTypeDesc(NULL),
-    returnTypeDesc(_returnTypeDesc), formalParamTypeDescList(), isISR(_isISR), ellipsis(_endsWithEllipsis), receivesFirstParamInReg(_receivesFirstParamInReg), isConst(false),
+    returnTypeDesc(_returnTypeDesc), formalParamTypeDescList(), isISR(_isISR), ellipsis(_endsWithEllipsis), callConvention(_callConvention), isConst(false),
     className(), numArrayElements(0), isSigned(false), isUnion(false)
 {
     assert(returnTypeDesc && returnTypeDesc->isValid());
@@ -57,7 +55,7 @@ TypeDesc::TypeDesc(const TypeDesc *_returnTypeDesc, bool _isISR, bool _endsWithE
 TypeDesc::TypeDesc(const TypeDesc &td)
   : type(td.type), pointedTypeDesc(td.pointedTypeDesc),
     returnTypeDesc(td.returnTypeDesc), formalParamTypeDescList(td.formalParamTypeDescList),
-    isISR(td.isISR), ellipsis(td.ellipsis), receivesFirstParamInReg(td.receivesFirstParamInReg), isConst(td.isConst),
+    isISR(td.isISR), ellipsis(td.ellipsis), callConvention(td.callConvention), isConst(td.isConst),
     className(td.className), numArrayElements(td.numArrayElements), isSigned(td.isSigned), isUnion(td.isUnion)
 {
 }
@@ -87,7 +85,7 @@ TypeDesc::isValid() const
         return pointedTypeDesc == NULL && !className.empty();
     case POINTER_TYPE:
     case ARRAY_TYPE:
-        return pointedTypeDesc != NULL && pointedTypeDesc->isValid() && className.empty() && !isSigned;
+        return pointedTypeDesc != NULL && pointedTypeDesc->isValid() && className.empty();
     case FUNCTION_TYPE:
         if (returnTypeDesc == NULL || !returnTypeDesc->isValid())
             return false;
@@ -125,6 +123,34 @@ TypeDesc::isPtrOrArray() const
 
 
 bool
+TypeDesc::isPtrToArray() const
+{
+    return type == POINTER_TYPE && pointedTypeDesc->type == ARRAY_TYPE;
+}
+
+
+bool
+TypeDesc::isArrayOfChar() const
+{
+    return type == ARRAY_TYPE && getPointedTypeDesc()->type == BYTE_TYPE;
+}
+
+
+bool
+TypeDesc::isPtrToChar() const
+{
+    return type == POINTER_TYPE && getPointedTypeDesc()->type == BYTE_TYPE;
+}
+
+
+bool
+TypeDesc::isPtrOrArrayOfChar() const
+{
+    return getPointedTypeDesc() != NULL && getPointedTypeDesc()->type == BYTE_TYPE;
+}
+
+
+bool
 TypeDesc::isPtrToFunction() const
 {
     assert(isValid());
@@ -132,10 +158,41 @@ TypeDesc::isPtrToFunction() const
 }
 
 
+size_t
+TypeDesc::getFunctionPointerLevel() const
+{
+    assert(isValid());
+    size_t level = 0;
+    const TypeDesc *td = this;
+    while (td->type == POINTER_TYPE)
+    {
+        ++level;
+        td = td->pointedTypeDesc;
+    }
+    if (td->type == FUNCTION_TYPE)
+        return level;
+    return 0;
+}
+
+
 bool
 TypeDesc::isByteOrWord() const
 {
     return type == BYTE_TYPE || type == WORD_TYPE;
+}
+
+
+bool
+TypeDesc::isByteOrWordOrPointer() const
+{
+    return isByteOrWord() || type == POINTER_TYPE;
+}
+
+
+bool
+TypeDesc::isWordOrPointerOrArray () const
+{
+    return type == WORD_TYPE || type == POINTER_TYPE || type == ARRAY_TYPE;
 }
 
 
@@ -202,24 +259,43 @@ TypeDesc::isInterruptServiceRoutine() const
 }
 
 
-bool
-TypeDesc::isFunctionReceivingFirstParamInReg() const
+CallConvention
+TypeDesc::getCallConvention() const
 {
-    return receivesFirstParamInReg;
+    return callConvention;
 }
 
 
 bool
 TypeDesc::isTypeWithCallingConventionFlags() const
 {
-    return isISR || receivesFirstParamInReg;
+    return isISR || callConvention != DEFAULT_CMOC_CALL_CONV;
 }
 
 
-bool
-TypeDesc::isTypeWithoutCallingConventionFlags() const
+void
+TypeDesc::getGCCCallConventionInfo(ssize_t &firstByteArgIndex,
+                                   ssize_t &firstWordArgIndex) const
 {
-    return !isISR && !receivesFirstParamInReg;
+    firstByteArgIndex = firstWordArgIndex = -1;
+    
+    if (type != FUNCTION_TYPE)
+        return;  // not useful to call this method in this case
+
+    if (ellipsis)
+        return;  // variadic function: all args (hidden and visible) are on stack
+
+    if (returnTypeDesc->type == CLASS_TYPE)
+        firstWordArgIndex = -2;
+
+    for (vector<const TypeDesc *>::const_iterator it = formalParamTypeDescList.begin(); it != formalParamTypeDescList.end(); ++it)
+    {
+        const TypeDesc *argTD = *it;
+        if (firstByteArgIndex == -1 && TranslationUnit::instance().getTypeSize(*argTD) == 1)
+            firstByteArgIndex = ssize_t(it - formalParamTypeDescList.begin());  // found 1st byte-sized parameter
+        if (firstWordArgIndex == -1 && TranslationUnit::instance().getTypeSize(*argTD) == 2)
+            firstWordArgIndex = ssize_t(it - formalParamTypeDescList.begin());  // found 1st word-sized parameter
+    }
 }
 
 
@@ -231,6 +307,23 @@ TypeDesc::isConstant() const
     if (type != ARRAY_TYPE)
         return false;
     return pointedTypeDesc->isConstant();
+}
+
+
+bool
+TypeDesc::isConstAtFirstLevel() const
+{
+    return isConst;
+}
+
+
+bool
+TypeDesc::isPointerToOrArrayOfConst() const
+{
+    if (type != POINTER_TYPE && type != ARRAY_TYPE)
+        return false;
+    assert(pointedTypeDesc);
+    return pointedTypeDesc->isConstAtFirstLevel();
 }
 
 
@@ -277,7 +370,7 @@ TypeDesc::canGoInReadOnlySection(bool isRelocatabilitySupported) const
 const TypeDesc *
 TypeDesc::getPointedTypeDesc() const
 {
-    if (type == POINTER_TYPE || type == ARRAY_TYPE)
+    if (isPtrOrArray())
         return pointedTypeDesc;
     return NULL;
 }
@@ -340,37 +433,73 @@ TypeDesc::appendDimensions(vector<uint16_t> &arrayDimensions) const
     const TypeDesc *td = this;
     while (td->type == ARRAY_TYPE)
     {
-        if (td->numArrayElements != uint16_t(-1))
-            arrayDimensions.push_back(td->numArrayElements);
+        if (td->numArrayElements != TypeDesc::NO_DIMENSION)
+        {
+            assert(td->numArrayElements <= UINT16_MAX);
+            arrayDimensions.push_back((uint16_t) td->numArrayElements);
+        }
         td = td->pointedTypeDesc;
         assert(td);
     }
 }
 
 
+bool
+TypeDesc::isArrayOfUndeterminedSize() const
+{
+    return isArray() && numArrayElements == TypeDesc::NO_DIMENSION;
+}
+
+
 // This type may contain an array size, e.g., typedef int Array[5].
-// It also may not contain any type: in a "char b[5]" declaration,
+// It also may not contain any size: in a "char b[5]" declaration,
 // the 5 is part of a Declarator, not part of the TypeDesc, which
 // only represents "char".
 // The type may also represent both cases: an "Array v[3]" declaration
 // will yield a TypeDesc that is "array of array of char", where
-// - the first "array" has numArrayElements == uint16_t(-1) because that
+// - the first "array" has numArrayElements == TypeDesc::NO_DIMENSION because that
 //   size must be provided by a Declarator (which will contain 3);
 // - the second "array" has numArrayElements == 5 as per the typedef.
 //
 size_t
-TypeDesc::getNumArrayElements() const
+TypeDesc::getTotalNumArrayElements() const
 {
     size_t numElements = 1;
     const TypeDesc *td = this;
     while (td->type == ARRAY_TYPE)
     {
-        if (td->numArrayElements != uint16_t(-1))
+        if (td->numArrayElements != TypeDesc::NO_DIMENSION)
             numElements *= td->numArrayElements;
         td = td->pointedTypeDesc;
         assert(td);
     }
     return numElements;
+}
+
+
+const TypeDesc *
+TypeDesc::getFinalPointerType() const
+{
+    const TypeDesc *td = this;
+    while (td->type == POINTER_TYPE)
+    {
+        td = td->pointedTypeDesc;
+        assert(td);
+    }
+    return td;
+}
+
+
+const TypeDesc *
+TypeDesc::getFinalArrayType() const
+{
+    const TypeDesc *td = this;
+    while (td->type == ARRAY_TYPE)
+    {
+        td = td->pointedTypeDesc;
+        assert(td);
+    }
+    return td;
 }
 
 
@@ -396,7 +525,7 @@ TypeDesc::compare(const TypeDesc &a, const TypeDesc &b)
     int flagComparison = 0;
     if (a.isISR != b.isISR)
         flagComparison = flagComparison | 2;
-    if (a.receivesFirstParamInReg != b.receivesFirstParamInReg)
+    if (a.callConvention != b.callConvention)
         flagComparison = flagComparison | 4;
     flagComparison = - flagComparison;
 
@@ -484,30 +613,63 @@ TypeDesc::sameTypesModuloConstAtPtrLevel(const TypeDesc &a, const TypeDesc &b)
 }
 
 
+bool
+TypeDesc::sameFunctionTypesModuloKAndREmptyParamLilst(const TypeDesc &a, const TypeDesc &b)
+{
+    if (a.type != FUNCTION_TYPE || b.type != FUNCTION_TYPE)
+        return false;
+    if (a.formalParamTypeDescList.size() > 0 || b.formalParamTypeDescList.size() > 0)
+        return a == b;  // be strict in this case
+    // Both functions declare no parameters, i.e., param list is () or (...).
+    TypeDesc tmp(a);
+    tmp.ellipsis = b.ellipsis;  // tolerate different on this field
+    return tmp == b;
+}
+
+
 void
 TypeDesc::printFunctionSignature(std::ostream &out, const TypeDesc &funcTD,
-                                 bool pointer, bool isPointerConst, bool arrayOfPointers)
+                                 bool pointer, bool isPointerConst, bool arrayOfPointers,
+                                 size_t numAsterisks, const string &funcName)
 {
     assert(funcTD.type == FUNCTION_TYPE);
     if (funcTD.isISR)
         out << "interrupt ";
-    if (funcTD.receivesFirstParamInReg)
-        out << "_CMOC_fpir_ ";
+    switch (funcTD.callConvention)
+    {
+        case DEFAULT_CMOC_CALL_CONV:
+            break;
+        case FIRST_PARAM_IN_REG_CALL_CONV:
+            out << "_CMOC_fpir_ ";
+            break;
+        case GCC6809_CALL_CONV:
+            out << "__gcccall ";
+            break;
+    }
     out << *funcTD.returnTypeDesc;
     if (funcTD.returnTypeDesc->type != POINTER_TYPE)
         out << " ";
-    out << "(";
-    if (pointer)
+
+    if (funcName.empty())
     {
-        out << "*";
-        if (isPointerConst)
-            out << " const";
-        if (isPointerConst && arrayOfPointers)
-            out << " ";
-        if (arrayOfPointers)
-            out << "[]";  // dimensions would go here
+        out << "(";
+        if (pointer)
+        {
+            for (size_t i = numAsterisks; i--; )
+                out << '*';
+            if (isPointerConst)
+                out << " const";
+            if (isPointerConst && arrayOfPointers)
+                out << " ";
+            if (arrayOfPointers)
+                out << "[]";  // dimensions would go here
+        }
+        out << ")";
     }
-    out << ")(";
+    else
+        out << funcName;
+
+    out << "(";
     for (vector<const TypeDesc *>::const_iterator it = funcTD.formalParamTypeDescList.begin(); it != funcTD.formalParamTypeDescList.end(); ++it)
     {
         if (it != funcTD.formalParamTypeDescList.begin())
@@ -515,7 +677,13 @@ TypeDesc::printFunctionSignature(std::ostream &out, const TypeDesc &funcTD,
         out << **it;
     }
     if (funcTD.ellipsis)
-        out << ", ...";
+    {
+        if (funcTD.formalParamTypeDescList.size() > 0)
+            out << ", ";
+        out << "...";
+    }
+    else if (funcTD.formalParamTypeDescList.size() == 0)
+        out << "void";
     out << ")";
 }
 
@@ -528,9 +696,11 @@ operator << (std::ostream &out, const TypeDesc &td)
     switch (td.type)
     {
     case POINTER_TYPE:
-        if (td.pointedTypeDesc->type == FUNCTION_TYPE)
+    {
+        size_t fpl = td.getFunctionPointerLevel();
+        if (fpl >= 1)  // if ptr to func, or ptr-to-ptr-...-ptf to func
         {
-            TypeDesc::printFunctionSignature(out, *td.pointedTypeDesc, true, td.isConst, false);
+            TypeDesc::printFunctionSignature(out, *td.getFinalPointerType(), true, td.isConst, false, fpl);
             break;
         }
         out << *td.pointedTypeDesc;
@@ -540,14 +710,17 @@ operator << (std::ostream &out, const TypeDesc &td)
         if (td.isConst)
             out << " const";
         break;
+    }
     case ARRAY_TYPE:
     {
-        if (td.pointedTypeDesc->type == POINTER_TYPE && td.pointedTypeDesc->pointedTypeDesc->type == FUNCTION_TYPE)
+        size_t fpl = td.pointedTypeDesc->getFunctionPointerLevel();
+        if (fpl >= 1)
         {
-            TypeDesc::printFunctionSignature(out, *td.pointedTypeDesc->pointedTypeDesc, true, td.pointedTypeDesc->isConst, true);
+            TypeDesc::printFunctionSignature(out, *td.pointedTypeDesc->getFinalPointerType(), true, td.pointedTypeDesc->isConst, true, fpl);
             break;
         }
-        string numElem = (td.numArrayElements == uint16_t(-1) ? "" : wordToString(td.numArrayElements, false));
+        assert(td.numArrayElements == TypeDesc::NO_DIMENSION || td.numArrayElements <= UINT16_MAX);
+        string numElem = (td.numArrayElements == TypeDesc::NO_DIMENSION ? "" : wordToString(td.numArrayElements, false));
         out << *td.pointedTypeDesc << "[" << numElem << "]";
         break;
     }
@@ -568,7 +741,7 @@ operator << (std::ostream &out, const TypeDesc &td)
             out << (td.isUnion ? "union" : "struct") << " " << td.className;
         break;
     case FUNCTION_TYPE:
-        TypeDesc::printFunctionSignature(out, td, false, false, false);
+        TypeDesc::printFunctionSignature(out, td, false, false, false, 0);
         break;
     default:
         if (td.isISR)

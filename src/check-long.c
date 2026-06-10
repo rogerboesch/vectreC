@@ -1,20 +1,48 @@
+// N.B.: This program can be compiled with gcc with this command line:
+//       gcc -m32 -g -DPART0 -DPART1 -DPART2 -Wall -Wno-div-by-zero -Wno-overflow check-long.c
+//       The -m32 option is necessary to have a 32-bit long type, instead of 64 bits.
+
+#ifdef _CMOC_VERSION_
 #include <coco.h>
+#else
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+typedef unsigned char byte;
+typedef unsigned short word;
+#endif
 
 #define PROGRAM "check-long.c"
 
 typedef unsigned long ulong;
 
-
 word numAsserts = 0, numErrors = 0;
+
+void failAssert(int lineNo, const char *failedCondition)
+{
+    printf(PROGRAM ": ERROR: LINE %d: %s\n", lineNo, failedCondition);
+    ++numErrors;
+    exit(1);
+}
 
 #define assert(cond) do { ++numAsserts; \
                           /*printf("TEST AT LINE %u\n", __LINE__);*/ \
-                          if (!(cond)) { \
-                            printf(PROGRAM ": ERROR: ASSERT FAILED: LINE %d\n", __LINE__); \
-                            ++numErrors; \
-                            exit(1); \
-                            } \
+                          if (!(cond)) failAssert(__LINE__, #cond); \
                         } while (0)
+
+void checkStringAssert(int lineNo, const char *actualString, const char *expectedString)
+{
+    ++numAsserts;
+    if (strcmp(actualString, expectedString) == 0)
+        return;
+    printf(PROGRAM ": ERROR: assert_str_eq FAILED: LINE %d: GOT \"%s\", EXPECTED \"%s\"\n",
+                    lineNo, actualString, expectedString);
+    ++numErrors;
+    exit(1);
+}
+
+#define assert_str_eq(actual, expected) (checkStringAssert(__LINE__, (actual), (expected)))
+
 
 void dumpMem(void *p, byte n)
 {
@@ -52,25 +80,25 @@ void declarations()
                   ul8 = -1000UL,
                   ul9 = (byte) 200;
     sprintf(temp, "%lu", ul0);
-    assert(!strcmp(temp, "0"));
+    assert_str_eq(temp, "0");
     sprintf(temp, "%lu", ul1);
-    assert(!strcmp(temp, "4294967290"));
+    assert_str_eq(temp, "4294967290");
     sprintf(temp, "%lu", ul2);
-    assert(!strcmp(temp, "2017"));
+    assert_str_eq(temp, "2017");
     sprintf(temp, "%lu", ul3);
-    assert(!strcmp(temp, "4294961760"));
+    assert_str_eq(temp, "4294961760");
     sprintf(temp, "%lu", ul4);
-    assert(!strcmp(temp, "3735928559"));
+    assert_str_eq(temp, "3735928559");
     sprintf(temp, "%lu", ul5);
-    assert(!strcmp(temp, "4294967295"));
+    assert_str_eq(temp, "4294967295");
     sprintf(temp, "%lu", ul6);
-    assert(!strcmp(temp, "4294959519"));
+    assert_str_eq(temp, "4294959519");
     sprintf(temp, "%lu", ul7);
-    assert(!strcmp(temp, "60000"));
+    assert_str_eq(temp, "60000");
     sprintf(temp, "%lu", ul8);
-    assert(!strcmp(temp, "4294966296"));
+    assert_str_eq(temp, "4294966296");
     sprintf(temp, "%lu", ul9);
-    assert(!strcmp(temp, "200"));
+    assert_str_eq(temp, "200");
 
 
     long sl0 = 0,
@@ -84,29 +112,29 @@ void declarations()
          sl8 = -1000UL,
          sl9 = (byte) 200;
     sprintf(temp, "%ld", sl0);
-    assert(!strcmp(temp, "0"));
+    assert_str_eq(temp, "0");
     sprintf(temp, "%ld", sl1);
-    assert(!strcmp(temp, "-6"));
+    assert_str_eq(temp, "-6");
     sprintf(temp, "%ld", sl2);
-    assert(!strcmp(temp, "2017"));
+    assert_str_eq(temp, "2017");
     sprintf(temp, "%ld", sl3);
-    assert(!strcmp(temp, "-5536"));
+    assert_str_eq(temp, "-5536");
     sprintf(temp, "%ld", sl4);
-    assert(!strcmp(temp, "-559038737"));
+    assert_str_eq(temp, "-559038737");
     sprintf(temp, "%ld", sl5);
-    assert(!strcmp(temp, "-1"));
+    assert_str_eq(temp, "-1");
     sprintf(temp, "%ld", sl6);
-    assert(!strcmp(temp, "-7777"));
+    assert_str_eq(temp, "-7777");
     sprintf(temp, "%ld", sl7);
-    assert(!strcmp(temp, "60000"));
+    assert_str_eq(temp, "60000");
     sprintf(temp, "%ld", sl8);
-    assert(!strcmp(temp, "-1000"));
+    assert_str_eq(temp, "-1000");
     sprintf(temp, "%ld", sl9);
-    assert(!strcmp(temp, "200"));
+    assert_str_eq(temp, "200");
 
     signed long sl10 = -2;
     sprintf(temp, "%ld", sl10);
-    assert(!strcmp(temp, "-2"));
+    assert_str_eq(temp, "-2");
 
     //printf("temp=[%s]\n", temp);
 
@@ -143,7 +171,6 @@ void unaryOperators()
     assert(!(!ul0));
     ul0 = 0L;
     assert(!ul0);
-    unsigned char ub = !ul0;
 
     long sl0 = 1000000, sl2 = 98765;
     assert(sl0 == 1000000);
@@ -170,7 +197,6 @@ void unaryOperators()
     assert(!(!sl0));
     sl0 = 0L;
     assert(!sl0);
-    unsigned char sb = !sl0;
 
 
     assert(sizeof(long) == 4);
@@ -182,11 +208,13 @@ void unaryOperators()
     assert(sizeof(0uL) == 4);
     assert(sizeof(0Ul) == 4);
     assert(sizeof(0ul) == 4);
+    #ifdef _CMOC_VERSION_
     assert(sizeof(0U) == 2);
     assert(sizeof(0u) == 2);
     assert(sizeof(1000) == 2);
     assert(sizeof(1000000) == 4);
     assert(sizeof(-1000) == 2);
+    #endif
     assert(sizeof(-1000L) == 4);
     assert(sizeof(-1000000) == 4);
     assert(sizeof(ul0) == 4);
@@ -197,7 +225,6 @@ void unsignedLongBinaryOperators()
 {
     ulong ul0 = 1234567UL,
           ul1 = 445566UL,
-          ul2 = 0x77777777UL,
           ul3 = 257UL;
     word u0 = 1844,
          u1 = 60000;
@@ -275,8 +302,12 @@ void unsignedLongBinaryOperators()
     assert(4000000000UL / 70000UL == 57142UL);
     assert(4000000000UL / 7000UL == 571428UL);
     assert(0UL / 7000UL == 0UL);
+
+    #ifdef _CMOC_VERSION_  /* These divisions by 0 stop with a floating point exception. */
     assert(70000UL / 0UL == 0xFFFFFFFFUL);  // division by zero does not hang
     assert(7000UL / 0UL == 0xFFFFFFFFUL);  // division by zero does not hang
+    #endif
+
     assert(ul0 / u0 == 669UL);
     assert(u1 / ul3 == 233UL);
     assert(ul0 / s0 == 22446UL);
@@ -289,11 +320,13 @@ void unsignedLongBinaryOperators()
     assert((signed short) -9999 / 9UL == 477217477UL);
 
     // Divisions by zero:
+    #ifdef _CMOC_VERSION_
     unsigned uz = 0;
     signed sz = 0;
     assert(ul0 / 0UL == 0xFFFFFFFFUL);
     assert(ul0 / uz == 0xFFFFFFFFUL);
     assert(ul0 / sz == 0xFFFFFFFFUL);
+    #endif
 
     assert(123UL % 10UL == 3UL);
     assert(-123UL % 10UL == 3UL);
@@ -301,8 +334,10 @@ void unsignedLongBinaryOperators()
     assert(4000000000UL % 7000UL == 4000UL);
     assert(0UL % 7000UL == 0UL);
     assert(0UL % 70000UL == 0UL);
+    #ifdef _CMOC_VERSION_
     assert(70000UL % 0UL == 70000UL);  // division by zero does not hang
     assert(7000UL % 0UL == 7000UL);  // division by zero does not hang
+    #endif
 
     assert(ul0 % u0 == 931UL);
     assert(u1 % ul3 == 119UL);
@@ -313,10 +348,12 @@ void unsignedLongBinaryOperators()
     assert(0xFFFFFFFFUL % (signed short) 1 == 0UL);
     assert((signed short) -9999 % 9UL == 4UL);
 
-    // Divisions by zero:
+    #ifdef _CMOC_VERSION_
+    // More divisions by zero:
     assert(ul0 % 0UL == ul0);
     assert(ul0 % uz == ul0);
     assert(ul0 % sz == ul0);
+    #endif
 }
 
 
@@ -399,8 +436,12 @@ void shifts()
     assert(ul1 == 2);
     ul0 <<= 24;
     assert(ul0 == 0x10000000UL);
+
+    #ifdef _CMOC_VERSION_  /* This shift does nothing with gcc (9.4.0). */
     ul0 <<= 32;
     assert(!ul0);
+    #endif
+
     ul0 = 1;
     assert(ul0 <<  8 == 0x100);
     assert(ul0 << 16 == 0x10000);
@@ -417,8 +458,12 @@ void shifts()
     assert(sl1 == 2);
     sl0 <<= 24;
     assert(sl0 == 0x10000000UL);
+
+    #ifdef _CMOC_VERSION_
     sl0 <<= 32;
     assert(!sl0);
+    #endif
+
     sl0 = 1;
     assert(sl0 <<  8 == 0x100);
     assert(sl0 << 16 == 0x10000);
@@ -436,14 +481,21 @@ void shifts()
     assert(ul1 == 0x40000000UL);
     ul0 >>= 24;
     assert(ul0 == 0x8UL);
+
+    #ifdef _CMOC_VERSION_
     ul0 >>= 32;
     assert(!ul0);
+    #endif
+
     ul0 = 0x80000000UL;
     assert(ul0 >>  8 == 0x800000UL);
     assert(ul0 >> 16 == 0x8000UL);
     assert(ul0 >> 24 == 0x80UL);
-    assert(ul0 >> 32 == 0UL);
     assert(ul0 >> 31 == 1UL);
+
+    #ifdef _CMOC_VERSION_
+    assert(ul0 >> 32 == 0UL);
+    #endif
 
     sl0 = 0x80000000L;
     assert(sl0 < 0);
@@ -456,8 +508,12 @@ void shifts()
     assert(sl1 == 0xC0000000L);
     sl0 >>= 24;
     assert(sl0 == 0xFFFFFFF8L);
+
+    #ifdef _CMOC_VERSION_
     sl0 >>= 32;
     assert(sl0 == -1);
+    #endif
+
     sl0 = 0x80000000L;
     assert(sl0 >>  8 == 0xFF800000L);
     assert(sl0 >> 16 == 0xFFFF8000L);
@@ -501,7 +557,6 @@ void signedLongBinaryOperators()
 {
     long sl0 = -1234567L,
           sl1 = 445566L,
-          sl2 = 0x77777777L,
           sl3 = 257L;
     word u0 = 1844,
          u1 = 60000;
@@ -586,7 +641,11 @@ void signedLongBinaryOperators()
     assert(70000L / 4000000000L == 0L);
     assert(4000000000L / 7000L == 571428L);
     assert(0L / 7000L == 0L);
+
+    #ifdef _CMOC_VERSION_
     assert(7000L / 0L == 0xFFFFFFFFL);  // division by zero does not hang
+    #endif
+
     assert(-1L == 0xFFFFFFFFL);
     assert(sl0 / u0 == -669L);
     assert(sl0 / 60000 == -20L);
@@ -600,11 +659,13 @@ void signedLongBinaryOperators()
     assert((signed short) -9999 / 9UL == 477217477UL);
 
     // Divisions by zero:
+    #ifdef _CMOC_VERSION_
     unsigned uz = 0;
     signed sz = 0;
     assert(sl0 / 0UL == 0xFFFFFFFFUL);
     assert(sl0 / uz == 1L);  // division returns 0xFFFFFFFF, negated
     assert(sl0 / sz == 1l);  // ditto
+    #endif
 
     //printf("%ld / %ld = %ld\n", -4000000L, -70000L, -4000000L % -70000L);
 
@@ -618,16 +679,18 @@ void signedLongBinaryOperators()
     assert(70000L % 4000000000L == 70000L);
     assert(4000000000L % 7000L == 4000L);
     assert(0L % 7000L == 0L);
+    #ifdef _CMOC_VERSION_
     assert(7000L % 0L == 7000L);  // division by zero does not hang
+    #endif
     assert(-1L == 0xFFFFFFFFL);
     assert( sl0 %  u0 == -931L);
     assert( sl0 % -u0 == -931L);
     assert(-sl0 %  u0 ==  931L);
     assert(-sl0 % -u0 ==  931L);
     assert( sl0 %  60000 == -34567L);
-    assert( sl0 % -60000 == -39L);
+    assert( sl0 % (short) -60000 == -39L);  // cast needed for gcc, where int is 32 bits
     assert(-sl0 %  60000 ==  34567L);
-    assert(-sl0 % -60000 ==  39L);
+    assert(-sl0 % (short) -60000 ==  39L);  // cast needed for gcc, where int is 32 bits
     assert(u1 % sl3 == 119L);
     assert( sl0 % s0  == -37L);
     assert( sl0 % -s0 == -37L);
@@ -640,19 +703,21 @@ void signedLongBinaryOperators()
     assert(0xFFFFFFFFL % (signed short) -1 == 0L);
     assert((signed short) -9999 % 9UL == 4L);
 
-    // Divisions by zero:
+    #ifdef _CMOC_VERSION_
+    // More divisions by zero:
     assert(sl0 % 0L == sl0);
     assert(sl0 % uz == sl0);
     assert(sl0 % sz == sl0);
+    #endif
 }
 
 
 void assignments()
 {
     // Signed word.
-    int i0; i0 = 184444UL;
+    short i0; i0 = 184444UL;
     assert(i0 == -12164);
-    int i1; i1 = -1234567L;
+    short i1; i1 = -1234567L;
     assert(i1 == 10617);
 
     // Signed byte.
@@ -662,9 +727,9 @@ void assignments()
     assert(c1 == -3);
 
     // Unsigned word.
-    unsigned u0; u0 = 184444UL;
+    unsigned short u0; u0 = 184444UL;
     assert(u0 == 53372);
-    unsigned u1; u1 = -1234567L;
+    unsigned short u1; u1 = -1234567L;
     assert(u1 == 10617);
 
     // Unsigned byte.
@@ -728,8 +793,8 @@ void assignmentsWithOperations()
     // Integrals on left side.
     char c0 = -33;
     unsigned char b0 = 150;
-    int i0 = -9898;
-    unsigned u0 = 42000;
+    short i0 = -9898;
+    unsigned short u0 = 42000;
 
     c0 += 88888UL;
     assert(c0 == 23);
@@ -829,8 +894,8 @@ void casts()
 {
     char c0;
     unsigned char b0;
-    int i0;
-    unsigned u0;
+    short i0;
+    unsigned short u0;
     unsigned long ul0;
 
     c0 = (char) 0x123456EEL;
@@ -883,8 +948,8 @@ void returningLong()
 
 char takeChar(char x) { return x; }
 unsigned char takeUnsignedChar(unsigned char x) { return x; }
-int takeInt(int x) { return x; }
-unsigned takeUnsigned(unsigned x) { return x; }
+int takeShort(short x) { return x; }
+unsigned takeUnsignedShort(unsigned short x) { return x; }
 long takeLong(long x) { return x; }
 unsigned long takeULong(unsigned long x) { return x; }
 
@@ -897,8 +962,8 @@ void argumentPassing()
     // Pass long for intetral.
     assert(takeChar(-100000L) == 96);
     assert(takeUnsignedChar(100000L) == 160);
-    assert(takeInt(-100000L) == 31072);
-    assert(takeUnsigned(100000L) == 34464);
+    assert(takeShort(-100000L) == 31072);
+    assert(takeUnsignedShort(100000L) == 34464);
 
     // Pass integral for long.
     assert(takeLong((char) -42) == -42L);
@@ -918,7 +983,7 @@ void argumentPassing()
 }
 
 
-void stringOps()
+void test_strtoul(void)
 {
     char *endptr = 0;
 
@@ -926,61 +991,219 @@ void stringOps()
     assert(ul0 == 99999UL);
     assert(endptr == "99999%%%" + 5);
 
+    // Check that leading + sign is passed and ignored.
+    ul0 = strtoul("+99999%%%", &endptr, 10);
+    assert(ul0 == 99999UL);
+    assert(endptr == "+99999%%%" + 1 + 5);
+
+    // Check that leading white spaces are passed and ignored.
+    ul0 = strtoul("   99999%%%", &endptr, 10);
+    assert(ul0 == 99999UL);
+    assert(endptr == "   99999%%%" + 3 + 5);
+
+    ul0 = strtoul("   +99999%%%", &endptr, 10);
+    assert(ul0 == 99999UL);
+    assert(endptr == "   +99999%%%" + 3 + 6);
+
     ul0 = strtoul("-99999%%%", &endptr, 10);
     assert(ul0 == 0xfffe7961UL);
     assert(endptr == "-99999%%%" + 6);
+
+    ul0 = strtoul("   -99999%%%", &endptr, 10);
+    assert(ul0 == 0xfffe7961UL);
+    assert(endptr == "   -99999%%%" + 3 + 6);
+
+    ul0 = strtoul("\t\t\t-99998%%%", &endptr, 10);
+    assert(ul0 == 0xfffe7962UL);
+    assert(endptr == "\t\t\t-99998%%%" + 3 + 6);
+}
+
+
+void test_strtol(void)
+{
+    char *endptr = 0;
 
     signed long sl0 = strtol("99999%%%", &endptr, 10);
     assert(sl0 == 99999UL);
     assert(endptr == "99999%%%" + 5);
 
+    sl0 = strtol("+99999%%%", &endptr, 10);
+    assert(sl0 == 99999UL);
+    assert(endptr == "+99999%%%" + 1 + 5);
+
+    sl0 = strtol("   99999%%%", &endptr, 10);
+    assert(sl0 == 99999UL);
+    assert(endptr == "   99999%%%" + 3 + 5);
+
+    sl0 = strtol("\t\t\t\t88888%%%", &endptr, 10);
+    assert(sl0 == 88888UL);
+    assert(endptr == "\t\t\t\t88888%%%" + 4 + 5);
+
+    sl0 = strtol("\t \t 77777%%%", &endptr, 10);
+    assert(sl0 == 77777UL);
+    assert(endptr == "\t \t 77777%%%" + 4 + 5);
+
+    sl0 = strtol("   +99999%%%", &endptr, 10);
+    assert(sl0 == 99999UL);
+    assert(endptr == "   +99999%%%" + 3 + 6);
+
     sl0 = strtol("-99999%%%", &endptr, 10);
     assert(sl0 == -99999L);
     assert(endptr == "-99999%%%" + 6);
 
-    ul0 = atoul("491416");
+    sl0 = strtol("   -99999%%%", &endptr, 10);
+    assert(sl0 == -99999L);
+    assert(endptr == "   -99999%%%" + 3 + 6);
+}
+
+
+#ifdef _CMOC_VERSION_
+
+void test_atoul(void)
+{
+    unsigned long ul0 = atoul("491416");
     assert(ul0 == 491416UL);
     ul0 = atoul("-491416");
     assert(ul0 == 0xfff88068UL);
+    ul0 = atoul("   -891416");
+    assert(ul0 == 0xfff265E8UL);
+    ul0 = atoul("\t\t-891415");
+    assert(ul0 == 0xfff265E9UL);
+}
 
-    sl0 = atol("491416");
+#endif
+
+
+void test_atol(void)
+{
+    signed long sl0 = atol("491416");
     assert(sl0 == 491416L);
     sl0 = atol("-491416");
     assert(sl0 == -491416L);
+    sl0 = atol("   -391416");
+    assert(sl0 == -391416L);
+}
 
+
+#ifdef _CMOC_VERSION_
+
+void test_strtoul16(void)
+{
+    char *endptr = 0;
+
+    unsigned long ul0 = strtoul16("DeadBeef%%%", &endptr);
+    assert(ul0 == 0xDEADBEEFul);
+    assert(endptr == "DeadBeef%%%" + 8);
+
+    // Check that leading + sign is passed and ignored.
+    ul0 = strtoul16("+DeadBeef%%%", &endptr);
+    assert(ul0 == 0xDEADBEEFul);
+    assert(endptr == "+DeadBeef%%%" + 9);
+
+    // Check that leading white spaces are passed and ignored.
+    ul0 = strtoul16("   DeadBeef%%%", &endptr);
+    assert(ul0 == 0xDEADBEEFul);
+    assert(endptr == "   DeadBeef%%%" + 3 + 8);
+
+    ul0 = strtoul16("   +DeadBeef%%%", &endptr);
+    assert(ul0 == 0xDEADBEEFul);
+    assert(endptr == "   +DeadBeef%%%" + 3 + 9);
+
+    ul0 = strtoul16("-DeadBeef%%%", &endptr);
+    assert(ul0 == 0x21524111ul);
+    assert(endptr == "-DeadBeef%%%" + 9);
+
+    ul0 = strtoul16("   -DeadBeef%%%", &endptr);
+    assert(ul0 == 0x21524111ul);
+    assert(endptr == "   -DeadBeef%%%" + 3 + 9);
+}
+
+
+void test_strtol16(void)
+{
+    char *endptr = 0;
+
+    signed long sl0 = strtol16("DeadBeef%%%", &endptr);
+    assert(sl0 == 0xDEADBEEFl);
+    assert(endptr == "DeadBeef%%%" + 8);
+
+    sl0 = strtol16("+DeadBeef%%%", &endptr);
+    assert(sl0 == 0xDEADBEEFl);
+    assert(endptr == "+DeadBeef%%%" + 9);
+
+    sl0 = strtol16("   DeadBeef%%%", &endptr);
+    assert(sl0 == 0xDEADBEEFl);
+    assert(endptr == "   DeadBeef%%%" + 3 + 8);
+
+    sl0 = strtol16("   +DeadBeef%%%", &endptr);
+    assert(sl0 == 0xDEADBEEFl);
+    assert(endptr == "   +DeadBeef%%%" + 3 + 9);
+
+    sl0 = strtol16("-DeadBeef%%%", &endptr);
+    assert(sl0 == 0x21524111L);
+    assert(endptr == "-DeadBeef%%%" + 9);
+
+    sl0 = strtol16("   -DeadBeef%%%", &endptr);
+    assert(sl0 == 0x21524111L);
+    assert(endptr == "   -DeadBeef%%%" + 3 + 9);
+}
+
+
+void test_atoul16(void)
+{
+    unsigned long ul0 = atoul16("AbcDef");
+    assert(ul0 == 0xABCDEFul);
+    ul0 = atoul16("-AbcDef");
+    assert(ul0 == 0xFF543211ul);
+}
+
+
+void test_atol16(void)
+{
+    signed long sl0 = atol16("AbcDef");
+    assert(sl0 == 0xABCDEFl);
+    sl0 = atol16("-AbcDef");
+    assert(sl0 == 0xFF543211L);
+}
+
+#endif
+
+
+void test_sprintf(void)
+{
     // %ld, %lu, %lx.
     char temp[128];
     sprintf(temp, "%ld %ld %lu %lu", 100000L, -100000L, 100000UL, -100000L);
-    assert(!strcmp(temp, "100000 -100000 100000 4294867296"));
-    sprintf(temp, "%lx %lx %lx %lx %lx %lx %lx",
+    assert_str_eq(temp, "100000 -100000 100000 4294867296");
+    sprintf(temp, "%lX %lX %lX %lX %lX %lX %lX",  /* capital X to force gcc to use capital A-F */
                   0L, 42L, 100000L, 196613L, -42L, -1000L, -100000L);
-    assert(!strcmp(temp, "0 2A 186A0 30005 FFFFFFD6 FFFFFC18 FFFE7960"));
+    assert_str_eq(temp, "0 2A 186A0 30005 FFFFFFD6 FFFFFC18 FFFE7960");
 
     // Width specification.
     sprintf(temp, "%5ld %5ld %2ld", 42L, -42L, 99999L);
-    assert(!strcmp(temp, "   42   -42 99999"));
+    assert_str_eq(temp, "   42   -42 99999");
     sprintf(temp, "%5lu %5lu %2lu", 42L, -42L, 99999L);
-    assert(!strcmp(temp, "   42 4294967254 99999"));
-    sprintf(temp, "%5lx %5lx %20lx %9lx %11lx %5lx %5lx",
+    assert_str_eq(temp, "   42 4294967254 99999");
+    sprintf(temp, "%5lX %5lX %20lX %9lX %11lX %5lX %5lX",
                   0L, 42L, 100000L, 196613L, -42L, -1000L, -100000L);
     //printf("L%d: [%s]\n", __LINE__, temp);
-    assert(!strcmp(temp, "    0    2A                186A0     30005    FFFFFFD6 FFFFFC18 FFFE7960"));
+    assert_str_eq(temp, "    0    2A                186A0     30005    FFFFFFD6 FFFFFC18 FFFE7960");
 
     // Padding with 0.
     sprintf(temp, "%02ld %02ld %05ld %05ld %02ld", 0L, 6L, 42L, -42L, 99999L);
-    assert(!strcmp(temp, "00 06 00042 -0042 99999"));
+    assert_str_eq(temp, "00 06 00042 -0042 99999");
     sprintf(temp, "%02lu %02lu %05lu %05lu %02lu", 0L, 6L, 42L, -42L, 99999L);
-    assert(!strcmp(temp, "00 06 00042 4294967254 99999"));
-    sprintf(temp, "%02lx %05lx %05lx %020lx %09lx %011lx %05lx %05lx",
+    assert_str_eq(temp, "00 06 00042 4294967254 99999");
+    sprintf(temp, "%02lX %05lX %05lX %020lX %09lX %011lX %05lX %05lX",
                   6L, 0L, 42L, 100000L, 196613L, -42L, -1000L, -100000L);
     //printf("L%d: [%s]\n", __LINE__, temp);
-    assert(!strcmp(temp, "06 00000 0002A 000000000000000186A0 000030005 000FFFFFFD6 FFFFFC18 FFFE7960"));
+    assert_str_eq(temp, "06 00000 0002A 000000000000000186A0 000030005 000FFFFFFD6 FFFFFC18 FFFE7960");
 
     // %X instead of %x
     sprintf(temp, "%02lX %05lX %05lX %020lX %09lX %011lX %05lX %05lX",
                   7UL, 0L, 43L, 100000L, 196613L, -42L, -1000L, -100000L);
     //printf("L%d: [%s]\n", __LINE__, temp);
-    assert(!strcmp(temp, "07 00000 0002B 000000000000000186A0 000030005 000FFFFFFD6 FFFFFC18 FFFE7960"));
+    assert_str_eq(temp, "07 00000 0002B 000000000000000186A0 000030005 000FFFFFFD6 FFFFFC18 FFFE7960");
 
     // printf() warnings.
     sprintf(temp, "%d\n", 1L);
@@ -991,7 +1214,7 @@ void stringOps()
 const long ga0[] = { 55555555UL, 66666666L, 77777777L, -22222222L };
 const unsigned long gb0[] = { 5551, 6661, 7771, -2221 };
 unsigned long gc0[] = { '%', '\xFF' };
-int ge0[] = { 0x123456UL, 0xeeeeeeeeUL };
+short ge0[] = { 0x123456UL, 0xeeeeeeeeUL };
 char gf0[] = { 0x123456UL, 0xeeeeeeeeUL };
 
 
@@ -1032,21 +1255,21 @@ void arrays()
     assert(gc0[1] == -1L);
 
     assert(ga0[2UL] == 77777777L);
-    long *gp0 = ga0 + 2UL;
+    const long *gp0 = ga0 + 2UL;
     assert(*gp0 == 77777777L);
     assert(gp0[-1L] == 66666666L);
 
     assert(ge0[0] == 0x3456);
-    assert(ge0[1] == 0xEEEE);
+    assert(ge0[1] == (short) 0xEEEE);
     assert(gf0[0] == 0x56);
     assert(gf0[1] == (char) 0xEE);
     unsigned long zero = 0UL, one = 1UL;
     assert(gf0[zero] == 0x56);
     assert(gf0[one] == (char) 0xEE);
-    int e0[] = { 0x123457UL, 0xeeeeeee1UL };
+    short e0[] = { 0x123457UL, 0xeeeeeee1UL };
     char f0[] = { 0x123458UL, 0xeeeeeee2UL };
     assert(e0[0] == 0x3457);
-    assert(e0[1] == 0xEEE1);
+    assert(e0[1] == (short) 0xEEE1);
     assert(f0[0] == 0x58);
     assert(f0[1] == (char) 0xE2);
 }
@@ -1055,13 +1278,13 @@ void arrays()
 void initializationExpressions()
 {
     // Signed word.
-    int i0 = 1844L;
+    short i0 = 1844L;
     assert(i0 == 1844);
-    int i1 = 16842751L;
+    short i1 = 16842751L;
     assert(i1 == -1);
-    int i2 = -77777L;
+    short i2 = -77777L;
     assert(i2 == -12241);
-    int i5 = -3L;
+    short i5 = -3L;
     assert(i5 == -3);
 
     // Signed byte.
@@ -1075,11 +1298,11 @@ void initializationExpressions()
     assert(c6 == 97);
 
     // Unsigned word.
-    unsigned u0 = 1844L;
+    unsigned short u0 = 1844L;
     assert(u0 == 1844);
-    unsigned u1 = 16842751L;
+    unsigned short u1 = 16842751L;
     assert(u1 == 65535);
-    unsigned u6 = -99999L;
+    unsigned short u6 = -99999L;
     assert(u6 == 31073);
 
     // Unsigned byte.
@@ -1122,6 +1345,12 @@ void bitwiseOperators()
     assert(ul0 == 0x00200B00UL);
     ul0 &= 0xB00;
     assert(ul0 == 0xB00UL);
+
+    unsigned long ul1 = 0x41200000ul;
+    unsigned long ul2 = 0x007ffffful;
+    unsigned long ul3 = ul1 & ul2;
+    //printf("$%08lx & $%08lx -> $%08lx\n", ul1, ul2, ul3);
+    assert(ul3 == 0x00200000ul);
 
     ul0 = 0;
     assert((ul0 ^ 4UL) == 4);
@@ -1195,7 +1424,19 @@ int main()
 
     argumentPassing();
 
-    stringOps();
+    test_strtoul();
+    test_strtol();
+    test_atol();
+
+    #ifdef _CMOC_VERSION_
+    test_atoul();
+    test_strtoul16();
+    test_strtol16();
+    test_atoul16();
+    test_atol16();
+    #endif
+
+    test_sprintf();
 
     arrays();
 

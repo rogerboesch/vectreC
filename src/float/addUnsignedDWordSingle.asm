@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 addUnsignedDWordSingle	EXPORT
@@ -11,7 +13,7 @@ addUnsignedDWordSingle
 	ldx	8,s		; left (unsigned dword)
 	lbsr	loadUnsignedDWordInFPA0
 	ldx	10,s		; right (single)
-	jsr	$BB2F		; unpack from X to FPA1
+	flt_unpackFromXToFPA1
 	lbra	addFPA0FPA1
 
 

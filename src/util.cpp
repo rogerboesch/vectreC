@@ -1,7 +1,5 @@
-/*  $Id: util.cpp,v 1.40 2020/03/02 01:42:19 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2020 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -34,9 +32,6 @@
 using namespace std;
 
 
-const std::string inlineASMTag = "[inline asm]";
-
-
 int16_t
 getTypeSize(BasicType t)
 {
@@ -55,8 +50,9 @@ getTypeSize(BasicType t)
         case CLASS_TYPE:
             assert(!"cannot get size of CLASS_TYPE");
             return 0;
-        case SIZELESS_TYPE:
         case FUNCTION_TYPE:
+            return 1; // allows funcPtrVar += N to work
+        case SIZELESS_TYPE:
             return 0;
     }
     return 0;
@@ -163,6 +159,16 @@ getRegisterFromName(const char *name)
                 return registerNames[i].reg;
     }
     return NO_REGISTER;
+}
+
+
+const char *
+getRegisterName(Register reg)
+{
+    for (size_t i = 0; i < sizeof(registerNames) / sizeof(registerNames[0]); ++i)
+        if (registerNames[i].reg == reg)
+            return registerNames[i].name;
+    return NULL;
 }
 
 
@@ -302,15 +308,36 @@ endsWith(const string &s, const char *suffix)
 }
 
 
+static pair<string::size_type, string>
+getExtensionOffsetAndString(const string &s)
+{
+    string::size_type dotPos = s.rfind('.');
+    if (dotPos == string::npos)
+        return make_pair(dotPos, string());
+
+    string::size_type slashPos = s.rfind('/');
+    if (slashPos != string::npos && dotPos < slashPos)  // if foo.bar/baz
+        return make_pair(dotPos, string());  // extension exists, but not in basename
+
+    return make_pair(dotPos, string(s, dotPos));
+}
+
+
+string
+getExtension(const string &s)
+{
+    return getExtensionOffsetAndString(s).second;
+}
+
+
 string
 removeExtension(string &s)
 {
-    string::size_type posExt = s.rfind('.');
-    if (posExt == string::npos)
+    pair<string::size_type, string> p = getExtensionOffsetAndString(s);
+    if (p.first == string::npos)
         return string();
-    string ext(s, posExt);
-    s.erase(posExt);
-    return ext;
+    s.erase(p.first);
+    return p.second;
 }
 
 
@@ -323,51 +350,11 @@ replaceExtension(const string &s, const char *newExt)
 }
 
 
-bool
-isDirSep(char c)
-{
-#ifdef _WIN32
-    if (c == '\\')
-        return true;
-#endif
-    return c == '/';
-}
-
-
-string::size_type
-findLastDirSep(const string &path)
-{
-#ifdef _WIN32
-    return path.find_last_of("/\\");
-#else
-    return path.rfind('/');
-#endif
-}
-
-
-bool
-containsDirSep(const string &path)
-{
-#ifdef _WIN32
-    return path.find_first_of("/\\") != string::npos;
-#else
-    return path.find('/') != string::npos;
-#endif
-}
-
-
-string
-quoteArg(const string &arg)
-{
-    return "\"" + arg + "\"";
-}
-
-
 string
 replaceDir(const string &s, const string &newDir)
 {
     string prefix = newDir + "/";
-    string::size_type lastDirSepPos = findLastDirSep(s);
+    string::size_type lastDirSepPos = s.rfind('/');
     if (lastDirSepPos != string::npos)  // if dir sep found
         return prefix + s.substr(lastDirSepPos + 1);
     return prefix + s;
@@ -377,7 +364,7 @@ replaceDir(const string &s, const string &newDir)
 string
 getBasename(const string &filename)
 {
-    string::size_type lastSlash = findLastDirSep(filename);
+    string::size_type lastSlash = filename.rfind('/');
     if (lastSlash == string::npos)  // if no slash
         return filename;
     return string(filename, lastSlash + 1, string::npos);
@@ -397,7 +384,8 @@ isPointerInitConstCorrect(const TypeDesc *declPointedTypeDesc, const TypeDesc *i
         {
             return CONST_INCORRECT;  // e.g., int * = const int *
         }
-        if (declPointedTypeDesc->type == POINTER_TYPE && initPointedTypeDesc->type == POINTER_TYPE)
+        if (   (declPointedTypeDesc->type == POINTER_TYPE && initPointedTypeDesc->type == POINTER_TYPE)
+            || (declPointedTypeDesc->type == ARRAY_TYPE   && initPointedTypeDesc->type == ARRAY_TYPE))
         {
             declPointedTypeDesc = declPointedTypeDesc->pointedTypeDesc;
             initPointedTypeDesc = initPointedTypeDesc->pointedTypeDesc;
@@ -406,6 +394,62 @@ isPointerInitConstCorrect(const TypeDesc *declPointedTypeDesc, const TypeDesc *i
         if (declPointedTypeDesc->type != initPointedTypeDesc->type)
             return INCOMPAT_TYPES;
         return CONST_CORRECT;
+    }
+}
+
+
+int16_t
+computeDimensionsProduct(const vector<uint16_t> &dims, size_t dimIndex, int16_t finalArrayElementTypeSize)
+{
+    assert(dims.size() >= 1);
+    assert(dimIndex <= dims.size());
+    uint16_t rowSize = 0;
+    bool success = product(rowSize, dims.begin() + dimIndex, dims.end());
+    if (!success)  // if overflow
+        return -1;
+    uint32_t rowSizeInBytes = rowSize * finalArrayElementTypeSize;
+    if (rowSizeInBytes == 0 || rowSizeInBytes > 0x7FFF)
+        return -1;
+    return int16_t(rowSizeInBytes);
+}
+
+
+const char *
+getTargetPlatformName(TargetPlatform targetPlatform)
+{
+    switch (targetPlatform)
+    {
+        case COCO_BASIC:  return "CoCo Disk Basic";
+        case OS9:         return "OS-9";
+        case USIM:        return "USim";
+        case VECTREX:     return "Vectrex";
+        case DRAGON:      return "Dragon";
+        case VOID_TARGET: return "Void Target";
+        case THOMMO:      return "Thomson MO";
+        case THOMTO:      return "Thomson TO";
+        case FLEX:        return "FLEX";
+        case INTERM_REP:  return "Intermediate representation";
+        default:          return "???";
+    }
+}
+
+
+const char *
+getTargetPlatformPreprocId(TargetPlatform targetPlatform)
+{
+    switch (targetPlatform)
+    {
+        case COCO_BASIC:  return "_COCO_BASIC_";
+        case OS9:         return "OS9";
+        case USIM:        return "USIM";
+        case VECTREX:     return "VECTREX";
+        case DRAGON:      return "DRAGON";
+        case VOID_TARGET: return "_CMOC_VOID_TARGET_";
+        case THOMMO:      return "THOMMO";
+        case THOMTO:      return "THOMTO";
+        case FLEX:        return "FLEX";
+        case INTERM_REP:  return "_CMOC_INTERM_REP_";
+        default:          return "???";
     }
 }
 
@@ -423,19 +467,39 @@ getSourceLineNo()
 
 
 void
-diagnoseVa(const char *diagType, const string &explicitLineNo, const char *fmt, va_list ap)
+diagnoseVa(bool isError, const string &explicitLineNo, const char *fmt, va_list ap)
 {
     extern int numErrors, numWarnings;
 
-    if (strcmp(diagType, "error") == 0)
-        numErrors++;
-    else
-        numWarnings++;
+    if (!isError
+            && TranslationUnit::hasInstance()
+            && TranslationUnit::instance().areAllWarningMessagesInhibited())
+        return;
 
     char buffer[1024];
     vsnprintf(buffer, sizeof(buffer), fmt, ap);
 
-    cout << explicitLineNo << ": " << diagType << ": " << buffer << "\n";
+    {
+        // Use maps to remember which diagnostics have already been issued.
+        static map<string, set<string>> errorMap, warningMap;  // e.g., key: "foo.c:42"; value: set of messages
+
+        auto &map = isError ? errorMap : warningMap;
+        auto it = map.find(explicitLineNo);
+        if (it != map.end())
+        {
+            auto &set = it->second;
+            if (set.find(buffer) != set.end())
+                return;  // already issued
+        }
+        map[explicitLineNo].insert(buffer);
+    }
+
+    cout << explicitLineNo << ": " << (isError ? "error" : "warning") << ": " << buffer << "\n";
+
+    if (isError)
+        numErrors++;
+    else
+        numWarnings++;
 }
 
 
@@ -450,7 +514,7 @@ errormsg(const char *fmt, ...)
 
     va_list ap;
     va_start(ap, fmt);
-    diagnoseVa("error", s, fmt, ap);
+    diagnoseVa(true, s, fmt, ap);
     va_end(ap);
 }
 
@@ -460,7 +524,7 @@ errormsgEx(const string &explicitLineNo, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    diagnoseVa("error", explicitLineNo, fmt, ap);
+    diagnoseVa(true, explicitLineNo, fmt, ap);
     va_end(ap);
 }
 
@@ -473,7 +537,7 @@ errormsgEx(const std::string &sourceFilename, int lineno, const char *fmt, ...)
 
     va_list ap;
     va_start(ap, fmt);
-    diagnoseVa("error", s, fmt, ap);
+    diagnoseVa(true, s, fmt, ap);
     va_end(ap);
 }
 
@@ -489,7 +553,7 @@ warnmsg(const char *fmt, ...)
 
     va_list ap;
     va_start(ap, fmt);
-    diagnoseVa("warning", s, fmt, ap);
+    diagnoseVa(false, s, fmt, ap);
     va_end(ap);
 }
 
@@ -513,4 +577,3 @@ yyerror(const char *msg)
 
     errormsg("%s: %s", msg, escapedText.str().c_str());
 }
-

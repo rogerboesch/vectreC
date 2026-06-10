@@ -1,3 +1,5 @@
+; N.B.: Not used when using --mc6839. See mc6839-ftoa.c instead.
+
         INCLUDE float.inc
 
         SECTION code
@@ -14,19 +16,11 @@ _ftoa
 	pshs	u,y		; protect against Basic
 
 	leax	8,s		; f: number to convert to string
-	jsr	$BC14		; load FPA0 from X
+	flt_unpackFromXToFPA0
 
 	ldu	6,s		; out: where to write string
 
-	ldb	FP0SGN		; get sign of 'f'
-	bpl	@positive
-	lda	#'-'
-	sta	,u+		; output minus sign
-	bra	@signDone
-@positive
-	lda	#' '
-@signDone
-	jsr	$BDE6		; let Basic do rest of conversion
+        flt_convertFPA0ToASCII
 
 	ldd	6,s		; success: return 'out'
 	puls	y,u,pc

@@ -1,7 +1,5 @@
-/*  $Id: FunctionCallExpr.cpp,v 1.84 2020/05/07 01:04:08 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
-    Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
+/*  CMOC - A C-like cross-compiler
+    Copyright (C) 2003-2025 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -42,10 +40,16 @@ FunctionCallExpr::FunctionCallExpr(Tree *func, TreeSequence *args)
     function(func),
     funcPtrVarDecl(NULL),
     arguments(args),
-    returnValueDeclaration(NULL)
+    returnValueDeclaration(NULL),
+    tempDeclarationForFirstByteParam(),
+    firstByteParamImmedValue(0),
+    tempDeclarationForFirstWordParam(),
+    firstWordParamImmedValue(0)
 {
     assert(function != NULL);
     assert(arguments != NULL);
+    if (auto ie = dynamic_cast<IdentifierExpr *>(function))
+        ie->makeNameInAFunctionCall(true);  // remember that this ID is used to call a function, i.e., foo()
 }
 
 
@@ -105,12 +109,20 @@ FunctionCallExpr::paramAcceptsArg(const TypeDesc &paramTD, const Tree &argTree)
     case SIZELESS_TYPE:
         if (paramTD.isIntegral() && argTD.isReal())  // e.g., short <- float
             return WARN_REAL_FOR_INTEGRAL;
-        return argTD.isNumerical() || argTD.isPtrOrArray() ? NO_PROBLEM : ERROR_MSG;
+        if (paramTD.isIntegral() && argTD.isPtrOrArray())  // e.g., int <- int *
+            return WARN_PTR_FOR_INTEGRAL;
+        if (!argTD.isNumerical() && !argTD.isPtrOrArray())
+            return ERROR_MSG;
+        if (argTree.getTypeSize() > 2)
+            return WARN_ARGUMENT_TOO_LARGE;
+        return NO_PROBLEM;
     case CLASS_TYPE:
         if (paramTD.isNumerical())
         {
             if (paramTD.isReal() && argTD.isPtrOrArray())  // e.g., float <- float *
                 return ERROR_MSG;
+            if (paramTD.isIntegral() && argTD.isPtrOrArray())  // e.g., long <- long *
+                return WARN_PTR_FOR_INTEGRAL;
             if (paramTD.isIntegral() && argTD.isReal())  // e.g., long <- float
                 return WARN_REAL_FOR_INTEGRAL;
             return argTD.isNumerical() || argTD.isPtrOrArray() ? NO_PROBLEM : ERROR_MSG;
@@ -119,13 +131,20 @@ FunctionCallExpr::paramAcceptsArg(const TypeDesc &paramTD, const Tree &argTree)
         return argTD.isStruct() && paramTD.className == argTD.className ? NO_PROBLEM : ERROR_MSG;
     case POINTER_TYPE:
     case ARRAY_TYPE:
+        if (paramTD.isPtrToFunction() && argTD.isPtrToFunction())
+        {
+            return TypeDesc::sameFunctionTypesModuloKAndREmptyParamLilst(*paramTD.pointedTypeDesc, *argTD.pointedTypeDesc)
+                        ? NO_PROBLEM : ERROR_MSG;
+        }
         if (argTD.isNumerical())
         {
             uint16_t result = 0;
             if (!argTree.evaluateConstantExpr(result))
                 return WARN_NON_PTR_ARRAY_FOR_PTR;
-            if (result != 0)
-                return WARN_PASSING_CONSTANT_FOR_PTR;
+            if (argTree.getType() == BYTE_TYPE)
+                return WARN_PASSING_CHAR_CONSTANT_FOR_PTR;
+            if (result != 0 && TranslationUnit::instance().isWarningOnPassingConstForFuncPtr())  // re: -Wpass-const-for-func-pointer
+                return WARN_PASSING_NON_ZERO_CONSTANT_FOR_PTR;
             return NO_PROBLEM;
         }
         if (!argTD.isPtrOrArray())
@@ -157,7 +176,8 @@ FunctionCallExpr::paramAcceptsArg(const TypeDesc &paramTD, const Tree &argTree)
     case VOID_TYPE:
         return ERROR_MSG;
     case FUNCTION_TYPE:
-        return paramTD == argTD ? NO_PROBLEM : ERROR_MSG;
+        return TypeDesc::sameFunctionTypesModuloKAndREmptyParamLilst(paramTD, argTD)
+                    ? NO_PROBLEM : ERROR_MSG;
     }
     return ERROR_MSG;
 }
@@ -186,19 +206,19 @@ public:
     FormalParamListContraption(const FormalParamList &_formalParamList)
         : formalParamList(_formalParamList), it(formalParamList.begin()) {}
     virtual ~FormalParamListContraption() {}
-    virtual bool hasNextParam() const { return it != formalParamList.end(); }
-    virtual void nextParam() { assert(it != formalParamList.end()); ++it; }
-    virtual bool isAcceptableNumberOfArguments(size_t numArguments) const
+    virtual bool hasNextParam() const override { return it != formalParamList.end(); }
+    virtual void nextParam() override { assert(it != formalParamList.end()); ++it; }
+    virtual bool isAcceptableNumberOfArguments(size_t numArguments) const override
         { return formalParamList.isAcceptableNumberOfArguments(numArguments); }
-    virtual bool endsWithEllipsis() const { return formalParamList.endsWithEllipsis(); }
-    virtual size_t size() const { return formalParamList.size(); }
-    virtual const TypeDesc *getCurrentParamTypeDesc() const
+    virtual bool endsWithEllipsis() const override { return formalParamList.endsWithEllipsis(); }
+    virtual size_t size() const override { return formalParamList.size(); }
+    virtual const TypeDesc *getCurrentParamTypeDesc() const override
     {
         assert(it != formalParamList.end());
         assert(*it);
         return (*it)->getTypeDesc();
     }
-    virtual const FormalParameter *getCurrentParamAsFormalParameter() const
+    virtual const FormalParameter *getCurrentParamAsFormalParameter() const override
     {
         assert(it != formalParamList.end());
         assert(*it);
@@ -216,23 +236,23 @@ public:
     TypeDescVectorContraption(const vector<const TypeDesc *> &_formalParamTypes, bool _ellipsis)
         : formalParamTypes(_formalParamTypes), it(formalParamTypes.begin()), ellipsis(_ellipsis) {}
     virtual ~TypeDescVectorContraption() {}
-    virtual bool hasNextParam() const { return it != formalParamTypes.end(); }
-    virtual void nextParam() { assert(it != formalParamTypes.end()); ++it; }
-    virtual bool isAcceptableNumberOfArguments(size_t numArguments) const
+    virtual bool hasNextParam() const override { return it != formalParamTypes.end(); }
+    virtual void nextParam() override { assert(it != formalParamTypes.end()); ++it; }
+    virtual bool isAcceptableNumberOfArguments(size_t numArguments) const override
     {
         if (ellipsis)
             return numArguments >= size();
         return numArguments == size();
     }
-    virtual bool endsWithEllipsis() const { return ellipsis; }
-    virtual size_t size() const { return formalParamTypes.size(); }
-    virtual const TypeDesc *getCurrentParamTypeDesc() const
+    virtual bool endsWithEllipsis() const override { return ellipsis; }
+    virtual size_t size() const override { return formalParamTypes.size(); }
+    virtual const TypeDesc *getCurrentParamTypeDesc() const override
     {
         assert(it != formalParamTypes.end());
         assert(*it);
         return *it;
     }
-    virtual const FormalParameter *getCurrentParamAsFormalParameter() const { return NULL; }
+    virtual const FormalParameter *getCurrentParamAsFormalParameter() const override { return NULL; }
 private:
     const vector<const TypeDesc *> &formalParamTypes;
     vector<const TypeDesc *>::const_iterator it;
@@ -251,10 +271,17 @@ FunctionCallExpr::checkCallArguments(const string &functionId,
     string temp = (functionId.empty() ? "call through function pointer" : "function " + functionId + "()");
 
     if (! contraption.isAcceptableNumberOfArguments(args.size()))
-        errormsg("call %s passes %u argument(s) but function expects %s%u",
+    {
+        string funcLocation;
+        const FunctionDef *calledFD = TranslationUnit::instance().getFunctionDef(getIdentifier());
+        if (calledFD != NULL)
+            funcLocation = " (declared at " + calledFD->getLineNo() + ")";
+        errormsg("call %s passes %u argument(s) but function expects %s%u%s",
                  (functionId.empty() ? "through function pointer" : ("to " + functionId + "()").c_str()), args.size(),
                  contraption.endsWithEllipsis() ? "at least " : "",
-                 contraption.size());
+                 contraption.size(),
+                 funcLocation.empty() ? "" : funcLocation.c_str());
+    }
     else
     {
         // Check the type of each argument against the corresponding formal parameter.
@@ -290,9 +317,13 @@ FunctionCallExpr::checkCallArguments(const string &functionId,
                                      fpIndex, paramNameStr.c_str(), temp.c_str(),
                                      paramTD->toString().c_str());
                 break;
-            case WARN_PASSING_CONSTANT_FOR_PTR:
-                if (TranslationUnit::instance().isWarningOnPassingConstForFuncPtr())  // if -Wpass-const-for-func-pointer
-                    argTree->warnmsg("passing non-zero numeric constant as parameter %u%s of %s, which is `%s'",
+            case WARN_PASSING_CHAR_CONSTANT_FOR_PTR:
+                argTree->warnmsg("passing character constant as parameter %u%s of %s, which is `%s'",
+                                     fpIndex, paramNameStr.c_str(), temp.c_str(),
+                                     paramTD->toString().c_str());
+                break;
+            case WARN_PASSING_NON_ZERO_CONSTANT_FOR_PTR:
+                argTree->warnmsg("passing non-zero numeric constant as parameter %u%s of %s, which is `%s'",
                                      fpIndex, paramNameStr.c_str(), temp.c_str(),
                                      paramTD->toString().c_str());
                 break;
@@ -325,6 +356,12 @@ FunctionCallExpr::checkCallArguments(const string &functionId,
                                     argTD->toString().c_str(),
                                     paramTD->toString().c_str());
                 break;
+            case WARN_PTR_FOR_INTEGRAL:
+                argTree->warnmsg("passing pointer type `%s' for parameter %u%s of %s, which is `%s`",
+                                  argTD->toString().c_str(),
+                                  fpIndex, paramNameStr.c_str(), temp.c_str(),
+                                  paramTD->toString().c_str());
+                break;
             case ERROR_MSG:
                 argTree->errormsg("`%s' used as parameter %u%s of %s which is `%s'",
                                     argTD->toString().c_str(),
@@ -340,14 +377,14 @@ FunctionCallExpr::checkCallArguments(const string &functionId,
             {
                 const IdentifierExpr *ie = dynamic_cast<const IdentifierExpr *>(argTree);
                 if (!ie)
-                    argTree->errormsg("parameter %u of %s must be a member of enum %s",
+                    argTree->warnmsg("parameter %u of %s is not a member of enum %s",
                                       fpIndex, temp.c_str(), enumTypeName->c_str());
                 else
                 {
                     // Get the enumerator list of the named enum.
                     string id = ie->getId();
                     if (! TranslationUnit::getTypeManager().isIdentiferMemberOfNamedEnum(*enumTypeName, id))
-                        argTree->errormsg("`%s' used as parameter %u of %s but is not a member of enum %s",
+                        argTree->warnmsg("`%s' used as parameter %u of %s but is not a member of enum %s",
                                           id.c_str(), fpIndex, temp.c_str(), enumTypeName->c_str());
                 }
             }
@@ -363,6 +400,29 @@ FunctionCallExpr::checkCallArguments(const string &functionId,
 }
 
 
+const TypeDesc *
+FunctionCallExpr::getCalledPrototypeTypeDesc() const
+{
+    if (isCallThroughPointer())
+    {
+        const TypeDesc *td = function->getTypeDesc();
+        if (td->type == POINTER_TYPE && td->pointedTypeDesc->type == FUNCTION_TYPE)
+            return td->pointedTypeDesc;
+        if (td->type == FUNCTION_TYPE)
+            return td;
+        return NULL;
+    }
+
+    string fid = getIdentifier();
+    const FunctionDef *fd = TranslationUnit::instance().getFunctionDef(fid);
+    if (!fd)
+        return NULL;
+    const TypeDesc *td = TranslationUnit::instance().getTypeManager().getFunctionPointerType(*fd);
+    assert(td->type == POINTER_TYPE && td->pointedTypeDesc->type == FUNCTION_TYPE);
+    return td->pointedTypeDesc;
+}
+
+
 // Called by the ExpressionTypeSetter.
 //
 bool
@@ -373,14 +433,14 @@ FunctionCallExpr::checkAndSetTypes()
     if (isCallThroughPointer())
     {
         assert(function);
-        const TypeDesc *funcTD = function->getTypeDesc();
-        if (funcTD->type == POINTER_TYPE && funcTD->pointedTypeDesc->type == FUNCTION_TYPE)
-            funcTD = funcTD->pointedTypeDesc;
-        else if (funcTD->type != FUNCTION_TYPE)
+        const TypeDesc *funcTD = getCalledPrototypeTypeDesc();
+        if (!funcTD)
         {
-            function->errormsg("function pointer call through expression of invalid type (`%s')", function->getTypeDesc()->toString().c_str());
+            function->errormsg("function pointer call through expression of invalid type (`%s')",
+                                function->getTypeDesc()->toString().c_str());
             return false;
         }
+        assert(funcTD->type == FUNCTION_TYPE);
 
         const TypeDesc *retTD = funcTD->getReturnTypeDesc();
         assert(retTD);
@@ -402,7 +462,10 @@ FunctionCallExpr::checkAndSetTypes()
     string fid = getIdentifier();
     const FunctionDef *fd = TranslationUnit::instance().getFunctionDef(fid);
     if (!fd)
+    {
+        setTypeDesc(TranslationUnit::getTypeManager().getIntType(WORD_TYPE, true));  // assume call returns int
         return false;  // undeclared function: let FunctionChecker handle this
+    }
 
     if (fd->isInterruptServiceRoutine())
     {
@@ -419,6 +482,22 @@ FunctionCallExpr::checkAndSetTypes()
 }
 
 
+static bool
+isValidPrintfConversionSpecifier(char c)
+{
+    return strchr("cdfpsuxX", c) != NULL;
+}
+
+
+// Allowed: %ld, %lu, %lx, %lX.
+//
+static bool
+isValidLongPrintfConversionSpecifier(char c)
+{
+    return strchr("duxX", c) != NULL;
+}
+
+
 void
 FunctionCallExpr::checkPrintfArguments(const TreeSequence &args, const string &functionId) const
 {
@@ -432,13 +511,13 @@ FunctionCallExpr::checkPrintfArguments(const TreeSequence &args, const string &f
         const Tree *arg = *a;
         if (arg->getType() != POINTER_TYPE && arg->getType() != ARRAY_TYPE)
         {
-            warnmsg("first argument of sprintf() should be pointer or array instead of `%s'",
+            warnmsg("first argument of sprintf""() should be pointer or array instead of `%s'",
                     arg->getTypeDesc()->toString().c_str());
             return;
         }
         if (dynamic_cast<const StringLiteralExpr *>(arg))
         {
-            warnmsg("first argument of sprintf() is a string literal", arg->getTypeDesc()->toString().c_str());
+            warnmsg("first argument of sprintf""() is a string literal", arg->getTypeDesc()->toString().c_str());
             return;
         }
         ++a;
@@ -449,7 +528,8 @@ FunctionCallExpr::checkPrintfArguments(const TreeSequence &args, const string &f
     const StringLiteralExpr *formatArg = dynamic_cast<const StringLiteralExpr *>(*a);
     if (!formatArg)
     {
-        warnmsg("format argument of %s() is not a string literal", functionId.c_str());
+        if (TranslationUnit::instance().warnOnNonLiteralPrintfFormat())
+            warnmsg("format argument of %s() is not a string literal", functionId.c_str());
         return;  // cannot check format if not a string literal
     }
 
@@ -457,59 +537,122 @@ FunctionCallExpr::checkPrintfArguments(const TreeSequence &args, const string &f
 
     const string formatStr = formatArg->getLiteral();
     size_t formatLen = formatStr.length();
-    for (size_t i = 0; i < formatLen; ++i)
+    bool warningIssued = false;
+    for (size_t i = 0; i < formatLen; ++i)  // for each character of the format string
         if (formatStr[i] == '%')
         {
             ++i;
-            if (i < formatLen && formatStr[i] == '%')
+            if (i < formatLen && formatStr[i] == '%')  // if double percent, an actual '%' is printed
                 continue;
 
             // Look for end of placeholder.
-            while (i < formatLen && !isalpha(formatStr[i]))
-                ++i;
-
-            if (i == formatLen)
+            // If letter found, scan the letters of the placeholder.
+            // Note whether the 'l' modifier is specified.
+            bool runtimeWidthMarkerSeen = false;
+            while (i < formatLen && !isalpha(formatStr[i]) && !isspace(formatStr[i]))
             {
-                formatArg->warnmsg("no letter follows last %% in %s() format string", functionId.c_str());
+                if (formatStr[i] == '*')
+                    runtimeWidthMarkerSeen = true;
+                ++i;
+            }
+            bool haveLongModifier = false;
+            if (i < formatLen && isalpha(formatStr[i]))  // if on letter
+            {
+                if (formatStr[i] == 'l')
+                {
+                    haveLongModifier = true;
+                    ++i;
+                }
+                if (i == formatLen || !isValidPrintfConversionSpecifier(formatStr[i]))
+                {
+                    formatArg->warnmsg("no valid conversion specifier follows %% in %s() format string", functionId.c_str());
+                    warningIssued = true;
+                    break;
+                }
+                if (haveLongModifier && !isValidLongPrintfConversionSpecifier(formatStr[i]))
+                {
+                    formatArg->warnmsg("unsupported use of `l' flag used on `%c' conversion specifier in %s() format string",
+                                        formatStr[i], functionId.c_str());
+                    warningIssued = true;
+                    break;
+                }
+            }
+            else
+            {
+                formatArg->warnmsg("no conversion specifier follows %% in %s() format string", functionId.c_str());
+                warningIssued = true;
                 break;
             }
 
             if (a == args.end())
             {
                 formatArg->warnmsg("not enough arguments to %s() to match its format string", functionId.c_str());
+                warningIssued = true;
                 break;
             }
 
-            // Scan the letters of the placeholder.
-            bool haveLongModifier = false;
-            while (i < formatLen && isalpha(formatStr[i]))
+            if (runtimeWidthMarkerSeen)
             {
-                if (formatStr[i] == 'l')
-                    haveLongModifier = true;
-                ++i;
+                if ((*a)->getType() != WORD_TYPE)
+                    (*a)->warnmsg("argument %u of %s() is supposed to be a signed int runtime field width, but is of type `%s'",
+                                    unsigned(a - args.begin()) + 1, functionId.c_str(), (*a)->getTypeDesc()->toString().c_str());
+
+                ++a;  // point to next argument
+                if (a == args.end())
+                {
+                    formatArg->warnmsg("not enough arguments to %s() to match its format string", functionId.c_str());
+                    warningIssued = true;
+                    break;
+                }
             }
-            --i;  // go back to the last letter
 
             const TypeDesc *argTD = (*a)->getTypeDesc();
+            unsigned argIndex = unsigned(a - args.begin()) + 1;
 
             if (formatStr[i] == 'f' && ! argTD->isReal())
+            {
                 (*a)->warnmsg("argument %u of %s() is of type `%s' but the placeholder is %%f",
-                              unsigned(a - args.begin()) + 1, functionId.c_str(), argTD->toString().c_str());
+                              argIndex, functionId.c_str(), argTD->toString().c_str());
+                warningIssued = true;
+            }
             else if (argTD->isReal() && formatStr[i] != 'f')
+            {
                 (*a)->warnmsg("argument %u of %s() is of type `%s' but the placeholder is not %%f",
-                              unsigned(a - args.begin()) + 1, functionId.c_str(), argTD->toString().c_str());
+                              argIndex, functionId.c_str(), argTD->toString().c_str());
+                warningIssued = true;
+            }
 
             if (haveLongModifier && ! argTD->isLong())
+            {
                 (*a)->warnmsg("argument %u of %s() is of type `%s' but the placeholder has the `l' modifier",
-                              unsigned(a - args.begin()) + 1, functionId.c_str(), argTD->toString().c_str());
+                              argIndex, functionId.c_str(), argTD->toString().c_str());
+                warningIssued = true;
+            }
             else if (argTD->isLong() && ! haveLongModifier)
+            {
                 (*a)->warnmsg("argument %u of %s() is of type `%s' but the placeholder does not have the `l' modifier",
-                              unsigned(a - args.begin()) + 1, functionId.c_str(), argTD->toString().c_str());
+                              argIndex, functionId.c_str(), argTD->toString().c_str());
+                warningIssued = true;
+            }
 
+            if (formatStr[i] == 's' && !argTD->isPtrOrArrayOfChar())
+            {
+                (*a)->warnmsg("argument %u of %s() is of type `%s' but the placeholder is %%s",
+                              argIndex, functionId.c_str(), argTD->toString().c_str());
+                warningIssued = true;
+            }
+
+            if (argTD->isStruct())
+            {
+                (*a)->warnmsg("argument %u of %s() is a struct or union",
+                              argIndex, functionId.c_str());
+                warningIssued = true;
+            }
+            
             ++a;  // point to next argument
         }
 
-    if (a != args.end())
+    if (!warningIssued && a != args.end())
         formatArg->warnmsg("too many arguments for %s() format string", functionId.c_str());
 }
 
@@ -549,6 +692,48 @@ FunctionCallExpr::checkSemantics(Functor &f)
     //
     if (passesHiddenParam())
         returnValueDeclaration = Declaration::declareHiddenVariableInCurrentScope(*this);
+
+    const TypeDesc *calledTD = getCalledPrototypeTypeDesc();
+    if (!calledTD)
+    {
+        // An error message is assumed to be issued elsewhere for this.
+        return;
+    }
+
+    if (calledTD->getCallConvention() == GCC6809_CALL_CONV)
+    {
+        // Declare some hidden local variables in the stack space
+        // where the parameters received in registers will be spilled
+        // at the start of the function body.
+        // The signedness of the temporary locations does not matter.
+        // However, do NOT delcare a local variable IF the value is known at compile time.
+        //
+        ssize_t firstByteArgIndex, firstWordArgIndex;
+        calledTD->getGCCCallConventionInfo(firstByteArgIndex, firstWordArgIndex);
+        auto &tm = TranslationUnit::getTypeManager();
+        if (firstByteArgIndex != -1)
+        {
+            Tree *argTree = arguments->getTree(firstByteArgIndex);
+            uint16_t result = 0;
+            if (argTree && argTree->evaluateConstantExpr(result))  // if known at compile time
+            {
+                firstByteParamImmedValue = result & 0xFF;  // leave tempDeclarationForFirstByteParam null
+                if (WordConstantExpr *wce = dynamic_cast<WordConstantExpr *>(argTree))
+                    wce->forceAsByte();  // tells code emitter to use LDB instead of LDD
+            }
+            else
+                tempDeclarationForFirstByteParam.reset(Declaration::declareHiddenVariableInCurrentScope(*this, tm.getIntType(BYTE_TYPE, false)));
+        }
+        if (firstWordArgIndex != -1)
+        {
+            const Tree *argTree = arguments->getTree(firstWordArgIndex);  // will be null if -2
+            uint16_t result = 0;
+            if (argTree && argTree->evaluateConstantExpr(result))  // if known at compile time
+                firstWordParamImmedValue = result;  // leave tempDeclarationForFirstWordParam null
+            else
+                tempDeclarationForFirstWordParam.reset(Declaration::declareHiddenVariableInCurrentScope(*this, tm.getIntType(WORD_TYPE, false)));
+        }
+    }
 }
 
 
@@ -559,36 +744,59 @@ FunctionCallExpr::passesHiddenParam() const
 }
 
 
-bool
-FunctionCallExpr::isFunctionReceivingFirstParamInReg() const
-{
-    const FunctionDef *fd = TranslationUnit::instance().getFunctionDef(getIdentifier());
-    if (fd)
-        return fd->isFunctionReceivingFirstParamInReg();
-    assert(function);
-    assert(function->getTypeDesc());
-    return function->getTypeDesc()->isFunctionReceivingFirstParamInReg();
-}
-
-
-// Emits an instruction and increments numBytesPushed depending on whether the
-// argument must be passed in a register (D) or pushed in the stack.
-// isArgInRegX: Only applies if passInReg is true.
-// pshsArg: Not used if passInReg is true.
+// Emits code to pass a function argument value currently contained in a register.
+// Emits an instruction and increments numBytesPushed depending on passInReg,
+// i.e., whether the argument must be passed in a register or pushed on the stack.
+//
+// gccCall: Indicates that the GCC6809 calling convention applies.
+//          The value to be passed will not be pushed on the stack, but will instead
+//          be stored in tempDeclarationForFirstByteParam or tempDeclarationForFirstWordParam
+//          depending on its size. Just before the call to the function, the appropriate
+//          register will be loaded from that location.
+// regContainingArg: Supported: B, D, X.
+// numBytesPushed: In/Out. Gets incremented if passInReg is false.
+// pshsComment: Comment to use if passInReg is false.
+// param: May be null.
 //
 bool
-FunctionCallExpr::emitPushSingleArg(ASMText &out, bool passInReg, bool isArgInRegX, uint16_t &numBytesPushed,
-                                    const char *pshsArg, const string &pshsComment) const
+FunctionCallExpr::emitPushSingleArg(ASMText &out, bool passInReg, bool gccCall,
+                                    Register regContainingArg, uint16_t &numBytesPushed,
+                                    const string &pshsComment,
+                                    const TypeDesc *paramTypeDesc) const
 {
+    assert(regContainingArg == B || regContainingArg == D || regContainingArg == X);
+    const char *regNameContainingArg = getRegisterName(regContainingArg);
+
     if (!passInReg)
     {
-        out.ins("PSHS", pshsArg, pshsComment);
-        numBytesPushed += 2;
+        out.ins("PSHS", regContainingArg == D ? "B,A" : regNameContainingArg, pshsComment);
+        numBytesPushed += regContainingArg == B ? 1 : 2;
         return true;
     }
 
-    if (isArgInRegX)
-        out.ins("TFR", "X,D", "function receives argument 1 in D");
+    // If the parameter of the function is a byte, and regContainingArg is D, then
+    // it is actually B that gets passed.
+    //
+    if (paramTypeDesc && paramTypeDesc->type == BYTE_TYPE && regContainingArg == D)
+        regContainingArg = B;
+
+    // If gccCall is true, getFirstParameterRegister() is appropriate, despite its name.
+    //
+    Register regToPassArgIn = TranslationUnit::instance().getFirstParameterRegister(regContainingArg == B);
+    const char *regNameToPassArgIn = getRegisterName(regToPassArgIn);
+    string comment = "function receives argument in " + string(regNameToPassArgIn);
+
+    if (regContainingArg != regToPassArgIn)
+        out.ins("TFR", regNameContainingArg + string(",") + regNameToPassArgIn, comment);
+    else
+        out.emitComment(comment);
+
+    if (passInReg && gccCall)
+    {
+        const Declaration *tempDecl = (regToPassArgIn == B ? tempDeclarationForFirstByteParam.get() : tempDeclarationForFirstWordParam.get());
+        if (tempDecl)
+            out.emitParameterSaveInstruction(regNameToPassArgIn, tempDecl->getFrameDisplacementArg(0), function->getLineNo());
+    }
 
     return true;
 }
@@ -597,44 +805,55 @@ FunctionCallExpr::emitPushSingleArg(ASMText &out, bool passInReg, bool isArgInRe
 // If the called function receives its first parameter in a register, the emitted code
 // leaves the value of that parameter in D or B.
 //
-// numBytesPushed: Must be initialized to zero. Gets incremented by the number of bytes
+// numBytesPushed: Must already be initialized. Gets incremented by the number of bytes
 //                 pushed onto the system stack by the code emitted by this method.
 // functionId: If not empty, appears in the comments. Not used for anything else.
+// callConv: Determines if the argument will be pushed on the stack or in a register.
 //
 bool
 FunctionCallExpr::emitArgumentPushCode(ASMText &out,
                                        const string &functionId,
+                                       CallConvention callConv,
                                        uint16_t &numBytesPushed) const
 {
     /*  Push the arguments in reverse order on the stack.
         Promote byte expressions to word.
     */
 
-    const FunctionDef *fd = TranslationUnit::instance().getFunctionDef(getIdentifier());
-    const FormalParamList *formalParams = (fd ? fd->getFormalParamList() : NULL);  // may be null
-    const bool calledFunctionReceivesFirstVisibleParamInReg = (isFunctionReceivingFirstParamInReg() && !passesHiddenParam());
+    const TypeDesc *calledTD = getCalledPrototypeTypeDesc();
+
+    const bool calledFunctionReceivesFirstVisibleParamInReg = (callConv == GCC6809_CALL_CONV
+                    ? false
+                    : callConv == FIRST_PARAM_IN_REG_CALL_CONV && !passesHiddenParam());
+
+    ssize_t firstByteArgIndex = -1, firstWordArgIndex = -1;  // zero-based indexes, when referring to 'arguments' array
+    if (callConv == GCC6809_CALL_CONV && calledTD)
+        calledTD->getGCCCallConventionInfo(firstByteArgIndex, firstWordArgIndex);
+
+    const vector<const TypeDesc *> *paramTypeDescList = (calledTD ? &calledTD->getFormalParamTypeDescList() : NULL);
+
     size_t index = arguments->size();
     for (vector<Tree *>::reverse_iterator it = arguments->rbegin();
                                          it != arguments->rend(); it++, index--)
     {
         const Tree *expr = *it;
-        string comment = "argument " + wordToString(uint16_t(index))
-                         + (functionId.empty() ? "" : " of " + functionId + "()")
-                         + ": " + expr->getTypeDesc()->toString();
+        string comment = ASMText::getArgumentPassingComment(uint16_t(index), functionId, *expr->getTypeDesc());
 
         // Determine which formal parameter this argument corresponds to, if any.
         // (A function taking an ellipsis may receive more arguments that it has declared parameters.)
 
         assert(index > 0);
         size_t fpIndex = index - 1;
-        const FormalParameter *param = NULL;
-        if (formalParams && fpIndex < formalParams->size())
+        const TypeDesc *paramTypeDesc = NULL;
+        if (paramTypeDescList && fpIndex < paramTypeDescList->size())
         {
-            param = dynamic_cast<const FormalParameter *>(*(formalParams->begin() + fpIndex));
-            assert(param);
+            paramTypeDesc = (*paramTypeDescList)[fpIndex];
+            assert(paramTypeDesc);
         }
 
-        const bool passInReg = (calledFunctionReceivesFirstVisibleParamInReg && fpIndex == 0);
+        const bool passInReg = callConv == GCC6809_CALL_CONV
+                                ? (ssize_t(index) == firstByteArgIndex + 1 || ssize_t(index) == firstWordArgIndex + 1)
+                                : (calledFunctionReceivesFirstVisibleParamInReg && fpIndex == 0);
 
         // Emit code depending on the argument type.
 
@@ -644,12 +863,12 @@ FunctionCallExpr::emitArgumentPushCode(ASMText &out,
         if (const StringLiteralExpr *sle = dynamic_cast<const StringLiteralExpr *>(expr))
         {
             out.ins("LEAX", sle->getArg(), sle->getEscapedVersion());
-            emitPushSingleArg(out, passInReg, true, numBytesPushed, "X", comment);
+            emitPushSingleArg(out, passInReg, callConv == GCC6809_CALL_CONV, X, numBytesPushed, comment, paramTypeDesc);
         }
         else if (ve && ve->getType() == ARRAY_TYPE)  // if argument is an array
         {
             out.ins("LEAX", ve->getFrameDisplacementArg(), "address of array " + ve->getId());
-            emitPushSingleArg(out, passInReg, true, numBytesPushed, "X", comment);
+            emitPushSingleArg(out, passInReg, callConv == GCC6809_CALL_CONV, X, numBytesPushed, comment, paramTypeDesc);
         }
         else if (unary && unary->getOperator() == UnaryOpExpr::ADDRESS_OF)
         {
@@ -663,34 +882,38 @@ FunctionCallExpr::emitArgumentPushCode(ASMText &out,
             }
             else if (!subExpr->emitCode(out, true))  // emit l-value, to get address in X and avoid TFR X,D
                 return false;
-            emitPushSingleArg(out, passInReg, true, numBytesPushed, "X", comment);
+            emitPushSingleArg(out, passInReg, callConv == GCC6809_CALL_CONV, X, numBytesPushed, comment, paramTypeDesc);
         }
         else if (expr->getType() == CLASS_TYPE)  // if passing a struct by value
         {
-            assert(!passInReg);
+            assert(!passInReg || callConv == GCC6809_CALL_CONV);  // under gcc conv., 1- or 2-byte struct can be passed in B or X
 
             // Emit the struct expression as an l-value, i.e., compute its address in X.
             if (!expr->emitCode(out, true))
                 return false;
 
-            if (param && param->isIntegral() && !param->isLong() && expr->isRealOrLong())  // if passing real/long to short integral
+            if (paramTypeDesc && paramTypeDesc->isIntegral() && !paramTypeDesc->isLong() && expr->isRealOrLong())  // if passing real/long to short integral
             {
+                assert(!passInReg);
+
                 // Emit code to convert the number at X into the integral expected by the function.
 
                 // Pass the address of the argument in D.
                 out.ins("TFR", "X,D");
 
                 // Push enough bytes in the stack to contain the integral argument.
-                int16_t paramSize = param->getTypeSize();
+                int16_t paramSize = TranslationUnit::instance().getTypeSize(*paramTypeDesc);
                 int16_t passedSize = (paramSize == 1 ? 2 : paramSize);
                 out.ins("LEAS", "-" + wordToString(passedSize) + ",S", "slot for argument " + wordToString(uint16_t(index)));
 
                 // Pass the address of the argument slot to be filled to the utility routine.
                 out.ins("LEAX", paramSize == 1 ? "1,S" : ",S");
 
-                callUtility(out, "init" + string(expr->isLong() ? "" : (param->isSigned() ? "Signed" : "Unsigned"))
-                                        + (param->getType() == BYTE_TYPE ? "Byte" : "Word")
-                                        + "From" + (expr->isLong() ? "DWord" : (expr->isSingle() ? "Single" : "Double")),
+                callUtility(out, "init" + string(expr->isLong() ? "" : (paramTypeDesc->isSigned ? "Signed" : "Unsigned"))
+                                        + (paramTypeDesc->type == BYTE_TYPE ? "Byte" : "Word")
+                                        + "From" + (expr->isLong()
+                                                        ? "DWord"
+                                                        : (expr->isSingle() ? "Single" : "Double")),
                                  "convert argument to l-value at X");
 
                 numBytesPushed += uint16_t(passedSize);
@@ -698,36 +921,32 @@ FunctionCallExpr::emitArgumentPushCode(ASMText &out,
                 if (paramSize == 1)
                 {
                     out.ins("LDB", "1,S", "LSB of argument");
-                    out.ins(param->isSigned() ? "SEX" : "CLRA", "", "promoting byte argument to word");
+                    out.ins(paramTypeDesc->getConvToWordIns(), "", "promoting byte argument to word");
                     out.ins("STA", ",S", "MSB of argument");
                 }
             }
-            else if ((param && param->isLong() && expr->isReal())  // if passing real to long
-                  || (param && param->isReal() && expr->isLong()))  // or passing long to real
+            else if ((paramTypeDesc && paramTypeDesc->isLong() && expr->isReal())  // if passing real to long
+                  || (paramTypeDesc && paramTypeDesc->isReal() && expr->isLong()))  // or passing long to real
             {
+                assert(!passInReg);
+
                 // Emit code to convert the argument at X into the type expected by the function.
 
                 // Pass the address of the argument in D.
                 out.ins("TFR", "X,D");
 
                 // Push enough bytes in the stack to contain the long argument.
-                int16_t passedSize = param->getTypeSize();
+                int16_t passedSize = TranslationUnit::instance().getTypeSize(*paramTypeDesc);
                 out.ins("LEAS", "-" + wordToString(passedSize) + ",S", "slot for argument " + wordToString(uint16_t(index)));
 
                 // Pass the address of the argument slot to be filled to the utility routine.
                 out.ins("LEAX", ",S");
 
-                // Pass the signedness flag in the carry flag.
-                if ((param->isLong() && param->isSigned()) || (expr->isLong() && expr->isSigned()))
-                    out.ins("ORCC", "#$01", "C=1 means signed");
-                else
-                    out.ins("ANDCC", "#$FE", "C=0 means unsigned");
-
-                if (param->isLong())
-                    callUtility(out, "initDWordFrom" + string(expr->isSingle() ? "Single" : "Double"),
+                if (paramTypeDesc->isLong())
+                    callUtility(out, "init" + string(paramTypeDesc->isSigned ? "Signed" : "Unsigned") + "DWordFrom" + (expr->isSingle() ? "Single" : "Double"),
                                      "convert real argument to long at X");
                 else
-                    callUtility(out, "init" + string(param->isSingle() ? "Single" : "Double") + "FromDWord",
+                    callUtility(out, "init" + string(paramTypeDesc->isSingle() ? "Single" : "Double") + "From" + (expr->isSigned() ? "Signed" : "Unsigned") + "DWord",
                                      "convert long argument to real at X");
 
                 numBytesPushed += uint16_t(passedSize);
@@ -741,55 +960,95 @@ FunctionCallExpr::emitArgumentPushCode(ASMText &out,
                 uint16_t structSizeInBytes = uint16_t(expr->getTypeSize());
                 if (structSizeInBytes > 0)
                 {
-                    if (structSizeInBytes != 4 && structSizeInBytes != 5)
-                        out.ins("LDD", "#" + wordToString(structSizeInBytes), "size of " + expr->getTypeDesc()->toString());
-                    out.ins("LEAS", "-" + wordToString(structSizeInBytes) + ",S",
-                                    "pass " + expr->getTypeDesc()->toString() + " by value");
-                    const char *u;
-                    switch (structSizeInBytes)
+                    if (passInReg)
                     {
-                    case 4:  u = "push4ByteStruct"; break;
-                    case 5:  u = "push5ByteStruct"; break;
-                    default: u = "pushStruct";
+                        assert(structSizeInBytes == 1 || structSizeInBytes == 2);
+                        assert(callConv == GCC6809_CALL_CONV);
+                        assert(tempDeclarationForFirstByteParam || tempDeclarationForFirstWordParam);
+                        out.ins(structSizeInBytes == 1 ? "LDB" : "LDX", ",X", "load struct value");
+                        out.ins(structSizeInBytes == 1 ? "STB" : "STX",
+                                structSizeInBytes == 1 ? tempDeclarationForFirstByteParam->getFrameDisplacementArg(0)
+                                                       : tempDeclarationForFirstWordParam->getFrameDisplacementArg(0),
+                                "save register for call at " + function->getLineNo());
                     }
-                    callUtility(out, u, comment);
-                    if (structSizeInBytes == 1)
+                    else
                     {
-                        out.ins("LEAS", "-1,S", "1-byte argument always pushed as 2 bytes");
-                        ++numBytesPushed;
-                    }
+                        const char *u = NULL;
+                        switch (structSizeInBytes)
+                        {
+                        case 4:  u = "push4ByteStruct"; break;
+                        case 5:  u = "push5ByteStruct"; break;
+                        default:
+                            u = (structSizeInBytes < 256 ? "pushSmallStruct" : "pushStruct");
+                            const char *ld = (structSizeInBytes < 256 ? "LDB" : "LDD");
+                            out.ins(ld, "#" + wordToString(structSizeInBytes), "size of " + expr->getTypeDesc()->toString());
+                        }
+                        out.ins("LEAS", "-" + wordToString(structSizeInBytes) + ",S",
+                                        "pass " + expr->getTypeDesc()->toString() + " by value");
+                        callUtility(out, u, comment);
+                        if (structSizeInBytes == 1)
+                        {
+                            out.ins("LEAS", "-1,S", "1-byte argument always pushed as 2 bytes");
+                            ++numBytesPushed;
+                        }
 
-                    numBytesPushed += structSizeInBytes;
+                        numBytesPushed += structSizeInBytes;
+                    }
                 }
             }
         }
         else
         {
-            if (!expr->emitCode(out, false))
+            if (!expr->emitCode(out, false))  // get r-value in B or D
                 return false;
-            if (expr->getType() == BYTE_TYPE)
-                out.ins(expr->getTypeDesc()->isSigned ? "SEX" : "CLRA", "", "promoting byte argument to word");
+            Register regContainingArg = (expr->getType() == BYTE_TYPE ? B : D);
 
-            if (param && param->isRealOrLong())  // if passing basic type to real/long
+            // Promote a single-byte value if needed.
+            int16_t paramSize = (paramTypeDesc ? TranslationUnit::instance().getTypeSize(*paramTypeDesc) : 0);
+            if (expr->getType() == BYTE_TYPE && (!passInReg || paramSize == 2))
+            {
+                out.ins(expr->getConvToWordIns(), "", "promoting byte argument to word");
+                if (passInReg && callConv == GCC6809_CALL_CONV)
+                {
+                    out.ins("TFR", "D,X", "first parameter of " + (functionId.empty() ? "" : functionId + "() ") + "passed in X (gcc call)");
+                    out.optimizeXParameterLoad();  // try to load directly in X instead if possible
+                    regContainingArg = X;
+                }
+                else
+                    regContainingArg = D;
+            }
+
+            // An int-sized parameter that is currently in D but must be passed to a __gcccall function
+            // must be considered to be in B for the purposes of emitPushSingleArg().
+            // This fixes a bug in CMOC 0.1.87
+            //
+            if (passInReg && callConv == GCC6809_CALL_CONV && paramSize == 1 && regContainingArg == D)
+                regContainingArg = B;
+
+            if (paramTypeDesc && paramTypeDesc->isRealOrLong())  // if passing basic type to real/long
             {
                 assert(!passInReg);
 
-                int16_t paramSize = param->getTypeSize();
                 out.ins("LEAS", "-" + wordToString(paramSize) + ",S", "slot for argument " + wordToString(uint16_t(index)));
 
                 // Pass the address of the argument slot to be filled to the utility routine.
                 out.ins("LEAX", ",S");
 
-                callUtility(out, "init" + string(param->isLong() ? "DWord" : (param->isSingle() ? "Single" : "Double"))
-                                 + "From" + (expr->isLong() ? "" : (expr->isSigned() ? "Signed" : "Unsigned")) + "Word");
+                callUtility(out, "init" + string(paramTypeDesc->isLong() ? "DWord" : (paramTypeDesc->isSingle() ? "Single" : "Double"))
+                                 + "From" + (expr->isSigned() ? "Signed" : "Unsigned")
+                                          + (expr->isLong() ? "DWord" : "Word"));
 
                 numBytesPushed += paramSize;
             }
             else
             {
-                emitPushSingleArg(out, passInReg, false, numBytesPushed, "B,A", comment);
+                emitPushSingleArg(out, passInReg, callConv == GCC6809_CALL_CONV, regContainingArg, numBytesPushed, comment, paramTypeDesc);
             }
         }
+
+        // Try to merge LDD <foo>; PSHS B,A; LDD <bar>; PSHS B,A into LDX <foo>; LDD <bar>; PSHS X,B,A.
+        //
+        out.optimizeConsecutiveFunctionArguments();
     }
 
     return true;
@@ -816,6 +1075,24 @@ isDereferenceOfFunctionId(const Tree &function)
 }
 
 
+// Emits true if 'function' is of the form ((FuncPtrType) constant),
+// i.e., ((int (*)(void)) 0x1234)().
+// In this case, returns the constant in jsrArg in hex, prefixed with '$'.
+//
+bool
+FunctionCallExpr::isCallToConstantAddress(string &jsrArg) const
+{
+    const CastExpr *ce = dynamic_cast<const CastExpr *>(function);
+    if (!ce)
+        return false;
+    const WordConstantExpr *wce = dynamic_cast<const WordConstantExpr *>(ce->getSubExpr());
+    if (!wce)
+        return false;
+    jsrArg = wordToString(wce->getWordValue(), true);
+    return true;
+}
+
+
 /*virtual*/
 CodeStatus
 FunctionCallExpr::emitCode(ASMText &out, bool lValue) const
@@ -827,6 +1104,16 @@ FunctionCallExpr::emitCode(ASMText &out, bool lValue) const
     }
 
     assert(function != NULL);
+
+    // Get the type of the prototype of the function to be called.
+    // We will get NULL if the function is undeclared.
+    const TypeDesc *calledTD = getCalledPrototypeTypeDesc();
+
+    const CallConvention callConv = (calledTD ? calledTD->getCallConvention() : DEFAULT_CMOC_CALL_CONV);
+
+    ssize_t firstByteArgIndex = -1, firstWordArgIndex = -1;  // zero-based indexes
+    if (callConv == GCC6809_CALL_CONV && calledTD != NULL)
+        calledTD->getGCCCallConventionInfo(firstByteArgIndex, firstWordArgIndex);
 
     const IdentifierExpr *ie = dynamic_cast<IdentifierExpr *>(function);
 
@@ -846,7 +1133,7 @@ FunctionCallExpr::emitCode(ASMText &out, bool lValue) const
 
     uint16_t numBytesPushed = 0;
 
-    if (!emitArgumentPushCode(out, functionId, numBytesPushed))
+    if (!emitArgumentPushCode(out, functionId, callConv, numBytesPushed))
         return false;
 
 
@@ -856,12 +1143,43 @@ FunctionCallExpr::emitCode(ASMText &out, bool lValue) const
         assert(returnValueDeclaration);
         out.ins("LEAX", returnValueDeclaration->getFrameDisplacementArg(0),
                                 "address of struct/union to be returned by " + functionId + "()");
-        if (isFunctionReceivingFirstParamInReg())
-            out.ins("TFR", "X,D", "pass hidden arg in register");
+        if (    callConv == FIRST_PARAM_IN_REG_CALL_CONV
+            || (callConv == GCC6809_CALL_CONV && firstWordArgIndex == -2))
+        {
+            out.emitComment("Pass hidden argument in X.");
+        }
         else
         {
             out.ins("PSHS", "X", "hidden argument");
             numBytesPushed += 2;
+        }
+    }
+
+    if (callConv == GCC6809_CALL_CONV)
+    {
+        // Under the GCC6809 convention, some parameters may be passed in B or X.
+        // Here, we load those registers from immediate values if possible,
+        // or from the temporary stack locations where emitArgumentPushCode()
+        // has stored the parameter value.
+        //
+        if (firstByteArgIndex >= 0)
+        {
+            if (tempDeclarationForFirstByteParam != NULL)
+                out.ins("LDB", tempDeclarationForFirstByteParam->getFrameDisplacementArg(0), "__gcccall: restore first byte-sized argument");
+            else if (firstByteParamImmedValue == 0)
+                out.ins("CLRB", "", "__gcccall: first byte-sized argument");
+            else
+                out.ins("LDB", "#" + wordToString(firstByteParamImmedValue), "__gcccall: first byte-sized argument");
+        }
+        if (firstWordArgIndex >= 0)
+        {
+            if (tempDeclarationForFirstWordParam != NULL)
+                out.ins("LDX", tempDeclarationForFirstWordParam->getFrameDisplacementArg(0), "__gcccall: restore first word-sized argument");
+            else
+            {
+                out.ins("LDX", "#" + wordToString(firstWordParamImmedValue), "__gcccall: first word-sized argument");
+                out.optimizeXParameterLoad();  // check if this LDX makes previous instructions useless
+            }
         }
     }
 
@@ -877,23 +1195,20 @@ FunctionCallExpr::emitCode(ASMText &out, bool lValue) const
 
         string functionLabel = tu.getFunctionLabel(functionId);
         if (functionLabel.empty())
-            return false;  // error expected to have been reported by FunctionChecker
-        out.ins("LBSR", functionLabel);
+        {
+            functionLabel = FunctionDef::makeLabelFromFunctionId(functionId);  // guess the ID: useful with K&R code
+            out.emitComment("Call to undeclared function " + functionId + "(): label guessed; import in case function provided by other module");
+            out.emitImport(functionLabel);  // assume that the function may be provided by another translation unit
+        }
+
+        out.ins(tu.isRelocatabilitySupported() ? "LBSR" : "JSR", functionLabel);  // JSR takes 1 fewer cycle
     }
-    else if (ie != NULL && funcPtrVarDecl != NULL)  // if called address is in a variable, e.g., pf()
+    else if (ie != NULL && funcPtrVarDecl != NULL)  // if called address is in a variable using no-asterisk notation, e.g., pf()
     {
         assert(functionId.empty());
 
-        // Prepare a temporary VariableExpr with the function pointer variable declaration,
-        // and have it emit code that loads that function pointer in D.
-        //
-        VariableExpr ve(ie->getId());
-        ve.setTypeDesc(TranslationUnit::getTypeManager().getIntType(WORD_TYPE, false));
-        ve.setDeclaration(funcPtrVarDecl);
-        if (!ve.emitCode(out, false))
-            return false;
-        out.ins("TFR", "D,X");
-        out.ins("JSR", ",X");
+        out.ins("JSR", "[" + funcPtrVarDecl->getFrameDisplacementArg() + "]",
+                       "indirect call through variable `" + ie->getId() + "'");
     }
     else  // called address is (*pf)() or object.member().
     {
@@ -903,17 +1218,75 @@ FunctionCallExpr::emitCode(ASMText &out, bool lValue) const
         const UnaryOpExpr *unary = dynamic_cast<UnaryOpExpr *>(function);
         if (unary && unary->getOperator() == UnaryOpExpr::INDIRECTION)  // if (*pf)()
         {
-            const VariableExpr *ve = unary->getSubExpr()->asVariableExpr();
-            if (ve)
-                jsrArg = "[" + ve->getFrameDisplacementArg(0) + "]";
-            else if (!function->emitCode(out, true))  // get function address in X
-                return false;
+            const Tree *unarySubExpr = unary->getSubExpr();
+            const TypeDesc *td = unarySubExpr->getTypeDesc();
+            assert(td->type == POINTER_TYPE);
+            if (td->pointedTypeDesc->type != FUNCTION_TYPE)
+            {
+                // We have (*ppf)(void) where ppf is a pointer to a pointer to a function (or more pointer levels).
+                // The type of ppf is then: int (**ppf)(void).
+                //
+                // If the call convention is __gcccall, we must preserve B and X,
+                // which may get trashed by emitCode().
+                //
+                assert(td->pointedTypeDesc->type == POINTER_TYPE);
+
+                if (callConv == GCC6809_CALL_CONV)
+                    out.ins("PSHS", "Y,X,B", "allocate word, then preserve parameter registers re: __gcccall");
+
+                if (!function->emitCode(out, true))  // gets an address in X
+                    return false;
+
+                if (callConv == GCC6809_CALL_CONV)
+                {
+                    out.ins("STX", "3,S", "store function pointer in word allocated on stack");
+                    out.ins("PULS", "B,X", "restore parameter registers re: __gcccall");
+                    jsrArg = "[,S++]";
+                }
+                else
+                    jsrArg = "[,X]";
+            }
+            else
+            {
+                const VariableExpr *ve = unarySubExpr->asVariableExpr();
+                if (ve)
+                    jsrArg = "[" + ve->getFrameDisplacementArg(0) + "]";
+                else
+                {
+                    if (callConv == GCC6809_CALL_CONV)
+                        out.ins("PSHS", "Y,X,B", "allocate word, then preserve parameter registers re: __gcccall");
+
+                    if (!function->emitCode(out, true))  // get function address in X
+                        return false;
+
+                    if (callConv == GCC6809_CALL_CONV)
+                    {
+                        out.ins("STX", "3,S", "store function pointer in word allocated on stack");
+                        out.ins("PULS", "B,X", "restore parameter registers re: __gcccall");
+                        jsrArg = "[,S++]";
+                    }
+                }
+            }
         }
-        else  // object.member()
+        else if (isCallToConstantAddress(jsrArg))
         {
-            if (!function->emitCode(out, false))
+        }
+        else  // general case: namely, object.member()
+        {
+            if (callConv == GCC6809_CALL_CONV)
+                out.ins("PSHS", "Y,X,B", "allocate word, then preserve parameter registers re: __gcccall");
+
+            if (!function->emitCode(out, false))  // get function pointer in D
                 return false;
-            out.ins("TFR", "D,X");
+
+            if (callConv == GCC6809_CALL_CONV)
+            {
+                out.ins("STD", "3,S", "store function pointer in word allocated on stack");
+                out.ins("PULS", "B,X", "restore parameter registers re: __gcccall");
+                jsrArg = "[,S++]";
+            }
+            else
+                out.ins("TFR", "D,X");
         }
         out.ins("JSR", jsrArg);
     }
@@ -929,6 +1302,12 @@ FunctionCallExpr::emitCode(ASMText &out, bool lValue) const
         out.ins("LEAX", returnValueDeclaration->getFrameDisplacementArg(0),
                                 "address of struct/union returned by " + functionId + "()");
     }
+
+    // If the return value has been received in X, move it to D as expected by default
+    // by code generated by CMOC.
+    //
+    if (callConv == GCC6809_CALL_CONV && getType() != VOID_TYPE && getType() != BYTE_TYPE && getType() != CLASS_TYPE)
+        out.ins("TFR", "X,D", "16-bit result received in X as per GCC6809 convention");
 
     return true;
 }

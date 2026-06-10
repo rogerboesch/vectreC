@@ -9,16 +9,14 @@
 #include <string.h>
 #include "mc6809.h"
 
-#if defined(__unix) || (defined(__APPLE__) && defined(TARGET_OS_MAC)) || defined(__MINGW32__)
 #include <unistd.h>
-#endif
 
-#if defined(__CYGWIN__)
-#include <sys/select.h>
-#endif
+#include <sys/select.h>  /* for select(), fd_set, etc. */
 
 #include <iostream>
 #include <iomanip>
+#include <chrono>
+#include <thread>
 
 using namespace std;
 
@@ -41,11 +39,12 @@ class Console : virtual public mc6809 {
 public:
 	Console() : delayTicks(0), binaryMode(false) {}
 	void setBinaryMode(bool m) { binaryMode = m; }
+	Word getD() const { return d; }
 
 protected:
 
-	virtual Byte			 read(Word);
-	virtual void			 write(Word, Byte);
+	virtual Byte			 read(Word) override;
+	virtual void			 write(Word, Byte) override;
 
 private:
 
@@ -81,11 +80,22 @@ getcharifavail()
 class DSKCON
 {
 public:
+    static const char *usimDSKPath;
+
     DSKCON()
-    :   DCOPC(255), DCDRV(0), DCTRK(0), DCSEC(1), DCBPT(0), DCSTA(0), dskFile(fopen("usim.dsk", "r+b")), usim(NULL), verbose(true)
+    :   DCOPC(255), DCDRV(0), DCTRK(0), DCSEC(1), DCBPT(0), DCSTA(0),
+        dskFile(fopen(usimDSKPath, "r+b")),
+        usim(NULL), verbose(false)
     {
-        //if (dskFile == NULL && verbose)
-        //    cerr << "usim: failed to open usim.dsk in current directory" << endl;
+        if (verbose)
+        {
+            cout << "usim: " << (dskFile ? "opened" : "failed to open")
+                 << " " << usimDSKPath << " in current directory";
+            char cwd[1024];
+            if (getcwd(cwd, sizeof(cwd)) != NULL)
+                cout << " (" << cwd << ")";
+            cout << endl;
+        }
     }
 
     // Must be called before calling read() or write().
@@ -140,12 +150,16 @@ private:
 
 static DSKCON dskcon;
 
+const char *DSKCON::usimDSKPath = "usim.dsk";
+
 
 // addr: 0..6 (DCOPC to DCSTA)
 //
 Byte
 DSKCON::read(Byte addr)
 {
+    if (verbose)
+        cout << "DSKCON::read(addr=" << unsigned(addr) << ")" << endl;
     switch (addr)
     {
     case 0:
@@ -167,15 +181,18 @@ DSKCON::read(Byte addr)
     }
 }
 
+
 // addr: see simulateDSKCONRead().
 // b: byte to write
 //
 void
 DSKCON::write(Byte addr, Byte b)
 {
+    if (verbose)
+        cout << "DSKCON::write(addr=" << unsigned(addr) << ", b=0x" << hex << unsigned(b) << dec << ")" << endl;
     switch (addr)
     {
-    case 0:
+    case 0:  // Specifying the operation code triggers the execution of the operation.
         DCOPC = b;
         execute();
         break;
@@ -213,17 +230,28 @@ DSKCON::execute()
     Byte buffer[256];
     long byteOffset = 0;
 
+    if (verbose)
+        printf("DSKCON::execute: DCOPC=%u DCDRV=%u DCTRK=%u DCSEC=%u DCBPT=0x%04x\n",
+                                DCOPC, DCDRV, DCTRK, DCSEC, DCBPT);
     switch (DCOPC)
     {
     case 2:  // read sector
     {
+        if (verbose)
+            cout << "DSKCON::execute: Trying to seek.\n";
         if (!trySeek(byteOffset))
+        {
+            if (verbose)
+                cout << "DSKCON::execute: ERROR: Failed to seek.\n";
             break;
+        }
+        if (verbose)
+            cout << "DSKCON::execute: Seek succeeded: byteOffset=" << byteOffset << endl;
 
         if (fread(buffer, 1, sizeof(buffer), dskFile) != sizeof(buffer))
         {
             if (verbose)
-                cerr << "usim: failed to read from file offset " << byteOffset << " in usim.dsk" << endl;
+                cout << "usim: failed to read from file offset " << byteOffset << " in " << usimDSKPath << endl;
             break;
         }
 
@@ -242,6 +270,10 @@ DSKCON::execute()
         for (size_t i = 0; i < sizeof(buffer); ++i)
             usim->write(DCBPT + i, buffer[i]);
 
+        DCSTA = 0;  // success
+
+        if (verbose)
+            cout << "DSKCON::execute: Finished reading sector into CoCo memory.\n";
         break;
     }
 
@@ -271,6 +303,8 @@ DSKCON::execute()
                 cerr << "usim: failed to write at file offset " << byteOffset << " in usim.dsk" << endl;
             break;
         }
+
+        DCSTA = 0;  // success
 
         break;
     }
@@ -332,7 +366,7 @@ void Console::write(Word addr, Byte x)
 		break;
 	case 0xFF03:
 		delayTicks |= x;
-		usleep(1000000 / 60 * delayTicks);
+		std::this_thread::sleep_for(std::chrono::microseconds(1000000 / 60 * delayTicks));
 		break;
 	default:
 	if (addr >= 0xFF04 && addr <= 0xFF0A)
@@ -412,5 +446,5 @@ int main(int argc, char *argv[])
 		sys.load_intelhex(progFilename, loadOffset);
 	sys.run();
 
-	return EXIT_SUCCESS;
+	return (int) sys.getD();  // return the value left in D by the program's CMOC-generated main()
 }

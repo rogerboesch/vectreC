@@ -6,14 +6,14 @@ leftShiftDWordAtXByB    IMPORT
 
 
 ; Input: 1st pushed argument: address of dword;
-;        2nd pushed argument: byte containing number of bits to shift;
+;        2nd pushed argument: byte containing number of bits by which to shift;
 ;        X => destination dword (may point to left dword).
 ; Output: Result at X.
 ; Preserves X. Trashes D.
 ;
 leftShiftDWord
 	pshs	u
-	ldb	6,s		; number of bits to shift
+	ldb	6,s		; number of bits by which to shift
 	cmpb	#32
 	bhs	@resultZero	; all bits of left dword get shifted out
 	ldu	4,s		; address of left dword

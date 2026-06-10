@@ -11,12 +11,10 @@ sub32xu         IMPORT
 ; and the remainder in the unsigned long at 4,Y.
 ; The 8 bytes at Y must not overlap the dividend or divisor.
 ; Synopsis:
-;	pshs	y
 ; 	leax	dividend,pcr
 ;	leau	divisor,pcr
 ;	leay	eightByteBuffer,pcr
 ;	lbsr	DIV32
-;	puls	y
 ; Preserves the divisor, X, Y, U. Trashes the dividend and D.
 ;
 DIV32

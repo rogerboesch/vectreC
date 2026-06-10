@@ -4,5 +4,11 @@ Pierre Sarrazin <http://sarrazip.com/>:
 Johan Van den Brande:
     Vectrex support.
 
+Dino Florenzi <dino.florenzi@gmail.com>:
+    Thomson support.
+
+Ulrich Boetzel <ul.boet@gmail.com>:
+    FLEX support.
+
 Jamie Cho <https://github.com/jamieleecho>:
     The "stage 2" peephole optimizations in ASMText.cpp.

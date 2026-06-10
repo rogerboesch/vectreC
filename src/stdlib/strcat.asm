@@ -5,18 +5,17 @@ _strcat	EXPORT
 _strcpy IMPORT
 
 
-* byte *strcat(byte *dest, byte *src);
+* char *strcat(char *dest, const char *src);
 * Returns dest.
 *
 _strcat
-	pshs	x
-	ldx	6,s		source string
+	ldx	4,s		src
 	pshs	x		pass it to _strcpy
 
-	ldx	6,s		destination string
-_strcat_010
+	ldx	4,s		dest (because of preceding pshs)
+@loop
 	tst	,x+
-	bne	_strcat_010
+	bne	@loop
 
 	leax	-1,x		point back to '\0'
 	pshs	x		pass as destination string to _strcpy
@@ -24,9 +23,8 @@ _strcat_010
 	lbsr	_strcpy
 
 	leas	4,s		dispose of _strcpy arguments
-	ldd	4,s		return original destination address
-	puls	x,pc
-
+	ldd	2,s		return dest
+	rts
 
 
 

@@ -1,7 +1,5 @@
 %{
-/*  $Id: parser.yy,v 1.83 2020/02/10 01:58:22 sarrazip Exp $
-
-    CMOC - A C-like cross-compiler
+/*  CMOC - A C-like cross-compiler
     Copyright (C) 2003-2016 Pierre Sarrazin <http://sarrazip.com/>
 
     This program is free software: you can redistribute it and/or modify
@@ -48,6 +46,7 @@
 #include "DeclarationSpecifierList.h"
 #include "Pragma.h"
 #include "CommaExpr.h"
+#include "FunctionPointerCast.h"
 
 #include <string.h>
 #include <time.h>
@@ -70,7 +69,6 @@ void _PARSERTRACE(int parserLineNo, const char *fmt, ...);
 
 %}
 
-%expect 20  /* 1 shift/reduce conflict expected for if-else */
 
 %union {
     char *str;
@@ -84,6 +82,7 @@ void _PARSERTRACE(int parserLineNo, const char *fmt, ...);
     Tree *tree;
     CompoundStmt *compoundStmt;
     TreeSequence *treeSequence;
+    FunctionPointerCast *funcPtrCast;
     FormalParamList *formalParamList;
     FormalParameter *formalParameter;
     DeclarationSequence *declarationSequence;
@@ -109,13 +108,13 @@ void _PARSERTRACE(int parserLineNo, const char *fmt, ...);
 %token <typeDesc> TYPE_NAME
 %token INT CHAR SHORT LONG FLOAT DOUBLE SIGNED UNSIGNED VOID PLUS_PLUS MINUS_MINUS IF ELSE WHILE DO FOR
 %token EQUALS_EQUALS BANG_EQUALS LOWER_EQUALS GREATER_EQUALS AMP_AMP PIPE_PIPE
-%token LT_LT GT_GT BREAK CONTINUE RETURN ASM NORTS VERBATIM_ASM STRUCT UNION THIS
+%token LT_LT GT_GT BREAK CONTINUE RETURN ASM NORTS VERBATIM_ASM STRUCT UNION
 %token PLUS_EQUALS MINUS_EQUALS ASTERISK_EQUALS SLASH_EQUALS PERCENT_EQUALS LT_LT_EQUALS GT_GT_EQUALS
 %token CARET_EQUALS AMP_EQUALS PIPE_EQUALS
 %token RIGHT_ARROW INTERRUPT SIZEOF ELLIPSIS TYPEDEF ENUM SWITCH CASE DEFAULT REGISTER GOTO EXTERN STATIC CONST VOLATILE AUTO
-%token FUNC_RECEIVES_FIRST_PARAM_IN_REG
+%token FUNC_RECEIVES_FIRST_PARAM_IN_REG FUNC_USES_GCC6809_CALL_CONV
 
-%type <tree> external_declaration stmt selection_stmt else_part_opt while_stmt do_while_stmt for_stmt expr_stmt labeled_stmt
+%type <tree> external_declaration stmt selection_stmt else_part_opt while_stmt do_while_stmt for_stmt expr_stmt labeled_stmt kandr_prototype_no_return
 %type <tree> expr expr_opt logical_or_expr logical_and_expr rel_expr add_expr mul_expr
 %type <tree> inclusive_or_expr exclusive_or_expr and_expr
 %type <tree> if_cond while_cond assignment_expr equality_expr shift_expr conditional_expr constant_expr
@@ -123,10 +122,13 @@ void _PARSERTRACE(int parserLineNo, const char *fmt, ...);
 %type <declarationSequence> declaration
 %type <compoundStmt> compound_stmt stmt_list stmt_list_opt
 %type <treeSequence> expr_list_opt expr_list translation_unit arg_expr_list
-%type <formalParamList> parameter_list parameter_type_list parameter_type_list_opt function_pointer_cast function_pointer_cast_opt
+%type <formalParamList> parameter_list parameter_type_list parameter_type_list_opt
+%type <funcPtrCast> function_pointer_cast function_pointer_cast_opt
+%type <formalParamList> kr_parameter_list kr_parameter_list_opt parameter_declaration_list
 %type <formalParameter> parameter_declaration
+%type <strList> kr_parameter_name_list kr_parameter_name_list_opt
 %type <treeSequence> initializer_list subscript_list
-%type <declaratorVector> init_declarator_list struct_declarator_list
+%type <declaratorVector> init_declarator_list struct_declarator_list declarator_list
 %type <declarator> init_declarator declarator direct_declarator struct_declarator
 %type <functionDef> function_definition
 %type <binop> add_op mul_op rel_op equality_op assignment_op
@@ -136,7 +138,7 @@ void _PARSERTRACE(int parserLineNo, const char *fmt, ...);
 %type <typeDesc> basic_type non_void_basic_type type_name struct_or_union_specifier
 %type <typeSpecifier> type_specifier enum_specifier
 %type <declarationSpecifierList> declaration_specifiers specifier_qualifier_list
-%type <integer> storage_class_specifier type_qualifier type_qualifier_list
+%type <integer> storage_class_specifier type_qualifier type_qualifier_list asterisk_sequence
 %type <str> save_src_fn strlit_seq
 %type <classDef> struct_declaration_list struct_declaration_list_opt
 %type <classMemberList> struct_declaration
@@ -168,8 +170,13 @@ translation_unit:
 external_declaration:
       function_definition       { $$ = $1; }
     | declaration               { $$ = $1; }  // can be null in the case of a typedef
-    | PRAGMA                    { $$ = new Pragma($1); free($1); }
+    | PRAGMA                    { auto p = new Pragma($1);
+                                  $$ = p;
+                                  free($1);
+                                  TranslationUnit::instance().processParseTimePragma(*p); }
     | ';'                       { $$ = NULL; }  // tolerate semi-colon after function body
+    | VERBATIM_ASM              { $$ = new AssemblerStmt(yytext); }
+    | kandr_prototype_no_return { $$ = $1; }
     ;
 
 function_definition:
@@ -178,28 +185,84 @@ function_definition:
                 DeclarationSpecifierList *dsl = $1;
                 Declarator *di = $2;
 
-                if (dsl->hasEnumeratorList())
+                if (dsl && dsl->hasEnumeratorList())
                 {
                     errormsg("enum with enumerated names is not supported in a function's return type");
                     dsl->detachEnumeratorList();
                 }
-                if (dsl->isStaticDeclaration() && dsl->isExternDeclaration())
+                if (dsl && dsl->isStaticDeclaration() && dsl->isExternDeclaration())
                 {
                     errormsg("function definition must not be both static and extern");
                 }
 
                 // Example: In byte **f() {}, dsl represents "byte" and
-                // di represents **f. Hence, di contains a pointer level of 2,
+                // di represents **f(). Hence, di contains a pointer level of 2,
                 // which is applied to the TypeDesc found in dsl, i.e., "byte".
                 // di also contains the name of the function, "f".
                 //
-                $$ = new FunctionDef(*dsl, *di);
+                $$ = new FunctionDef(dsl, *di);
                 $$->setLineNo(di->getSourceFilename(), di->getLineNo());
                 $$->setBody($3);
+
+                if (dsl && dsl->isTypeDefinition() && di->getId().empty())
+                    errormsg("invalid typedef (type being defined may already be defined)");
+
                 delete di;
                 delete dsl;
             }
+    | ID save_src_fn save_line_no '(' kr_parameter_name_list_opt ')' kr_parameter_list_opt compound_stmt  /* K&R func w/o return type */
+            {
+                Declarator di($1, 0, $2, $3);  // pass ID, save_src_fn, save_line_no
+                di.processKAndRFunctionParameters(*$5, $7);  // deletes $7, keeps no ref to $5
+
+                $$ = new FunctionDef(NULL, di);
+                $$->setLineNo(di.getSourceFilename(), di.getLineNo());
+                $$->setBody($8);  // compound_stmt
+
+                delete $5;  // delete kr_parameter_name_list_opt
+                free($2);  // save_src_fn
+                free($1);  // ID
+            }
     ;
+
+
+/*  List of names found in a K&R function definition, e.g., x and y in foo(x, y) {}
+    $$ is never null.
+*/
+kr_parameter_name_list_opt:
+      /* empty */                       { $$ = new std::vector<std::string>(); }
+    | kr_parameter_name_list            { $$ = $1; }
+    ;
+
+
+kr_parameter_name_list:
+      ID                                { $$ = new std::vector<std::string>(); $$->push_back($1); free($1); }
+    | kr_parameter_name_list ',' ID     { $$ = $1; $$->push_back($3); free($3); }
+    ;
+
+
+/*  Formal parameter list (including their types) in a K&R function definition,
+    e.g., "char x; long y;" in foo(x, y) char x; long y; {}
+*/
+kr_parameter_list_opt:
+      /* empty */                       { $$ = new FormalParamList(); }
+    | kr_parameter_list                 { $$ = $1; }
+    ;
+
+
+kr_parameter_list:
+      parameter_declaration_list ';'    { $$ = $1; }
+    | kr_parameter_list parameter_declaration_list ';'
+                            {
+                                $$ = $1; 
+                                // Move trees from parameter_declaration_list (a FormalParamList) to $$.
+                                for (auto it = $2->begin(); it != $2->end(); ++it)
+                                    $$->addTree(*it);
+                                $2->clear();  // detach the trees from TreeSequence that is about to get destroyed
+                                delete $2;
+                            }
+    ;
+
 
 parameter_type_list:
       parameter_list                 { $$ = $1; }
@@ -215,6 +278,25 @@ parameter_list:
                                      { $$ = $1; if ($3) $$->addTree($3); }
     ;
 
+/*  Example: int a, b, c; Used by K&R function definitions. Produces vector<FormalParameter *> *.
+*/
+parameter_declaration_list:
+      declaration_specifiers declarator_list
+                {
+                    DeclarationSpecifierList *dsl = $1;
+                    $$ = new FormalParamList();
+                    std::vector<Declarator *> *declaratorVector = $2;
+                    for (Declarator *declarator : *declaratorVector)
+                    {
+                        FormalParameter *fp = declarator->createFormalParameter(*dsl);
+                        $$->addTree(fp);
+                    }
+                    delete dsl;
+                    deleteVectorElements(*declaratorVector);  // delete the Declarator objects
+                    delete declaratorVector;
+                }
+    ;
+
 parameter_declaration:
       declaration_specifiers declarator
                 {
@@ -228,11 +310,12 @@ parameter_declaration:
 type_name:
       specifier_qualifier_list function_pointer_cast_opt
                 {
-                    if ($2)
+                    if ($2)  // if func ptr cast, or ptr to ptr to func, etc.
                     {
                         $$ = TranslationUnit::getTypeManager().getFunctionPointerType(
-                                $1->getTypeDesc(), *$2,
-                                $1->isInterruptServiceFunction(), $1->isFunctionReceivingFirstParamInReg());
+                                $1->getTypeDesc(), *$2->getFormalParamList(),
+                                $1->isInterruptServiceFunction(), $1->getCallConvention());
+                        $$ = TranslationUnit::getTypeManager().getPointerTo($$, $2->getPointerLevel() - 1);
                         delete $2;
                     }
                     else
@@ -245,8 +328,9 @@ type_name:
                     if ($3)
                     {
                         $$ = TranslationUnit::getTypeManager().getFunctionPointerType(
-                                td, *$3,
-                                $1->isInterruptServiceFunction(), $1->isFunctionReceivingFirstParamInReg());
+                                td, *$3->getFormalParamList(),
+                                $1->isInterruptServiceFunction(), $1->getCallConvention());
+                        $$ = TranslationUnit::getTypeManager().getPointerTo($$, $3->getPointerLevel() - 1);
                         delete $3;
                     }
                     else
@@ -266,8 +350,8 @@ function_pointer_cast_opt:
     ;
 
 function_pointer_cast:
-      '(' '*' ')' '(' parameter_type_list ')'   { $$ = $5; }
-    | '(' '*' ')' '(' ')'                       { $$ = new FormalParamList(); }
+      '(' asterisk_sequence ')' '(' parameter_type_list ')'   { $$ = new FunctionPointerCast($2, $5); }
+    | '(' asterisk_sequence ')' '(' ')'                       { $$ = new FunctionPointerCast($2, new FormalParamList()); }
     ;
 
 pointer:
@@ -326,6 +410,7 @@ declaration_specifiers:
 
 storage_class_specifier:
       INTERRUPT     { $$ = DeclarationSpecifierList::INTERRUPT_SPEC; }
+    | FUNC_USES_GCC6809_CALL_CONV      { $$ = DeclarationSpecifierList::GCCCALL_SPEC; }
     | FUNC_RECEIVES_FIRST_PARAM_IN_REG { $$ = DeclarationSpecifierList::FUNC_RECEIVES_FIRST_PARAM_IN_REG_SPEC; }
     | TYPEDEF       { $$ = DeclarationSpecifierList::TYPEDEF_SPEC; }
     | ASM           { $$ = DeclarationSpecifierList::ASSEMBLY_ONLY_SPEC; }
@@ -349,7 +434,7 @@ type_specifier:
 
 type_qualifier:
       CONST                         { $$ = DeclarationSpecifierList::CONST_QUALIFIER; }
-    | VOLATILE                      { $$ = DeclarationSpecifierList::VOLATILE_QUALIFIER; TranslationUnit::instance().warnAboutVolatile(); }
+    | VOLATILE                      { $$ = DeclarationSpecifierList::VOLATILE_QUALIFIER; TranslationUnit::instance().enableVolatileWarning(); }
     ;
 
 type_qualifier_list:  /* bit field made of CONST_BIT, VOLATILE_BIT */
@@ -413,7 +498,8 @@ enum_specifier:
     ;
 
 enumerator_list:
-      enumerator                            { $$ = new vector<Enumerator *>(); $$->push_back($1); }
+      /* empty */                           { $$ = new vector<Enumerator *>(); }
+    | enumerator                            { $$ = new vector<Enumerator *>(); $$->push_back($1); }
     | enumerator_list ',' enumerator        { $$ = $1; $$->push_back($3); }
     ;
 
@@ -429,7 +515,7 @@ comma_opt:
 
 non_void_basic_type:
       INT       { $$ = TranslationUnit::getTypeManager().getIntType(WORD_TYPE, true); }
-    | CHAR      { $$ = TranslationUnit::getTypeManager().getIntType(BYTE_TYPE, true); } 
+    | CHAR      { $$ = TranslationUnit::getTypeManager().getIntType(BYTE_TYPE, TranslationUnit::instance().isCharSignedByDefault()); } 
     | SHORT     { $$ = TranslationUnit::getTypeManager().getIntType(WORD_TYPE, true); }
     | SIGNED    { $$ = TranslationUnit::getTypeManager().getSizelessType(true);  }
     | UNSIGNED  { $$ = TranslationUnit::getTypeManager().getSizelessType(false); }
@@ -462,9 +548,14 @@ save_line_no:
       /* empty */               { $$ = lineno; }
     ;
 
+declarator_list:
+      declarator                        { $$ = new std::vector<Declarator *>(); $$->push_back($1); }
+    | declarator_list ',' declarator    { $$ = $1; $$->push_back($3); }
+    ;
+
 init_declarator_list:
       init_declarator                           { $$ = new std::vector<Declarator *>(); $$->push_back($1); }
-    | init_declarator_list ',' init_declarator	{ $$ = $1; $$->push_back($3); }
+    | init_declarator_list ',' init_declarator  { $$ = $1; $$->push_back($3); }
     ;
 
 // Declarator with optional initializer.
@@ -477,7 +568,7 @@ init_declarator:
 declarator:
       pointer declarator                {
                                             $$ = $2;
-                                            $$->setPointerLevel($1);  // ownership of $1 transfered to the Declarator
+                                            $$->setPointerLevel($1);  // ownership of $1 transferred to the Declarator
                                         }
     | direct_declarator                 { $$ = $1; }
     ;
@@ -485,12 +576,12 @@ declarator:
 direct_declarator:
       ID
             {
-                $$ = new Declarator($1, sourceFilename, lineno);
+                $$ = new Declarator($1, 0, sourceFilename, lineno);
                 free($1);
             }
     | /* empty (unnamed function parameter) */
             {
-                $$ = new Declarator(string(), sourceFilename, lineno);
+                $$ = new Declarator(string(), 0, sourceFilename, lineno);
             }
     | direct_declarator '[' expr_opt ']'
             {
@@ -503,39 +594,98 @@ direct_declarator:
                 $$ = $1;
                 $$->setFormalParamList($3);
             }
+    | direct_declarator '(' kr_parameter_name_list ')' kr_parameter_list_opt  /* K&R func with return type */
+            {
+                assert($3 != NULL);
+                assert($5 != NULL);
+
+                $$ = $1;
+                $$->processKAndRFunctionParameters(*$3, $5);  // deletes $5, keeps no ref to $3
+                
+                delete $3;  // kr_parameter_name_list [vector<string> *]
+            }
     | direct_declarator '(' ')'
             {
                 $$ = $1;
-                $$->setFormalParamList(new FormalParamList());
+                FormalParamList *fpl = new FormalParamList();
+                fpl->endWithEllipsis(true);  // ellipsis is implied
+                $$->setFormalParamList(fpl);
             }
     | direct_declarator '(' VOID ')'
             {
                 $$ = $1;
                 $$->setFormalParamList(new FormalParamList());
             }
-    | '(' '*' ID ')' '(' parameter_type_list_opt ')'  /* function pointer variable */
+    | '(' asterisk_sequence ID ')' '(' parameter_type_list_opt ')'  /* function pointer variable */
             {
-                $$ = new Declarator($3, sourceFilename, lineno);
+                $$ = new Declarator($3, $2, sourceFilename, lineno);
                 $$->setAsFunctionPointer($6);  // takes ownership of FormalParamList
                 free($3);
                 TranslationUnit::checkForEllipsisWithoutNamedArgument($6);
             }
-    | '(' '*' ')' '(' parameter_type_list_opt ')'  /* unnamed function pointer variable */
+    | '(' asterisk_sequence ')' '(' parameter_type_list_opt ')'  /* unnamed function pointer variable */
             {
-                $$ = new Declarator(string(), sourceFilename, lineno);
+                $$ = new Declarator(string(), $2, sourceFilename, lineno);
                 $$->setAsFunctionPointer($5);  // takes ownership of FormalParamList
                 TranslationUnit::checkForEllipsisWithoutNamedArgument($5);
             }
-    | '(' '*' ID subscript_list ')' '(' parameter_type_list_opt ')'  /* array of function pointer variables */
+    | '(' asterisk_sequence ID subscript_list ')' '(' parameter_type_list_opt ')'  /* array of function pointer variables */
             {
-                $$ = new Declarator($3, sourceFilename, lineno);
+                $$ = new Declarator($3, $2, sourceFilename, lineno);
                 $$->setAsArrayOfFunctionPointers($7, $4);  // takes ownership of FormalParamList ($7), deletes $4
                 free($3);
                 TranslationUnit::checkForEllipsisWithoutNamedArgument($7);
             }
+    | '(' ID ')' '(' VOID ')'  /* Supports calling function using parenthesized function name: (f)() */
+            {
+                $$ = new Declarator($2, 0, sourceFilename, lineno);
+                free($2);
+                $$->setFormalParamList(new FormalParamList());
+            }
+    | '(' ID ')' '(' parameter_type_list_opt ')'  /* Same, with args: (f)(42) */
+            {
+                $$ = new Declarator($2, 0, sourceFilename, lineno);
+                $$->setAsFunctionPointer($5);  // takes ownership of FormalParamList
+                free($2);
+                TranslationUnit::checkForEllipsisWithoutNamedArgument($5);
+            }
     ;
 
-/* Returns a non-null TreeSequence *.*/
+/*  K&R prototype for a function that specifies no return type, e.g., "foo();".
+    The return type is assumed to be int.
+*/
+kandr_prototype_no_return:
+      ID save_src_fn save_line_no '(' kr_parameter_name_list_opt ')' kr_parameter_list_opt ';'
+            {
+                // Make a Declarator from the function ID and the parameters.
+                auto di = new Declarator($1, 0, $2, $3);  // pass ID, save_src_fn, save_line_no
+                di->processKAndRFunctionParameters(*$5, $7);  // deletes $7, keeps no ref to $5
+
+                auto v = new std::vector<Declarator *>();
+                v->push_back(di);  // 'v' owns 'di'
+
+                // Make the return type 'int'.
+                const TypeDesc *intTD = TranslationUnit::getTypeManager().getIntType(WORD_TYPE, true);
+                TypeSpecifier intSpecifier(intTD, "", NULL);
+                auto dsl = new DeclarationSpecifierList();
+                dsl->add(intSpecifier);
+
+                $$ = TranslationUnit::instance().createDeclarationSequence(dsl, v);  // deletes 'dsl' and 'v'
+
+                $$->setLineNo($2, $3);
+
+                delete $5;  // delete kr_parameter_name_list_opt
+                free($2);  // save_src_fn
+                free($1);  // ID
+            }
+    ;
+
+asterisk_sequence:
+      '*'                           { $$ = 1; }
+    | asterisk_sequence '*'         { ++$$; }
+    ;
+
+/* Returns a non-null TreeSequence */
 subscript_list:
       subscript                      { $$ = new TreeSequence(); $$->addTree($1); }
     | subscript_list subscript       { $$ = $1; $$->addTree($2); }
@@ -546,7 +696,7 @@ subscript:
     ;
 
 parameter_type_list_opt:
-      /* empty */                    { $$ = new FormalParamList(); }
+      /* empty */                    { $$ = new FormalParamList(); $$->endWithEllipsis(true); /* implied ellipsis */ }
     | parameter_type_list            { $$ = $1; }
     ;
 
@@ -592,7 +742,7 @@ struct_declaration_list:
     ;
 
 struct_declaration:
-      specifier_qualifier_list struct_declarator_list ';'    { $$ = ClassDef::createClassMembers($1, $2); }
+      declaration_specifiers struct_declarator_list ';'    { $$ = ClassDef::createClassMembers($1, $2); }
     ;
 
 struct_declarator_list:
@@ -603,11 +753,18 @@ struct_declarator_list:
 /* May return a null pointer if the member declarator is ignored. */
 struct_declarator:
       declarator                        { $$ = $1; }
-    | ':' conditional_expr              { $$ = NULL; }  // unnamed bit field member ignored
+    | ':' conditional_expr  // unnamed bit field member ignored
+                {
+                    $$ = NULL;
+                    Declarator temp("<unnamed>", 0, sourceFilename, lineno);
+                    temp.setBitFieldWidth(*$2);
+                    temp.checkBitField(NULL);
+                    delete $2;
+                }
     | declarator ':' conditional_expr   // named bit field (dimension ignored, except to choose between char/int/long)
                 {
                     $$ = $1;
-                    $$->setBitFieldWidth(*$3);  // emits error if $3 is not constant expression
+                    $$->setBitFieldWidth(*$3);
                     delete $3;
                 }
     ;
@@ -631,13 +788,13 @@ stmt:
     | CONTINUE ';'      { $$ = new JumpStmt(JumpStmt::CONT, NULL); }
     | RETURN ';'        { $$ = new JumpStmt(JumpStmt::RET, NULL); }
     | RETURN expr ';'   { $$ = new JumpStmt(JumpStmt::RET, $2); }
-    | ASM '(' STRLIT ',' ID ')' ';'
+    | ASM '(' strlit_seq ',' ID ')' ';'
                         { $$ = new AssemblerStmt($3, $5, true);
                           free($3); free($5); }
-    | ASM '(' STRLIT ',' STRLIT ')' ';'
+    | ASM '(' strlit_seq ',' strlit_seq ')' ';'
                         { $$ = new AssemblerStmt($3, $5, false);
                           free($3); free($5); }
-    | ASM '(' STRLIT ')' ';'
+    | ASM '(' strlit_seq ')' ';'
                         { $$ = new AssemblerStmt($3, "", false);
                           free($3); }
     | VERBATIM_ASM      { $$ = new AssemblerStmt(yytext); }
@@ -646,12 +803,22 @@ stmt:
 labeled_stmt:
       ID save_src_fn save_line_no ':' stmt
                                     {
-                                      $$ = new LabeledStmt($1, TranslationUnit::instance().generateLabel('L'), $5);
+                                      $$ = new LabeledStmt($1, $5);
                                       $$->setLineNo($2, $3);
                                       free($1); free($2);
                                     }
-    | CASE constant_expr ':' stmt       { $$ = new LabeledStmt($2, $4); }
-    | DEFAULT ':' stmt                  { $$ = new LabeledStmt($3); }   
+    | CASE save_src_fn save_line_no constant_expr ':' stmt
+                                    {
+                                      $$ = new LabeledStmt($4, $6);
+                                      $$->setLineNo($2, $3);
+                                      free($2);  // save_src_fn
+                                    }
+    | DEFAULT save_src_fn save_line_no ':' stmt
+                                    {
+                                      $$ = new LabeledStmt($5);
+                                      $$->setLineNo($2, $3);
+                                      free($2);  // save_src_fn
+                                    }
     ;
 
 constant_expr:
@@ -879,7 +1046,7 @@ primary_expr:
                                 $$ = new WordConstantExpr(value, yytext);
                             }
                         }
-    | CHARLIT           { $$ = new WordConstantExpr((int8_t) $1, false, true); }  /* char literal always signed */
+    | CHARLIT           { $$ = new WordConstantExpr((int8_t) $1, false, TranslationUnit::instance().isCharSignedByDefault()); }
     | strlit_seq        { $$ = new StringLiteralExpr($1); free($1); }
     | '(' expr ')'      { $$ = $2; }
     ;

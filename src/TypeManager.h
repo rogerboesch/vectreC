@@ -1,4 +1,4 @@
-/*  $Id: TypeManager.h,v 1.37 2020/04/05 02:57:22 sarrazip Exp $
+/*  $Id: TypeManager.h,v 1.43 2024/06/29 17:13:19 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -21,9 +21,6 @@
 #define _H_TypeManager
 
 #include "util.h"
-
-#include <vector>
-#include <map>
 
 class Declarator;
 class Enumerator;
@@ -56,7 +53,7 @@ public:
 
     void createBasicTypes();
 
-    void createInternalStructs(class Scope &globalScope, TargetPlatform targetPlatform);
+    void createInternalStructs(class Scope &globalScope, TargetPlatform targetPlatform, FloatingPointLibrary floatLib);
 
     const TypeDesc *getVoidType() const;
 
@@ -74,12 +71,14 @@ public:
 
     const TypeDesc *getPointerTo(const TypeDesc *td, const TypeQualifierBitFieldVector &typeQualifierBitFieldPerPointerLevel) const;
 
+    const TypeDesc *getPointerTo(const TypeDesc *td, size_t pointerLevel) const;
+
     const TypeDesc *getPointerToIntegral(BasicType byteOrWordType, bool isSigned) const;
 
     const TypeDesc *getConst(const TypeDesc *typeDesc) const;
 
-    const TypeDesc *getArrayOfChar() const;
-
+    // The signedness of the characters depends on whether -funsigned-char was passed.
+    //
     const TypeDesc *getArrayOfConstChar() const;
 
     const TypeDesc *getPointerToVoid() const;
@@ -107,11 +106,18 @@ public:
     const TypeDesc *getFunctionPointerType(const TypeDesc *returnTypeDesc,
                                            const FormalParamList &params,
                                            bool isISR,
-                                           bool receivesFirstParamInReg) const;
+                                           CallConvention callConvention) const;
 
+    // Get a type descriptor that is equivalent to 'existingType' but that
+    // also uses the 'interrupt' keyword.
+    //
     const TypeDesc *getInterruptType(const TypeDesc *existingType) const;
 
-    const TypeDesc *getFPIRType(const TypeDesc *existingType) const;
+    // Get a type descriptor that is equivalent to 'existingType' but that
+    // also uses the specified calling convention.
+    //
+    const TypeDesc *getTypeWithCallConvention(const TypeDesc *existingType,
+                                              CallConvention callConvention) const;
 
     const TypeDesc *getTypeWithoutCallingConventionFlags(const TypeDesc *existingType) const;
 
@@ -140,9 +146,17 @@ public:
 
     void dumpTypes(std::ostream &out) const;
 
-    // In bytes. Returns 0 if floats are not supposed on the given platform.
+    struct FloatingPointFormat
+    {
+        uint8_t sizeInBytes = 0;
+        int16_t minExponent = 0;
+        int16_t maxExponent = 0;
+        int16_t exponentBias = 0;
+    };
+
+    // In bytes. Returns a size of 0 if floats are not supposed on the given platform.
     //
-    static size_t getFloatingPointFormatSize(TargetPlatform platform, bool isDoublePrecision);
+    static FloatingPointFormat getFloatingPointFormat(TargetPlatform platform, FloatingPointLibrary floatLib, bool isDoublePrecision);
 
 private:
 
@@ -152,7 +166,7 @@ private:
     const TypeDesc *findFunctionPointerType(const TypeDesc *returnTypeDesc,
                                             const FormalParamList &params,
                                             bool isISR,
-                                            bool receivesFirstParamInReg) const;
+                                            CallConvention callConvention) const;
     const TypeDesc *getSizedOneDimArrayOf(const TypeDesc *pointedTypeDesc, size_t numArrayElements) const;
 
 private:

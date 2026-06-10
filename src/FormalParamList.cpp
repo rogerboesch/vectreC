@@ -1,4 +1,4 @@
-/*  $Id: FormalParamList.cpp,v 1.2 2017/12/25 22:36:17 sarrazip Exp $
+/*  $Id: FormalParamList.cpp,v 1.3 2022/06/23 21:50:12 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2017 Pierre Sarrazin <http://sarrazip.com/>
@@ -24,7 +24,8 @@ using namespace std;
 
 FormalParamList::FormalParamList()
 :   TreeSequence(),
-    ellipsis(false)
+    ellipsis(false),
+    ellipsisImplied(false)
 {
 }
 
@@ -35,9 +36,10 @@ FormalParamList::~FormalParamList()
 
 
 void
-FormalParamList::endWithEllipsis()
+FormalParamList::endWithEllipsis(bool _ellipsisImplied)
 {
     ellipsis = true;
+    ellipsisImplied = _ellipsisImplied;
 }
 
 
@@ -46,6 +48,14 @@ FormalParamList::endsWithEllipsis() const
 {
     return ellipsis;
 }
+
+
+bool
+FormalParamList::isEllipsisImplied() const
+{
+    return ellipsisImplied;
+}
+
 
 bool
 FormalParamList::hasSingleVoidParam() const

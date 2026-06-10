@@ -1,4 +1,4 @@
-/*  $Id: FormalParameter.h,v 1.6 2017/07/22 01:54:11 sarrazip Exp $
+/*  $Id: FormalParameter.h,v 1.7 2023/08/27 01:41:04 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -45,7 +45,7 @@ public:
 
     const std::string &getEnumTypeName() const;
 
-    virtual bool isLValue() const { return false; }
+    virtual bool isLValue() const override { return false; }
 
 private:
 

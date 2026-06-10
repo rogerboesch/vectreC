@@ -1,4 +1,4 @@
-/*  $Id: Pragma.cpp,v 1.10 2018/09/15 20:00:49 sarrazip Exp $
+/*  $Id: Pragma.cpp,v 1.12 2024/07/11 03:21:18 sarrazip Exp $
 
     CMOC - A C-like cross-compiler
     Copyright (C) 2003-2015 Pierre Sarrazin <http://sarrazip.com/>
@@ -27,8 +27,23 @@ using namespace std;
 
 
 Pragma::Pragma(const std::string &_directive)
-:   directive(_directive)
+:   directive(_directive),
+    processed(false)
 {
+}
+
+
+void
+Pragma::setProcessed()
+{
+    processed = true;
+}
+
+
+bool
+Pragma::wasProcessed() const
+{
+    return processed;
 }
 
 
@@ -101,19 +116,13 @@ Pragma::getNextWord(size_t &startIndex, size_t &endIndex) const
 
 
 bool
-Pragma::isExecOnce() const
-{
-    return directive == "exec_once";
-}
-
-
-bool
 Pragma::isStackSpace(uint16_t &numBytes) const
 {
-    if (strncmp(directive.c_str(), "stack_space", 11) != 0)
+    size_t argStart = 11;
+    if (strncmp(directive.c_str(), "stack_space", argStart) != 0)
         return false;
 
-    size_t argStart = 11, argEnd;
+    size_t argEnd = 0;
     getNextWord(argStart, argEnd);
     string arg(directive, argStart, argEnd);
 
@@ -123,6 +132,36 @@ Pragma::isStackSpace(uint16_t &numBytes) const
 
     numBytes = (uint16_t) n;
     return true;
+}
+
+
+bool
+Pragma::isPushCallConvention(CallConvention &callConv) const
+{
+    callConv = DEFAULT_CMOC_CALL_CONV;  // ensure defined value
+
+    size_t argStart = 23;
+    if (strncmp(directive.c_str(), "push_calling_convention", argStart) != 0)
+        return false;
+
+    size_t argEnd = 0;
+    getNextWord(argStart, argEnd);
+    string arg(directive, argStart, argEnd);
+    if (arg == "__gcccall")
+    {
+        callConv = GCC6809_CALL_CONV;
+        return true;
+    }
+    if (arg == "default")
+        return true;  // DEFAULT_CMOC_CALL_CONV
+    return false;
+}
+
+
+bool
+Pragma::isPopCallConvention() const
+{
+    return strncmp(directive.c_str(), "pop_calling_convention", 22) == 0;
 }
 
 

@@ -55,6 +55,10 @@ public:
 // Function to load the processor state
 public:
 
+	enum {
+		last_valid_ram_address = 0xFEFF,
+	};
+
 		void		 load_intelhex(const char *filename, Word loadOffset);
 		void		 load_srec(const char *filename, Word loadOffset);
 
@@ -72,8 +76,8 @@ class USimMotorola : virtual public USim {
 // Memory access functions taking target byte order into account
 protected:
 
-	virtual Word		read_word(Word offset);
-	virtual void		write_word(Word offset, Word val);
+	virtual Word		read_word(Word offset) override;
+	virtual void		write_word(Word offset, Word val) override;
 
 };
 
@@ -82,8 +86,8 @@ class USimIntel : virtual public USim {
 // Memory access functions taking target byte order into account
 protected:
 
-	virtual Word		read_word(Word offset);
-	virtual void		write_word(Word offset, Word val);
+	virtual Word		read_word(Word offset) override;
+	virtual void		write_word(Word offset, Word val) override;
 
 };
 

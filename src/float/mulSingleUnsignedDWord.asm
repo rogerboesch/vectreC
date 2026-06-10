@@ -1,3 +1,5 @@
+	INCLUDE float.inc
+
 	SECTION code
 
 mulSingleUnsignedDWord	EXPORT
@@ -13,7 +15,7 @@ mulSingleUnsignedDWord
 	ldx	8,s		; left (single)
 	lbsr	unpackXToFPA1AndMul
 	ldx	,s		; result address
-	jsr	$BC35		; pack FPA0 into X
+	flt_packFPA0ToX
 	puls	x,y,u,pc
 
 
