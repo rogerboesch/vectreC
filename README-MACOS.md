@@ -478,6 +478,20 @@ The full source lives at <https://github.com/rogerboesch/vectreC>. The vendored
 CMOC compiler source is under `cmoc/`; vectrec's own files (build scripts,
 examples, docs) are at the top level.
 
+### Creating a redistributable package
+
+To build a self-contained `vectrec-macos-arm64.zip` (the same artifact attached
+to the GitHub release — `cmoc` + lwtools + stdlib + examples + this guide), run
+after `./build-macos.sh`:
+
+```bash
+./package-macos.sh
+```
+
+Users of the zip just unzip, `source ./vectrec-env.sh`, and compile. The package
+is Apple Silicon (arm64) only and needs the Xcode Command Line Tools for the C
+preprocessor; Intel Mac users build from source with `./build-macos.sh`.
+
 ## 13. Credits and license
 
 - **CMOC compiler** — Pierre Sarrazin, <http://sarrazip.com/dev/cmoc.html> (GPLv3)
