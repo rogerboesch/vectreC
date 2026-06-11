@@ -308,6 +308,22 @@ endsWith(const string &s, const char *suffix)
 }
 
 
+// Returns the position of the last directory separator in a path, or
+// string::npos if there is none. On Windows, both '/' and '\' are accepted as
+// separators (cmoc.exe receives native backslash paths from cmd.exe/PowerShell);
+// on sh-based platforms only '/' is a separator, since '\' is a legal filename
+// character there.
+static string::size_type
+findLastDirSep(const string &s)
+{
+#if defined(__MINGW32__)
+    return s.find_last_of("/\\");
+#else
+    return s.rfind('/');
+#endif
+}
+
+
 static pair<string::size_type, string>
 getExtensionOffsetAndString(const string &s)
 {
@@ -315,7 +331,7 @@ getExtensionOffsetAndString(const string &s)
     if (dotPos == string::npos)
         return make_pair(dotPos, string());
 
-    string::size_type slashPos = s.rfind('/');
+    string::size_type slashPos = findLastDirSep(s);
     if (slashPos != string::npos && dotPos < slashPos)  // if foo.bar/baz
         return make_pair(dotPos, string());  // extension exists, but not in basename
 
@@ -354,7 +370,7 @@ string
 replaceDir(const string &s, const string &newDir)
 {
     string prefix = newDir + "/";
-    string::size_type lastDirSepPos = s.rfind('/');
+    string::size_type lastDirSepPos = findLastDirSep(s);
     if (lastDirSepPos != string::npos)  // if dir sep found
         return prefix + s.substr(lastDirSepPos + 1);
     return prefix + s;
@@ -364,7 +380,7 @@ replaceDir(const string &s, const string &newDir)
 string
 getBasename(const string &filename)
 {
-    string::size_type lastSlash = filename.rfind('/');
+    string::size_type lastSlash = findLastDirSep(filename);
     if (lastSlash == string::npos)  // if no slash
         return filename;
     return string(filename, lastSlash + 1, string::npos);

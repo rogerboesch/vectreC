@@ -22,7 +22,7 @@ Pick your platform:
 | Platform    | Instructions                       | Notes                                              |
 |-------------|------------------------------------|----------------------------------------------------|
 | **macOS**   | [README_macOS.md](README_macOS.md)     | Build from source with `./build.sh` (Homebrew)     |
-| **Windows** | [README_Windows.md](README_Windows.md) | Prebuilt download available, or build with MSYS2   |
+| **Windows** | [README-WINDOWS.md](README-WINDOWS.md) | Prebuilt download available, or build with MSYS2   |
 
 Once installed, compiling a Vectrex game looks the same everywhere:
 

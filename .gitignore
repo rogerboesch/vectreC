@@ -107,3 +107,5 @@ cmoc/src/parser.hh
 cmoc/src/parser.h
 cmoc/src/lexer.cc
 cmoc/doc/cmoc.1
+cmoc/src/float/float-os9.inc
+cmoc/configure~

@@ -19,7 +19,13 @@
 
 #include "TranslationUnit.h"
 
+#if defined(__MINGW32__)
+// MinGW has no <sys/wait.h>; system() returns the child's exit code directly.
+#define WIFEXITED(x)   ((unsigned) (x) < 259)
+#define WEXITSTATUS(x) ((x) & 0xff)
+#else
 #include <sys/wait.h>  /* for WEXITSTATUS() and WIFEXITED() */
+#endif
 
 
 #ifndef PROGRAM  // Allow the compilation to define the program name as a macro.
@@ -335,14 +341,33 @@ parseIncludeMarker(const char *line, string &filename)
 }
 
 
+// Quote a filename or argument for a shell command line. cmoc.exe is a native
+// Windows binary, so its system()/popen() run the command through cmd.exe,
+// which does not honor single-quote quoting; double quotes are used there.
+// sh-based platforms (macOS, Linux) keep single quotes.
+static string
+shq(const string &s)
+{
+#if defined(__MINGW32__)
+    return "\"" + s + "\"";
+#else
+    return "'" + s + "'";
+#endif
+}
+
+
 string
 Parameters::buildCppCommand(const string &inputFilename,
                             const char *targetPreprocId)
 {
     stringstream cppCommand;
+    // Note: cppExecutablePath is the command's first token, so it must NOT be
+    // quoted here: popen() wraps the whole command as cmd.exe /c "...", and a
+    // leading quoted token would create broken nested quotes. Install paths
+    // with spaces are therefore unsupported for the preprocessor path.
     cppCommand << cppExecutablePath << " -xc++ -U__cplusplus";  // -xc++ makes sure cpp accepts C++-style comments
     for (list<string>::const_iterator it = includeDirList.begin(); it != includeDirList.end(); ++it)
-        cppCommand << " -I'" << *it << "'";
+        cppCommand << " -I" << shq(*it);
     cppCommand << " -D_CMOC_VERSION_=" << getVersionInteger();
     cppCommand << " -D" << targetPreprocId << "=1";
     if (!relocatabilitySupported)
@@ -356,7 +381,7 @@ Parameters::buildCppCommand(const string &inputFilename,
     cppCommand << " -U__GNUC__ -nostdinc -undef";
 
     for (list<string>::const_iterator it = defines.begin(); it != defines.end(); ++it)
-        cppCommand << " -D'" << *it << "'";
+        cppCommand << " -D" << shq(*it);
 
     cppCommand << " " << inputFilename;  // must be last argument, for portability
     return cppCommand.str();
@@ -685,9 +710,9 @@ Parameters::invokeAssembler(const string &inputFilename,
     string lwasmCmdLine = lwasmPath
                           + " -fobj --pragma=" + lwasmPragma
                           + " -D" + targetPreprocId
-                          + " --output='" + objectFilename + "'"
-                          + (intermediateFilesKept ? " --list='" + lstFilename + "'" : "")
-                          + " '" + inputFilename + "'";
+                          + " --output=" + shq(objectFilename)
+                          + (intermediateFilesKept ? " --list=" + shq(lstFilename) : string())
+                          + " " + shq(inputFilename);
     if (verbose)
         cout << "Assembler command: " << lwasmCmdLine << endl;
 

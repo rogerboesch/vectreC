@@ -46,7 +46,7 @@ void music_set_flag(uint8_t flag); // REMOVE LATER, direct access to vars
 uint8_t music_get_flag();
 void random_seed(uint8_t seed1, uint8_t seed2, uint8_t seed3);
 void zero_beam();
-uint8_t abs(int8_t value);
+// Note: abs() is provided by the standard library (<cmoc.h>: int abs(int)).
 #define set_beam_intensity intensity_a
 
 // ---------------------------------------------------------------------------
