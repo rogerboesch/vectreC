@@ -92,6 +92,10 @@ cmoc/src/,check-prog.*
 vectrec-win64/
 vectrec-win64.zip
 
+### macOS redistributable package ###
+vectrec-macos-arm64/
+vectrec-macos-arm64.zip
+
 ### Compiled binaries and objects ###
 cmoc/src/cmoc
 cmoc/src/writecocofile
