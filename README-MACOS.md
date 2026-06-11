@@ -8,22 +8,50 @@ VectreC is a ready-to-build distribution of the [CMOC](http://sarrazip.com/dev/c
 enhanced C wrapper library for the Vectrex BIOS. You write C, you get a
 `.bin` ROM image that runs in an emulator or on real hardware.
 
-On macOS you build the toolchain once from source with `./build-macos.sh` (it
-installs its own prerequisites via Homebrew). Everything then lives in a single
-folder you can put on your `PATH`. For a general introduction see the main
-[README](README.md).
+On **Apple Silicon** you can download a prebuilt, self-contained package — unzip,
+source one script, and compile. On **any Mac** (including Intel) you can build the
+toolchain from source with `./build-macos.sh`, which installs its own
+prerequisites via Homebrew. Either way the toolchain ends up in a single folder
+you put on your `PATH`. For a general introduction see the main [README](README.md).
 
 ---
 
 ## 1. Requirements
 
 - macOS 12 or later (Apple Silicon or Intel)
-- [Xcode Command Line Tools](https://developer.apple.com/) — provides `clang++`
-  and the C preprocessor (`xcode-select --install`)
-- [Homebrew](https://brew.sh) — used to install the build prerequisites
+- [Xcode Command Line Tools](https://developer.apple.com/) — provides the C
+  preprocessor (`cpp`) that `cmoc` calls, and `clang++` when building from source
+  (`xcode-select --install`). **Required for both install options below.**
+- [Homebrew](https://brew.sh) — only needed if you **build from source** (Option B)
 - A Vectrex emulator to run your games (see [section 8](#8-running-your-game))
 
 ## 2. Installation
+
+### Option A — Download the prebuilt package (Apple Silicon)
+
+1. Download **`vectrec-macos-arm64.zip`** from the
+   [latest release](https://github.com/rogerboesch/vectreC/releases/latest).
+2. Unzip it anywhere and load the environment:
+
+   ```bash
+   unzip vectrec-macos-arm64.zip && cd vectrec-macos-arm64
+   . ./vectrec-env.sh
+   ```
+
+   `vectrec-env.sh` sets `VECTREC` + `PATH` and clears the macOS download-quarantine
+   flag, so the (unsigned) binaries run without a Gatekeeper prompt.
+3. Verify it works:
+
+   ```bash
+   cmoc --version          # -> cmoc (cmoc 0.1.98)
+   ```
+
+The package is self-contained (`cmoc` + lwtools + stdlib + examples + this guide)
+and only needs the Xcode Command Line Tools for the C preprocessor. With the
+environment loaded, skip ahead to [section 3](#3-your-first-program). On Intel
+Macs, use Option B.
+
+### Option B — Build from source (any Mac, including Intel)
 
 ```bash
 git clone https://github.com/rogerboesch/vectreC.git
@@ -62,8 +90,9 @@ The default is `~/retro-tools/vectrec/`.
 
 ### Set up your environment
 
-Point a `VECTREC` variable at the install folder and put it on your `PATH` so
-`cmoc`, `lwasm` etc. are found directly:
+If you built from source (Option B), point a `VECTREC` variable at the install
+folder and put it on your `PATH` so `cmoc`, `lwasm` etc. are found directly (the
+prebuilt package's `vectrec-env.sh` already does this for Option A):
 
 ```bash
 export VECTREC="$HOME/retro-tools/vectrec"
