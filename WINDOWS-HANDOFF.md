@@ -1,21 +1,29 @@
 # Windows build — handoff notes
 
 Dev notes for continuing the CMOC 0.1.98 update on the Windows side. Not a
-user doc (that's `cmoc/doc/README-WINDOWS.md`). Delete this file before merging
-the branch if you like.
+user doc (that's the top-level `README-WINDOWS.md`). Delete this file before
+merging the branch if you like.
 
-## State as of 2026-06-10 (branch `update-cmoc-0.1.98`)
+## State as of 2026-06-11 (branch `update-cmoc-0.1.98`)
 
-Two commits done, **verified on macOS only**:
+Earlier commits, **verified on macOS only**:
 1. `0477830` — re-vendored CMOC **0.1.98** over the old 0.1.67 fork.
 2. `8c75c05` — moved the whole vendored tree into **`cmoc/`**; top level now
    holds only vectrec's own files (build scripts, `README*.md`, `examples/`,
    `bench/`).
 
-**Your job:** verify `build-windows.sh` (then `package-windows.sh`) still
-produce a working `cmoc.exe` toolchain from the new layout on MSYS2/MINGW64,
-and fix anything 0.1.98- or layout-related that breaks. macOS is green; Windows
-is unexercised.
+**Windows is now green too** (2026-06-11, not yet committed): `build-windows.sh`
+builds the full compiler + stdlib, `package-windows.sh` produces
+`vectrec-win64.zip`, and the packaged `cmoc.exe` compiles all `examples/*.c`
+to valid Vectrex ROMs **outside MSYS2** (clean PowerShell, native backslash
+paths, bundled cpp). Getting there required five Windows-portability patches to
+the compiler — see the bullet list below. Stale top-level pre-`cmoc/`-move
+build artifacts were also removed and gitignored.
+
+> Build gotcha: the build/package scripts require the **real MSYS2** at
+> `C:\msys64` (it has `pacman` + the full MinGW64 toolchain). Git Bash also
+> reports `MSYSTEM=MINGW64` but lacks `pacman`, so run them via
+> `C:/msys64/usr/bin/bash.exe -l` from the project dir.
 
 ## Why this update was easy
 
@@ -30,6 +38,25 @@ compiler. vectrec's only remaining delta:
 - `WINDOWS_BUILD` autoconf conditional (drops the `usim` simulator, which needs
   termios) — `cmoc/configure.ac` + `cmoc/src/Makefile.am`.
 - Two extra headers installed via `cmoc/src/stdlib/Makefile.am`.
+- **Windows portability patches** to the compiler (stock 0.1.98 does not build
+  or run natively on MinGW; all guarded by `#if defined(__MINGW32__)` so macOS
+  is unaffected). Added 2026-06-11 while making the Windows side work:
+  - `cmoc/src/main.cpp`, `cmoc/src/Parameters.cpp`: guard `#include <sys/wait.h>`
+    (absent on MinGW) + provide `WIFEXITED`/`WEXITSTATUS` fallback macros.
+  - `cmoc/src/main.cpp`, `cmoc/src/Parameters.cpp`: `shq()` helper — quote
+    cpp/lwasm/lwlink command arguments with double quotes on Windows (cmoc.exe's
+    `system()`/`popen()` go through cmd.exe, which ignores single quotes). The
+    command's first token (the cpp path) is intentionally left unquoted.
+  - `cmoc/src/util.cpp`: `findLastDirSep()` — treat `\` as a path separator on
+    Windows in `getBasename`/`replaceDir`/`getExtension*`, so native backslash
+    paths (e.g. `..\examples\hello.c`) aren't rejected as "illegal program file
+    name".
+  - `cmoc/src/main.cpp`: honor the `CMOC_CPP` env var as the preprocessor path
+    (lets the redistributable package point cmoc at its bundled cpp.exe;
+    `--cpp=` still overrides). The `vectrec-env.ps1` scripts set this var.
+  - Overlay `cmoc/src/stdlib/vectrex/bios.h` + `vectrex_bios.c`: removed the
+    overlay's `uint8_t abs(int8_t)` — it now collides with the standard
+    `int abs(int)` that stock 0.1.98 ships in `<cmoc.h>`. No example used it.
 
 ## Layout change you must know
 
@@ -37,7 +64,8 @@ The build scripts stay at the **top level** as entry points but now `cd` into
 `cmoc/` via a `BUILD_DIR="$SCRIPT_DIR/cmoc"` variable before configure/make.
 So `./build-windows.sh` is still the command — just know that configure, make,
 `src/cmoc.exe`, `src/stdlib/*` all resolve under `cmoc/` now.
-`package-windows.sh` reads `cmoc/doc/README-WINDOWS.md`.
+`package-windows.sh` reads the top-level `README-WINDOWS.md` (the user guide;
+moved out of `cmoc/doc/` so it isn't lost on the next CMOC re-vendor).
 
 ## What to actually do
 
@@ -81,5 +109,9 @@ So `./build-windows.sh` is still the command — just know that configure, make,
 ## If you need to re-vendor CMOC again later
 
 rsync upstream `src` into `cmoc/` (`--delete`, excluding the vectrec-only paths
-above + `.claude/`), restore the 5 overlay files, re-apply the 3 patches,
-`cd cmoc && ./bootstrap`, build. Upstream tarball: http://sarrazip.com/dev/cmoc-0.1.98.tar.gz
+above + `.claude/`), restore the 5 overlay files, re-apply the patches listed in
+"Why this update was easy" above (the `WINDOWS_BUILD`/Makefile patches **plus**
+the five `__MINGW32__` Windows-portability patches to `main.cpp` /
+`Parameters.cpp` / `util.cpp` and the overlay `abs` removal — `git log -p` for
+the commit that introduced them), `cd cmoc && ./bootstrap`, build. Upstream
+tarball: http://sarrazip.com/dev/cmoc-0.1.98.tar.gz

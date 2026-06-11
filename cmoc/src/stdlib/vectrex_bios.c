@@ -397,16 +397,6 @@ LF50A:
 }
 
 // ---------------------------------------------------------------------------
-// Math helpers
-
-uint8_t abs(int8_t value) {
-  if (value < 0)
-    return -value;
-
-  return value;
-}
-
-// ---------------------------------------------------------------------------
 // Controller/Joystick helpers
 
 // Initialization, each controller axis can be individually

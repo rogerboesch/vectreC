@@ -1,3 +1,16 @@
+# ---------------------------------------------------------------------------
+# Line-ending policy
+#
+# Store every text file with LF in the repository AND check it out with LF on
+# every platform, Windows included. This makes line endings deterministic and
+# independent of each developer's core.autocrlf setting — which is the usual
+# cause of "the whole file changed" diffs and CRLF (^M) surprises on GitHub.
+#
+# On Windows, pair this with:  git config core.autocrlf false
+# After changing this file, renormalize the repo:  git add --renormalize .
+# ---------------------------------------------------------------------------
+* text=auto eol=lf
+
 # Autotools inputs and shell scripts must keep LF endings, even on Windows
 # checkouts with core.autocrlf=true. If configure.ac is checked out with CRLF,
 # a regenerated configure script embeds literal \r characters in its file
@@ -18,3 +31,16 @@ config.guess text eol=lf
 config.sub   text eol=lf
 config.rpath text eol=lf
 mkinstalldirs text eol=lf
+
+# Binary files: never apply EOL conversion, so they can't be corrupted.
+*.zip binary
+*.bin binary
+*.png binary
+*.gif binary
+*.jpg binary
+*.ico binary
+*.pdf binary
+*.a   binary
+*.o   binary
+*.exe binary
+*.dll binary

@@ -23,15 +23,32 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <sys/stat.h>
 
 #if defined(__MINGW32__)
+// MinGW has no <sys/wait.h>; system() returns the child's exit code directly.
 #define WIFEXITED(x)   ((unsigned) (x) < 259)
 #define WEXITSTATUS(x) ((x) & 0xff)
+#else
+#include <sys/wait.h>
 #endif
 
 using namespace std;
+
+
+// Quote a filename or argument for a shell command line. cmoc.exe is a native
+// Windows binary whose system()/popen() run through cmd.exe, which does not
+// honor single-quote quoting; double quotes are used there. sh-based platforms
+// (macOS, Linux) keep single quotes.
+static string
+shq(const string &s)
+{
+#if defined(__MINGW32__)
+    return "\"" + s + "\"";
+#else
+    return "'" + s + "'";
+#endif
+}
 
 
 extern int numErrors;
@@ -423,11 +440,11 @@ invokeLinker(const Parameters &params,
 
     string lwlinkCmdLine = params.lwlinkPath
                            + " --format=" + lwlinkFormat
-                           + " --output='" + outputFilename
-                           + "' --script='" + linkScriptFilename
-                           + "' --map='" + mapFilename + "'";
+                           + " --output=" + shq(outputFilename)
+                           + " --script=" + shq(linkScriptFilename)
+                           + " --map=" + shq(mapFilename);
     for (vector<string>::const_iterator it = params.libDirs.begin(); it != params.libDirs.end(); ++it)
-        lwlinkCmdLine += " -L'" + *it + "'";
+        lwlinkCmdLine += " -L" + shq(*it);
 
     lwlinkCmdLine += " -L" + params.cmocfloatlibdir;
     lwlinkCmdLine += " -lcmoc-crt-" + string(targetKW);
@@ -449,11 +466,11 @@ invokeLinker(const Parameters &params,
 
     for (vector<string>::const_iterator it = objectFilenames.begin();
                                        it != objectFilenames.end(); ++it)
-        lwlinkCmdLine += " '" + params.useIntDir(*it) + ".o'";
+        lwlinkCmdLine += " " + shq(params.useIntDir(*it) + ".o");
 
     for (vector<string>::const_iterator it = libraryFilenames.begin();
                                        it != libraryFilenames.end(); ++it)
-        lwlinkCmdLine += " '" + *it + "'";
+        lwlinkCmdLine += " " + shq(*it);
 
     if (params.verbose)
         cout << "Linker command: " << lwlinkCmdLine << endl;
@@ -1365,6 +1382,16 @@ main(int argc, char *argv[])
         const char *p = getenv("CMOCPKGDATADIR"), *l = getenv("CMOCFLOATLIBDIR");
         params.pkgdatadir = (p != NULL ? p : PKGDATADIR);
         params.cmocfloatlibdir = (l != NULL ? l : params.pkgdatadir + "/lib");
+    }
+
+    /*  Allow an environment variable to specify the C preprocessor to invoke.
+        The redistributable Windows package uses this to point cmoc at its
+        bundled cpp.exe. An explicit --cpp= option (parsed below) overrides it.
+    */
+    {
+        const char *cpp = getenv("CMOC_CPP");
+        if (cpp != NULL && cpp[0] != '\0')
+            params.cppExecutablePath = cpp;
     }
 
     int argi = 1;

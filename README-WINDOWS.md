@@ -314,13 +314,14 @@ vectrec-win64\
 │   ├── libcmoc-crt-vec.a    C runtime (startup code, arithmetic helpers)
 │   └── libcmoc-std-vec.a    standard library
 ├── cpp\                bundled GNU C preprocessor (used internally by cmoc)
-├── examples\           ready-to-build samples (hello.c, controller.c, romdata.c)
+├── examples\           ready-to-build samples (hello.c, controller.c, romdata.c, pong.c)
 ├── vectrec-env.ps1     environment setup for PowerShell
 └── README-WINDOWS.md   this file
 ```
 
-All three programs in `examples\` compile as-is; they are the same code shown
-in sections 3 and 6 of this guide.
+The first three programs in `examples\` compile as-is and are the same code
+shown in sections 3 and 6 of this guide. `pong.c` is a complete game built
+step by step in [section 11](#11-a-complete-example-building-pong-step-by-step).
 
 How a build works internally: `cmoc.exe` runs the bundled preprocessor
 (`cpp`) on your source, compiles the result to 6809 assembly, assembles it
@@ -365,14 +366,164 @@ Folder paths with spaces work for source/output files and `-I`/`-L`
 directories. Avoid spaces in the toolchain location itself if you use the
 cmd.exe setup.
 
-## 11. Building this package from source
+## 11. A complete example: building Pong step by step
 
-The full source, including the macOS and Windows build scripts
-(`build.sh`, `build-windows.sh`, `package-windows.sh`), lives at:
+`examples\pong.c` is a full two-player Pong game — paddles, a bouncing ball,
+scoring, controller input, sound effects and startup music. It ties together
+everything in sections 5 and 6, so it's a good end-to-end test of your setup.
+Here is the whole build, from a fresh PowerShell window to a running ROM.
 
-> <https://github.com/rogerboesch/vectreC>
+**Step 1 — open PowerShell in the toolchain folder and load the environment.**
+Assuming you unzipped to `C:\vectrec` (section 2):
 
-## 12. Credits and license
+```powershell
+cd C:\vectrec
+. .\vectrec-env.ps1
+```
+
+Verify the compiler is on the path:
+
+```powershell
+cmoc --version          # -> cmoc (cmoc 0.1.98)
+```
+
+**Step 2 — compile `pong.c`.** It is a single source file, so one command
+produces the ROM. You can keep your sources anywhere; here we build the
+bundled copy and write the output to the current folder:
+
+```powershell
+cmoc --vectrex -I $env:VECTREC\stdlib -L $env:VECTREC\stdlib -o pong.bin $env:VECTREC\examples\pong.c
+```
+
+**Step 3 — read the output.** A successful build prints one **warning** and
+nothing else:
+
+```
+pong.c:120: warning: `const char *' used as parameter 1 (list) of function
+draw_vlc() which is `char *' (not const-correct)
+```
+
+This is harmless — `pong.c` passes a `const` vertex array to a BIOS wrapper
+that declares a non-`const` pointer; the data isn't modified (same pattern as
+section 6). The command exits with code 0 and `pong.bin` (~4.5 KB) appears in
+the folder. Confirm it:
+
+```powershell
+$LASTEXITCODE          # -> 0
+Get-Item pong.bin      # -> Length about 4567 bytes
+```
+
+**Step 4 — sanity-check the ROM header (optional).** Every Vectrex ROM starts
+with the copyright/title header the BIOS reads at boot. `pong.c` sets it with
+the `#pragma vx_*` lines at the top of the file, so the bytes `g GCE 2020`
+and the title `g PONG` are embedded near the start of the image:
+
+```powershell
+$bytes = [System.IO.File]::ReadAllBytes("$PWD\pong.bin")
+-join ($bytes[0..63] | ForEach-Object { if ($_ -ge 32 -and $_ -le 126) {[char]$_} else {'.'} })
+# -> g GCE 2020....P..g PONG......
+```
+
+**Step 5 — run it.** Load `pong.bin` into a Vectrex emulator (see
+[section 8](#8-running-your-game)). Use two controllers (or the emulator's key
+mappings) — left stick moves player 1's paddle, right stick player 2's.
+
+**What this example demonstrates**, mapped to the rest of this guide:
+
+| Feature in `pong.c`                         | Covered in            |
+|---------------------------------------------|-----------------------|
+| `#pragma vx_title` / `vx_music` ROM header  | section 5             |
+| `const` vertex tables placed in ROM         | section 6 ("`const`") |
+| `moveto_d(y, x)` + `draw_vlc()` drawing      | section 6 (Y-first)   |
+| `controller_*` joystick polling             | section 6 (controller)|
+| `play_sound()` / `vx_music` audio            | section 6 (sound)     |
+| `abs()`, `sprintf()` from `<vectrex/stdlib.h>` | section 6 (headers) |
+
+**To work on your own copy**, just copy the file out and build that instead:
+
+```powershell
+Copy-Item $env:VECTREC\examples\pong.c .\mypong.c
+# edit mypong.c ...
+cmoc --vectrex -I $env:VECTREC\stdlib -L $env:VECTREC\stdlib -o mypong.bin mypong.c
+```
+
+If the build fails before producing `pong.bin`, see [section 10](#10-troubleshooting)
+— the two most common causes are not having run `vectrec-env.ps1` in this
+window (`preprocessor failed` / `lwasm not recognized`).
+
+## 12. Building this package from source
+
+Everything above uses the prebuilt `vectrec-win64.zip`, which is the
+recommended path and needs no toolchain. If you'd rather build `cmoc.exe`
+yourself, you can — you only need **MSYS2** to build it; the result still runs
+from plain PowerShell/cmd afterwards. The full source lives at
+<https://github.com/rogerboesch/vectreC>.
+
+### Build with MSYS2
+
+1. Install [MSYS2](https://www.msys2.org) (or `winget install MSYS2.MSYS2`).
+2. Open the **MSYS2 MINGW64** shell from the Start menu (not the plain MSYS or
+   UCRT64 shell — the script requires `MSYSTEM=MINGW64`).
+3. Clone and build:
+
+   ```bash
+   git clone https://github.com/rogerboesch/vectreC.git
+   cd vectreC
+   ./build-windows.sh
+   ```
+
+This will:
+
+1. Install missing build tools via pacman (gcc, bison, flex, autotools, ...).
+2. Download and build lwtools from source.
+3. Configure and compile CMOC as a native, statically linked `cmoc.exe`.
+4. Install everything to `%USERPROFILE%\retro-tools\vectrec\`.
+5. Verify the install by compiling a test Vectrex program.
+
+The installed toolchain runs from **PowerShell or cmd** — MSYS2 is only needed
+to build it. As with the prebuilt package, `cmoc.exe` invokes the GNU C
+preprocessor at compile time, so either keep `C:\msys64\mingw64\bin` on your
+`PATH` or set `CMOC_CPP` to the full path of `cpp.exe`. The generated
+`vectrec-env.ps1` does this for you:
+
+```powershell
+. $env:USERPROFILE\retro-tools\vectrec\vectrec-env.ps1
+cmoc --vectrex -I $env:VECTREC\stdlib -L $env:VECTREC\stdlib -o game.bin game.c
+```
+
+**Custom install location:**
+
+```bash
+./build-windows.sh /c/path/to/your/toolchain   # MSYS2 path syntax
+```
+
+The default is `%USERPROFILE%\retro-tools\vectrec\`.
+
+**Prerequisites** (installed automatically by `build-windows.sh` via pacman if
+missing):
+
+| Tool         | Purpose                        | Package                |
+|--------------|--------------------------------|------------------------|
+| lwtools      | 6809 assembler/linker (lwasm)  | built from source      |
+| bison        | Parser generator               | `bison`                |
+| flex         | Lexer generator                | `flex`                 |
+| C++ compiler | Builds the CMOC compiler       | `mingw-w64-x86_64-gcc` |
+| autotools    | Build system                   | `autoconf`, `automake` |
+
+### Creating the redistributable package
+
+To build your own `vectrec-win64.zip` (cmoc + lwtools + stdlib + bundled
+preprocessor + examples + this guide), run after `./build-windows.sh`, still in
+the MINGW64 shell:
+
+```bash
+./package-windows.sh
+```
+
+Users of the zip just unzip, dot-source `vectrec-env.ps1`, and compile —
+without installing anything.
+
+## 13. Credits and license
 
 - **CMOC compiler** — Pierre Sarrazin, <http://sarrazip.com/dev/cmoc.html> (GPLv3)
 - **lwtools** — William Astle, <http://www.lwtools.ca> (GPLv3)
