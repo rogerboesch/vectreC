@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# build.sh - Build and install CMOC 6809 cross-compiler for Vectrex development
+# build-macos.sh - Build and install CMOC 6809 cross-compiler for Vectrex development
 #
 # This script builds CMOC from source and installs it along with the stdlib
 # and lwtools into the VectreC toolchain directory.
 #
 # Usage:
-#   ./build.sh              Build and install to default location
-#   ./build.sh /custom/path Build and install to custom location
+#   ./build-macos.sh              Build and install to default location
+#   ./build-macos.sh /custom/path Build and install to custom location
 #
 # Prerequisites (installed automatically via Homebrew if missing):
 #   - lwtools (lwasm, lwlink, lwar) >= 4.11

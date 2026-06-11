@@ -8,7 +8,7 @@ VectreC is a ready-to-build distribution of the [CMOC](http://sarrazip.com/dev/c
 enhanced C wrapper library for the Vectrex BIOS. You write C, you get a
 `.bin` ROM image that runs in an emulator or on real hardware.
 
-On macOS you build the toolchain once from source with `./build.sh` (it
+On macOS you build the toolchain once from source with `./build-macos.sh` (it
 installs its own prerequisites via Homebrew). Everything then lives in a single
 folder you can put on your `PATH`. For a general introduction see the main
 [README](README.md).
@@ -28,7 +28,7 @@ folder you can put on your `PATH`. For a general introduction see the main
 ```bash
 git clone https://github.com/rogerboesch/vectreC.git
 cd vectreC
-./build.sh
+./build-macos.sh
 ```
 
 This will:
@@ -39,7 +39,7 @@ This will:
 4. Install binaries, libraries and headers to `~/retro-tools/vectrec/`.
 5. Verify the install by compiling a test Vectrex program.
 
-**Prerequisites** (installed automatically by `build.sh` via Homebrew if missing):
+**Prerequisites** (installed automatically by `build-macos.sh` via Homebrew if missing):
 
 | Tool         | Purpose                        | Source                 |
 |--------------|--------------------------------|------------------------|
@@ -49,13 +49,13 @@ This will:
 | C++ compiler | Builds the CMOC compiler       | Xcode CLT              |
 
 > macOS ships an old bison 2.3 with the Command Line Tools that is too old for
-> CMOC's parser. `build.sh` installs a modern Homebrew bison 3.x and uses it
+> CMOC's parser. `build-macos.sh` installs a modern Homebrew bison 3.x and uses it
 > automatically — you don't need to do anything.
 
 **Custom install location:**
 
 ```bash
-./build.sh /path/to/your/toolchain
+./build-macos.sh /path/to/your/toolchain
 ```
 
 The default is `~/retro-tools/vectrec/`.
@@ -292,7 +292,7 @@ registers (see the `tone_*`/`amplitude_*`/`noise` defines in `bios.h`).
 
 ## 7. Automating builds
 
-### Shell script (`build.sh`)
+### Shell script (`compile.sh`)
 
 ```bash
 #!/bin/bash
@@ -468,10 +468,10 @@ To pull a newer version and rebuild:
 ```bash
 cd ~/path/to/vectreC
 git pull
-./build.sh
+./build-macos.sh
 ```
 
-`build.sh` runs `make clean` first, so a rebuild is always from a clean state.
+`build-macos.sh` runs `make clean` first, so a rebuild is always from a clean state.
 To wipe and reinstall from scratch, remove `~/retro-tools/vectrec/` first.
 
 The full source lives at <https://github.com/rogerboesch/vectreC>. The vendored
