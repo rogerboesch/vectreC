@@ -1,8 +1,7 @@
 # Windows build — handoff notes
 
 Dev notes for continuing the CMOC 0.1.98 update on the Windows side. Not a
-user doc (that's the top-level `README-WINDOWS.md`). Delete this file before
-merging the branch if you like.
+user doc (that's the top-level `README-WINDOWS.md`).
 
 ## State as of 2026-06-11 (branch `update-cmoc-0.1.98`)
 
