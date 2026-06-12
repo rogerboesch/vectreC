@@ -365,7 +365,11 @@ Parameters::buildCppCommand(const string &inputFilename,
     // quoted here: popen() wraps the whole command as cmd.exe /c "...", and a
     // leading quoted token would create broken nested quotes. Install paths
     // with spaces are therefore unsupported for the preprocessor path.
-    cppCommand << cppExecutablePath << " -xc++ -U__cplusplus";  // -xc++ makes sure cpp accepts C++-style comments
+    // -xc++ makes sure cpp accepts C++-style comments, but C++ mode predefines
+    // __cplusplus (and __GNUC__), which we undefine below. On GCC/Clang, undefining
+    // a builtin macro warns ("undefining builtin macro"); -Wno-builtin-macro-redefined
+    // silences that noise on the user's compiles.
+    cppCommand << cppExecutablePath << " -xc++ -Wno-builtin-macro-redefined -U__cplusplus";
     for (list<string>::const_iterator it = includeDirList.begin(); it != includeDirList.end(); ++it)
         cppCommand << " -I" << shq(*it);
     cppCommand << " -D_CMOC_VERSION_=" << getVersionInteger();
