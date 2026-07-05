@@ -55,21 +55,22 @@ first working version, to show the optimisation headroom.
 
 | kernel   | cmoc | vbcc | gcc6809 | m2vec base | **m2vec** |
 |----------|-----:|-----:|--------:|-----------:|----------:|
-| objmove  |  148 |  119 |  **80** |        533 |       189 |
-| collide  |  206 |  203 | **131** |        298 |       276 |
-| fixmul   |  112 |  116 |      89 |         71 |    **71** |
-| rng      |  118 |   93 |  **64** |        135 |       126 |
+| objmove  |  148 |  119 |  **80** |        533 |       170 |
+| collide  |  206 |  203 | **131** |        298 |       237 |
+| fixmul   |  112 |  116 |      89 |         71 |    **54** |
+| rng      |  118 |   93 |  **64** |        135 |       110 |
 | memops   |   58 |   56 |  **41** |        116 |       108 |
 | strupr   |   54 |   49 |  **46** |        140 |       114 |
 | checksum |   90 |  101 |  **59** |        157 |       150 |
 | isort    |  117 |  111 |  **59** |        186 |       156 |
 | statem   |  149 |  132 |     132 |        225 |       198 |
 | bcdscore |  159 |  105 |     108 |        273 |       235 |
-| clamp    |  122 |  103 |     139 |        193 |       171 |
-| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1794 |
+| clamp    |  122 |  103 |     139 |        193 |       152 |
+| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1684 |
 
 Normalised to gcc6809 = 1.00: **cmoc 1.41 · vbcc 1.25 · gcc6809 1.00 ·
-m2vec 1.89** (was 2.46 before optimisation). Run it: `bench/m2/measure_m2.sh`.
+m2vec 1.78** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
+`bench/m2/measure_m2.sh`.
 
 ## Results — speed (dynamic cycle count, lower = better)
 
@@ -82,19 +83,20 @@ the base build strips it.
 
 | kernel   |  cmoc |  vbcc | gcc6809 | m2vec base |   **m2vec** |
 |----------|------:|------:|--------:|-----------:|------------:|
-| objmove  |  3648 |  4300 |**1509** |      30057 |        4905 |
-| collide  | 20873 | 12110 |**7644** |      29920 |       26803 |
-| fixmul   | 15096 | 44611 |     n/a |       5956 |    **5956** |
-| rng      |  7360 |  6068 |**3583** |       8321 |        7739 |
+| objmove  |  3648 |  4300 |**1509** |      30057 |        4372 |
+| collide  | 20873 | 12110 |**7644** |      29920 |       24034 |
+| fixmul   | 15096 | 44611 |     n/a |       5956 |    **5423** |
+| rng      |  7360 |  6068 |**3583** |       8321 |        6694 |
 | memops   |  4152 |  2434 |**1726** |       9648 |        8448 |
 | strupr   |  1810 |**1197**|   1444 |       5016 |        3402 |
 | checksum |  9316 |  9090 |**3657** |      17197 |       15853 |
 | isort    | 17329 |  8703 |**6553** |      30176 |       22286 |
 | statem   |   178 |  **88**|    115 |        133 |         103 |
 | bcdscore |   650 |   354 | **342** |        977 |         791 |
-| clamp    |  2695 |  1665 |**1473** |       2792 |        2216 |
+| clamp    |  2695 |  1665 |**1473** |       2792 |    **1939** |
 
-Run it: `bench/m2/measure_speed_m2.sh`.
+Run it: `bench/m2/measure_speed_m2.sh`. (m2vec beats cmoc on `statem` and
+`clamp`, and wins `fixmul` outright.)
 
 ## Codegen optimisations applied
 
@@ -112,24 +114,30 @@ to close the gap — the benchmark drove each one:
 4. **CSE on element addresses** — `objs[i]`'s base is computed once and reused
    across its fields (via indexed `off,X`) instead of recomputed per access.
    `objmove` again: 8457 → 4905 cycles, 429 → 189 bytes.
+5. **FOR-counter register promotion** — a FOR counter whose body makes no BIOS
+   call lives in `Y` (or `U` when nested) instead of RAM: init `TFR`, exit test
+   `CMPY`, increment `LEAY`, replacing per-iteration `LDD/ADDD/STD`. Helps every
+   FOR kernel (`fixmul` 71→54 B, `clamp` now beats cmoc, etc.).
 
 Where m2vec is now competitive or wins:
 
-- **`fixmul` — smallest (71 B) and fastest (5956).** The whole 16×16→32
+- **`fixmul` — smallest (54 B) and fastest (5423).** The whole 16×16→32
   multiply-and-shift is one `__fixmul16` call (helper body excluded), so the
   kernel is just a tight index loop plus the call; cmoc/vbcc inline slower
   generic 32-bit multiplies (vbcc's is 44611 cycles).
-- **`statem` (103 cycles) beats cmoc and gcc6809.** Small branchy kernels suit
+- **`statem` (103) and `clamp` (1939) beat cmoc.** Small/flat kernels suit
   m2vec's prologue-free module bodies.
-- `objmove` went from a ~8× outlier to ~1.3× cmoc / ~3× gcc after (3) and (4).
+- `objmove` went from a ~8× outlier to ~1.2× cmoc after (3), (4) and (5).
 
 ## Remaining gap
 
-m2vec is still ~1.9× gcc6809 overall, dominated by two things it does not yet do:
+m2vec is ~1.78× gcc6809 on size overall. What still separates it:
 
-- **No register allocator** — loop variables reload from RAM (`LDD _var`) on
-  every use instead of living in `X`/`Y`/`U`. The largest remaining factor on the
-  tight-loop kernels (`isort`, `collide`, `checksum`, `memops`).
+- **No register allocation in WHILE/LOOP** — the FOR promotion above does not
+  cover them, so the WHILE-based kernels (`isort`, `memops`, `strupr`,
+  `checksum`, `bcdscore`) still reload their loop variables from RAM each use.
+  General (liveness-based) register allocation is the next lever; `isort` is the
+  biggest remaining kernel.
 - **No branch relaxation** — control flow uses long `LBRA`/`LBcc` (lwasm's
   auto-sizing pragma is unusable: it forces *every* conditional branch long).
 - Plus 16-bit `INTEGER` where C uses 8-bit types, and no strength reduction.
