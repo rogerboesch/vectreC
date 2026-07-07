@@ -16,6 +16,7 @@ void moveto_d(uint8_t y, uint8_t x);
 void draw_line_d(int8_t y, int8_t x);
 void draw_vl_a(uint8_t nr_lines, int8_t *list);
 void draw_vlc(int8_t *list);
+void draw_vlcs(int8_t *list);
 void draw_pat_vl_a(uint8_t pattern, uint8_t nr_lines, int8_t *list);
 void rot_vl_ab(int8_t angle, uint8_t nr_points, int8_t *points, int8_t *out_points);
 void init_music_chk(int8_t *music);

@@ -97,6 +97,13 @@ void draw_vlc(int8_t *list) {
   }
 }
 
+void draw_vlcs(int8_t *list) {
+  asm {
+    LDX     list
+    JSR     Draw_VLcs
+  }
+}
+
 void draw_pat_vl_a(uint8_t pattern, uint8_t nr_lines, int8_t *list) {
   asm {
     JSR     DP_to_D0
