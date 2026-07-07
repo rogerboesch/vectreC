@@ -85,6 +85,8 @@ Most Vectrex cartridges only have ROM and so we need to make sure that we do not
 
 We can place our lists of coordinates in ROM by making use of the `const` keyword.
 
+(NOTE: `#pragma const_data` is now no longer needed)
+
 Here's an example where we define a rectangle and a string in ROM.
 
     const char rectangle[8] = {
