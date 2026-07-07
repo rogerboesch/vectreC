@@ -83,21 +83,17 @@ ROM data
 
 Most Vectrex cartridges only have ROM and so we need to make sure that we do not consume too much RAM. 
 
-We can place our lists of coordinates in ROM by making use of the pragma `const_data`.
+We can place our lists of coordinates in ROM by making use of the `const` keyword.
 
 Here's an example where we define a rectangle and a string in ROM.
 
-    #pragma const_data start
-    char rectangle[8] = {
+    const char rectangle[8] = {
         -50,  -50,
           0,  100,
        -100,    0,
           0,  -100 
     };
     char rom_text[] = "HELLO VECTREX";
-    #pragma const_data end
-
-There can only be one const\_data section.
 
 Emulation
 ---------
