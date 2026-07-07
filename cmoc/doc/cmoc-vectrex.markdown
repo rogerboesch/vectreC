@@ -93,7 +93,7 @@ Here's an example where we define a rectangle and a string in ROM.
        -100,    0,
           0,  -100 
     };
-    char rom_text[] = "HELLO VECTREX";
+    const char rom_text[] = "HELLO VECTREX";
 
 Emulation
 ---------
