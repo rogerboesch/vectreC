@@ -3,7 +3,8 @@
 MODULE Checksum;
 VAR
   p: ARRAY [0..63] OF CHAR;
-  n, sum, h, b, i, result: INTEGER;
+  n, sum, i, result: INTEGER;
+  h, b: BYTE;
 BEGIN
   sum := 0; h := 0; i := 0;
   WHILE i < n DO

@@ -21,9 +21,9 @@ files. Notable adaptations:
   `clamp`) become index loops over global arrays.
 - **No short-circuit `&&`** → range/compound tests become nested `IF`s or a
   `LOOP` with `EXIT`s (`isort`, `strupr`, `collide`, `bcdscore`).
-- **No signed 8-bit type** → C's `s8` arrays become `INTEGER` (16-bit) where the
-  values are used arithmetically, or `CHAR` (unsigned byte) where only the low
-  byte is stored.
+- **8-bit values** → C's `u8`/`s8` map to `BYTE`/`SHORTINT`, which m2vec now
+  computes byte-wide (see optimisation 10); a few kernels still use `INTEGER`
+  where the value genuinely needs 16 bits.
 
 Three small m2vec extensions were built to cover the kernels (all validated by
 unit tests in the compiler):
@@ -59,17 +59,17 @@ first working version, to show the optimisation headroom.
 | collide  |  206 |  203 | **131** |        298 |       237 |
 | fixmul   |  112 |  116 |      89 |         71 |    **54** |
 | rng      |  118 |   93 |  **64** |        135 |       110 |
-| memops   |   58 |   56 |  **41** |        116 |        90 |
-| strupr   |   54 |   49 |  **46** |        140 |       111 |
-| checksum |   90 |  101 |  **59** |        157 |       144 |
+| memops   |   58 |   56 |  **41** |        116 |        89 |
+| strupr   |   54 |   49 |  **46** |        140 |       105 |
+| checksum |   90 |  101 |  **59** |        157 |       122 |
 | isort    |  117 |  111 |  **59** |        186 |       124 |
 | statem   |  149 |  132 |     132 |        225 |       198 |
 | bcdscore |  159 |  105 |     108 |        273 |       216 |
 | clamp    |  122 |  103 |     139 |        193 |       152 |
-| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1606 |
+| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1577 |
 
 Normalised to gcc6809 = 1.00: **cmoc 1.41 · vbcc 1.25 · gcc6809 1.00 ·
-m2vec 1.69** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
+m2vec 1.66** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
 `bench/m2/measure_m2.sh`.
 
 ## Results — speed (dynamic cycle count, lower = better)
@@ -87,17 +87,17 @@ the base build strips it.
 | collide  | 20873 | 12110 |**7644** |      29920 |       24034 |
 | fixmul   | 15096 | 44611 |     n/a |       5956 |    **5423** |
 | rng      |  7360 |  6068 |**3583** |       8321 |        6694 |
-| memops   |  4152 |  2434 |**1726** |       9648 |    **2629** |
-| strupr   |  1810 |**1197**|   1444 |       5016 |        2415 |
-| checksum |  9316 |  9090 |**3657** |      17197 |       12544 |
+| memops   |  4152 |  2434 |**1726** |       9648 |    **2549** |
+| strupr   |  1810 |**1197**|   1444 |       5016 |        2161 |
+| checksum |  9316 |  9090 |**3657** |      17197 |    **8831** |
 | isort    | 17329 |  8703 |**6553** |      30176 |       13214 |
 | statem   |   178 |  **88**|    115 |        133 |         103 |
 | bcdscore |   650 |   354 | **342** |        977 |         689 |
 | clamp    |  2695 |  1665 |**1473** |       2792 |    **1939** |
 
-Run it: `bench/m2/measure_speed_m2.sh`. (m2vec now beats cmoc on **6 of 11**
-kernels — `fixmul`, `isort`, `memops`, `rng`, `statem`, `clamp` — after the
-loop optimisations below.)
+Run it: `bench/m2/measure_speed_m2.sh`. (m2vec now beats cmoc on **7 of 11**
+kernels — `fixmul`, `isort`, `memops`, `checksum`, `rng`, `statem`, `clamp` —
+after the loop and byte optimisations below.)
 
 ## Codegen optimisations applied
 
@@ -149,6 +149,14 @@ to close the gap — the benchmark drove each one:
    pointers. Liveness uses the module-body continuation; `strupr` keeps `i` (its
    trailing `dst[i] := 0` reads it). `memops` 5585→2629 (−53%, now beats cmoc),
    `checksum` 14910→12544; total size 1621→1606 B.
+10. **8-bit `BYTE`/`SHORTINT` arithmetic** — a byte-only expression (a byte
+    variable/element, a fitting constant, or an arithmetic/bit/shift chain over
+    such) evaluates in `B` (`LDB`, `ADDB/SUBB #c`, `ANDB/ORB/EORB`,
+    `LSLB/LSRB/ASRB`, plus two-operand ops via one `PSHS B`/`,S+`); byte
+    comparisons use `CMPB` with an unsigned/signed branch. Mixed-width contexts
+    fall back to 16-bit with the usual `CLRA`/`SEX`. `checksum` 12544→8831 (now
+    beats cmoc), `strupr` 2415→2161, `memops` 2629→2549; total size
+    1606→1577 B.
 
 Where m2vec is now competitive or wins:
 
@@ -156,23 +164,23 @@ Where m2vec is now competitive or wins:
   multiply-and-shift is one `__fixmul16` call (helper body excluded), so the
   kernel is just a tight index loop plus the call; cmoc/vbcc inline slower
   generic 32-bit multiplies (vbcc's is 44611 cycles).
-- **`memops` (2629), `statem` (103), `clamp` (1939), `isort` (13214) beat
-  cmoc**, and after the loop passes (5)–(9) m2vec wins 6 of 11 kernels on speed.
+- **`memops` (2549), `checksum` (8831), `isort` (13214), `statem` (103),
+  `clamp` (1939) beat cmoc** — after passes (5)–(10) m2vec wins 7 of 11 kernels
+  on speed.
 - `objmove` went from a ~8× outlier to ~1.2× cmoc after (3), (4) and (5).
 
 ## Remaining gap
 
-m2vec is ~1.69× gcc6809 on size overall. What still separates it:
+m2vec is ~1.66× gcc6809 on size overall. What still separates it:
 
-- **`strupr` still keeps its counter** — it is live after the loop (`dst[i] :=
-  0`). A version that also bumps a `dst` pointer past the loop, or narrows the
-  live range, would let elimination apply. `checksum` is hash-bound, not
-  index-bound, so its remaining gap is the 8-bit rotate/xor in 16-bit registers.
-- **No general (liveness-based) register allocation** — promotion/SR cover a
-  single loop counter and its arrays; other loop-carried values live in RAM.
+- **No general (liveness-based) register allocation** — promotion/SR/byte code
+  cover a loop counter, its arrays, and byte temporaries, but a value like
+  `strupr`'s `c` still round-trips through RAM each use where cmoc keeps it in a
+  register across the iteration. This is the largest remaining lever.
+- **`strupr` keeps its counter** — live after the loop (`dst[i] := 0`), so the
+  pointer-bound elimination (pass 9) does not apply.
 - **No branch relaxation** — control flow uses long `LBRA`/`LBcc` (lwasm's
   auto-sizing pragma is unusable: it forces *every* conditional branch long).
-- Plus 16-bit `INTEGER` where C uses 8-bit types.
 
 ## Caveat
 

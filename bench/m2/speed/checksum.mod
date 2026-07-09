@@ -1,5 +1,5 @@
 MODULE Checksum;
-VAR p: ARRAY [0..63] OF CHAR; n, sum, h, b, i, result: INTEGER;
+VAR p: ARRAY [0..63] OF CHAR; n, sum, i, result: INTEGER; h, b: BYTE;
 BEGIN
   n := 64;
   FOR i := 0 TO 63 DO p[i] := i + 1 END;

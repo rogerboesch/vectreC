@@ -1,5 +1,5 @@
 MODULE Strupr;
-VAR dst, src: ARRAY [0..63] OF CHAR; c, i: INTEGER;
+VAR dst, src: ARRAY [0..63] OF CHAR; c: BYTE; i: INTEGER;
 BEGIN
   (* "Hello Vectrex World 123" + NUL *)
   src[0] := 72;  src[1] := 101; src[2] := 108; src[3] := 108; src[4] := 111;
