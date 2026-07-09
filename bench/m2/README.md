@@ -66,10 +66,10 @@ first working version, to show the optimisation headroom.
 | statem   |  149 |  132 |     132 |        225 |       198 |
 | bcdscore |  159 |  105 |     108 |        273 |       216 |
 | clamp    |  122 |  103 |     139 |        193 |       152 |
-| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1547 |
+| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1529 |
 
 Normalised to gcc6809 = 1.00: **cmoc 1.41 · vbcc 1.25 · gcc6809 1.00 ·
-m2vec 1.63** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
+m2vec 1.61** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
 `bench/m2/measure_m2.sh`.
 
 ## Results — speed (dynamic cycle count, lower = better)
@@ -88,16 +88,16 @@ the base build strips it.
 | fixmul   | 15096 | 44611 |     n/a |       5956 |    **5423** |
 | rng      |  7360 |  6068 |**3583** |       8321 |        6694 |
 | memops   |  4152 |  2434 |**1726** |       9648 |    **2549** |
-| strupr   |  1810 |**1197**|   1444 |       5016 |        1901 |
+| strupr   |  1810 |**1197**|   1444 |       5016 |    **1671** |
 | checksum |  9316 |  9090 |**3657** |      17197 |    **8191** |
 | isort    | 17329 |  8703 |**6553** |      30176 |       13214 |
 | statem   |   178 |  **88**|    115 |        133 |        97 |
 | bcdscore |   650 |   354 | **342** |        977 |        677 |
-| clamp    |  2695 |  1665 |**1473** |       2792 |    **1939** |
+| clamp    |  2695 |  1665 |**1473** |       2792 |    **1747** |
 
-Run it: `bench/m2/measure_speed_m2.sh`. (m2vec now beats cmoc on **7 of 11**
-kernels — `fixmul`, `isort`, `memops`, `checksum`, `rng`, `statem`, `clamp` —
-after the loop and byte optimisations below.)
+Run it: `bench/m2/measure_speed_m2.sh`. (m2vec now beats cmoc on **8 of 11**
+kernels — `fixmul`, `isort`, `memops`, `strupr`, `checksum`, `rng`, `statem`,
+`clamp` — after the optimisations below.)
 
 ## Codegen optimisations applied
 
@@ -165,6 +165,13 @@ to close the gap — the benchmark drove each one:
     `D` is the only arithmetic register and can't be reserved, so the win is
     cutting redundant memory traffic. `strupr` 2161→1901, `checksum` 8831→8191,
     `collide` 24034→23242, `statem` 103→97; total size 1577→1547 B.
+12. **Cross-block value cache** — a forward MUST dataflow over the assembly
+    (CFG of fall-through + branch edges, meet = intersection at merges, iterated
+    to a fixpoint) replaces the basic-block cache: it keeps a register value
+    across a label whose predecessors all agree. Since a comparison doesn't
+    clobber `A/B/D`, `strupr`'s `c` now stays in `B` across its whole range test
+    instead of reloading each `IF`. `strupr` 1901→1671 (beats cmoc), `clamp`
+    1939→1747; total size 1547→1529 B.
 
 Where m2vec is now competitive or wins:
 
@@ -172,24 +179,21 @@ Where m2vec is now competitive or wins:
   multiply-and-shift is one `__fixmul16` call (helper body excluded), so the
   kernel is just a tight index loop plus the call; cmoc/vbcc inline slower
   generic 32-bit multiplies (vbcc's is 44611 cycles).
-- **`memops` (2549), `checksum` (8191), `isort` (13214), `statem` (97),
-  `clamp` (1939) beat cmoc**, and `strupr` (1901) is within 5% of it — after
-  passes (5)–(11) m2vec wins 7 of 11 kernels on speed.
+- **`memops` (2549), `strupr` (1671), `checksum` (8191), `isort` (13214),
+  `statem` (97), `clamp` (1747) beat cmoc** — after passes (5)–(12) m2vec wins
+  8 of 11 kernels on speed.
 - `objmove` went from a ~8× outlier to ~1.2× cmoc after (3), (4) and (5).
 
 ## Remaining gap
 
-m2vec is ~1.63× gcc6809 on size overall. What still separates it:
+m2vec is ~1.61× gcc6809 on size overall. What still separates it:
 
-- **Value cache is basic-block only** — it resets at every label (control-flow
-  merge). A cross-block version that proves a single-predecessor merge keeps its
-  register state would let `strupr`'s `c` stay in `B` across its `IF`s, matching
-  cmoc. This is the largest remaining speed lever.
-- **`strupr` keeps its counter** — live after the loop (`dst[i] := 0`), so the
-  pointer-bound elimination (pass 9) does not apply.
 - **No branch relaxation** — control flow uses long `LBRA`/`LBcc` (lwasm's
   auto-sizing pragma is unusable: it forces *every* conditional branch long),
   the biggest remaining size cost.
+- **`objmove`, `collide`, `bcdscore` still trail cmoc on speed** — record-array
+  index math and multi-way branch chains where cmoc's mature instruction
+  selection is still ahead.
 
 ## Caveat
 
