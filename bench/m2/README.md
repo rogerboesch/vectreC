@@ -59,14 +59,14 @@ first working version, to show the optimisation headroom.
 | collide  |  206 |  203 | **131** |        298 |       237 |
 | fixmul   |  112 |  116 |      89 |         71 |    **54** |
 | rng      |  118 |   93 |  **64** |        135 |       110 |
-| memops   |   58 |   56 |  **41** |        116 |       103 |
-| strupr   |   54 |   49 |  **46** |        140 |       112 |
-| checksum |   90 |  101 |  **59** |        157 |       148 |
-| isort    |  117 |  111 |  **59** |        186 |       149 |
+| memops   |   58 |   56 |  **41** |        116 |       106 |
+| strupr   |   54 |   49 |  **46** |        140 |       115 |
+| checksum |   90 |  101 |  **59** |        157 |       151 |
+| isort    |  117 |  111 |  **59** |        186 |       124 |
 | statem   |  149 |  132 |     132 |        225 |       198 |
-| bcdscore |  159 |  105 |     108 |        273 |       228 |
+| bcdscore |  159 |  105 |     108 |        273 |       216 |
 | clamp    |  122 |  103 |     139 |        193 |       152 |
-| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1661 |
+| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1633 |
 
 Normalised to gcc6809 = 1.00: **cmoc 1.41 · vbcc 1.25 · gcc6809 1.00 ·
 m2vec 1.75** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
@@ -87,12 +87,12 @@ the base build strips it.
 | collide  | 20873 | 12110 |**7644** |      29920 |       24034 |
 | fixmul   | 15096 | 44611 |     n/a |       5956 |    **5423** |
 | rng      |  7360 |  6068 |**3583** |       8321 |        6694 |
-| memops   |  4152 |  2434 |**1726** |       9648 |        7604 |
-| strupr   |  1810 |**1197**|   1444 |       5016 |        3167 |
-| checksum |  9316 |  9090 |**3657** |      17197 |       15167 |
-| isort    | 17329 |  8703 |**6553** |      30176 |       21089 |
+| memops   |  4152 |  2434 |**1726** |       9648 |        6065 |
+| strupr   |  1810 |**1197**|   1444 |       5016 |        2598 |
+| checksum |  9316 |  9090 |**3657** |      17197 |       15166 |
+| isort    | 17329 |  8703 |**6553** |      30176 |       13214 |
 | statem   |   178 |  **88**|    115 |        133 |         103 |
-| bcdscore |   650 |   354 | **342** |        977 |         793 |
+| bcdscore |   650 |   354 | **342** |        977 |         689 |
 | clamp    |  2695 |  1665 |**1473** |       2792 |    **1939** |
 
 Run it: `bench/m2/measure_speed_m2.sh`. (m2vec beats cmoc on `statem` and
@@ -126,6 +126,14 @@ to close the gap — the benchmark drove each one:
    references`) so only the loop counter — not a read-only index — is promoted.
    `isort` 22286→21089, `memops` 8448→7604, `strupr` 3402→3167,
    `checksum` 15853→15167 cycles; total size 1684→1661 B.
+7. **Array-index strength reduction** — in a WHILE/LOOP with an induction
+   variable `i` (`i := i ± c`), each scalar array accessed only as `arr[i±k]` is
+   walked by a pointer register (`Y`/`U`) holding `&arr[i]`, so the access is a
+   bare `off,reg` deref instead of recomputing `base + i*elem`, and the pointer
+   is bumped by `c*elem` (`LEA`) at the induction. Up to two arrays per loop; `i`
+   stays in RAM so a trailing `arr[i] := 0` still works with no live-range
+   analysis. `isort` 21089→13214 (−37%), `memops` 7604→6065, `strupr`
+   3167→2598, `bcdscore` 793→689 cycles; total size 1661→1633 B.
 
 Where m2vec is now competitive or wins:
 
@@ -141,13 +149,13 @@ Where m2vec is now competitive or wins:
 
 m2vec is ~1.75× gcc6809 on size overall. What still separates it:
 
-- **No strength reduction on array indices** — WHILE/LOOP now promote their
-  counter to a register (pass 6), but each `arr[i]` still recomputes
-  `base + i*elem` (scale + `LEAX D,X`) per access. Walking a pointer through the
-  array (`LEAX ±elem,X`) instead is the next lever, especially for the
-  pointer-style kernels (`memops`, `strupr`, `checksum`).
-- **No general (liveness-based) register allocation** — promotion covers a
-  single loop counter; other loop-carried values still live in RAM.
+- **Access + increment not folded** — strength reduction (pass 7) walks a
+  pointer but still keeps `i` and increments both. Folding the access and bump
+  into a post-increment (`LDB ,Y+`) and dropping `i` via a pointer-bound loop
+  condition would cut the remaining per-iteration overhead — biggest for
+  `memops`. (`checksum` is already hash-bound, not index-bound.)
+- **No general (liveness-based) register allocation** — promotion/SR cover a
+  single loop counter and its arrays; other loop-carried values live in RAM.
 - **No branch relaxation** — control flow uses long `LBRA`/`LBcc` (lwasm's
   auto-sizing pragma is unusable: it forces *every* conditional branch long).
 - Plus 16-bit `INTEGER` where C uses 8-bit types.
