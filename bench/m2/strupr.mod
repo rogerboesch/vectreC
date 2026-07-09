@@ -3,7 +3,8 @@
 MODULE Strupr;
 VAR
   dst, src: ARRAY [0..63] OF CHAR;
-  c, i: INTEGER;
+  c: BYTE;
+  i: INTEGER;
 BEGIN
   i := 0;
   LOOP
