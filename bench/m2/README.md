@@ -59,17 +59,17 @@ first working version, to show the optimisation headroom.
 | collide  |  206 |  203 | **131** |        298 |       237 |
 | fixmul   |  112 |  116 |      89 |         71 |    **54** |
 | rng      |  118 |   93 |  **64** |        135 |       110 |
-| memops   |   58 |   56 |  **41** |        116 |       100 |
+| memops   |   58 |   56 |  **41** |        116 |        90 |
 | strupr   |   54 |   49 |  **46** |        140 |       111 |
-| checksum |   90 |  101 |  **59** |        157 |       149 |
+| checksum |   90 |  101 |  **59** |        157 |       144 |
 | isort    |  117 |  111 |  **59** |        186 |       124 |
 | statem   |  149 |  132 |     132 |        225 |       198 |
 | bcdscore |  159 |  105 |     108 |        273 |       216 |
 | clamp    |  122 |  103 |     139 |        193 |       152 |
-| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1621 |
+| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1606 |
 
 Normalised to gcc6809 = 1.00: **cmoc 1.41 · vbcc 1.25 · gcc6809 1.00 ·
-m2vec 1.75** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
+m2vec 1.69** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
 `bench/m2/measure_m2.sh`.
 
 ## Results — speed (dynamic cycle count, lower = better)
@@ -87,16 +87,17 @@ the base build strips it.
 | collide  | 20873 | 12110 |**7644** |      29920 |       24034 |
 | fixmul   | 15096 | 44611 |     n/a |       5956 |    **5423** |
 | rng      |  7360 |  6068 |**3583** |       8321 |        6694 |
-| memops   |  4152 |  2434 |**1726** |       9648 |        5585 |
+| memops   |  4152 |  2434 |**1726** |       9648 |    **2629** |
 | strupr   |  1810 |**1197**|   1444 |       5016 |        2415 |
-| checksum |  9316 |  9090 |**3657** |      17197 |       14910 |
+| checksum |  9316 |  9090 |**3657** |      17197 |       12544 |
 | isort    | 17329 |  8703 |**6553** |      30176 |       13214 |
 | statem   |   178 |  **88**|    115 |        133 |         103 |
 | bcdscore |   650 |   354 | **342** |        977 |         689 |
 | clamp    |  2695 |  1665 |**1473** |       2792 |    **1939** |
 
-Run it: `bench/m2/measure_speed_m2.sh`. (m2vec beats cmoc on `statem` and
-`clamp`, and wins `fixmul` outright.)
+Run it: `bench/m2/measure_speed_m2.sh`. (m2vec now beats cmoc on **6 of 11**
+kernels — `fixmul`, `isort`, `memops`, `rng`, `statem`, `clamp` — after the
+loop optimisations below.)
 
 ## Codegen optimisations applied
 
@@ -141,6 +142,13 @@ to close the gap — the benchmark drove each one:
    accessed more than once (`isort` `keys[j]`/`keys[j-1]`) keep the `off,reg`
    deref. `memops` 6065→5585, `strupr` 2598→2415, `checksum` 15166→14910
    cycles; total size 1633→1621 B.
+9. **Dead-counter elimination** — when a `WHILE i < n` (step +1) has `i` dead
+   after the loop and used only to index strength-reduced arrays, the counter is
+   dropped: a limit `&arr[n]` is computed once, the condition becomes an unsigned
+   pointer compare (`CMPY __srlim` / `LBHS`), and `i := i+1` just advances the
+   pointers. Liveness uses the module-body continuation; `strupr` keeps `i` (its
+   trailing `dst[i] := 0` reads it). `memops` 5585→2629 (−53%, now beats cmoc),
+   `checksum` 14910→12544; total size 1621→1606 B.
 
 Where m2vec is now competitive or wins:
 
@@ -148,20 +156,18 @@ Where m2vec is now competitive or wins:
   multiply-and-shift is one `__fixmul16` call (helper body excluded), so the
   kernel is just a tight index loop plus the call; cmoc/vbcc inline slower
   generic 32-bit multiplies (vbcc's is 44611 cycles).
-- **`statem` (103) and `clamp` (1939) beat cmoc.** Small/flat kernels suit
-  m2vec's prologue-free module bodies.
+- **`memops` (2629), `statem` (103), `clamp` (1939), `isort` (13214) beat
+  cmoc**, and after the loop passes (5)–(9) m2vec wins 6 of 11 kernels on speed.
 - `objmove` went from a ~8× outlier to ~1.2× cmoc after (3), (4) and (5).
 
 ## Remaining gap
 
-m2vec is ~1.75× gcc6809 on size overall. What still separates it:
+m2vec is ~1.69× gcc6809 on size overall. What still separates it:
 
-- **`i` not eliminated** — the access+bump now fold (pass 8), but the loop still
-  keeps `i` for its `i < n` condition and increments it each iteration. Dropping
-  `i` via a pointer-bound condition (`ptr < &arr[n]`) would remove that
-  `LDD/ADDD/STD`, but needs liveness (`i` must be dead after the loop; e.g.
-  `strupr`'s trailing `dst[i] := 0` still reads it). (`checksum` is hash-bound,
-  not index-bound.)
+- **`strupr` still keeps its counter** — it is live after the loop (`dst[i] :=
+  0`). A version that also bumps a `dst` pointer past the loop, or narrows the
+  live range, would let elimination apply. `checksum` is hash-bound, not
+  index-bound, so its remaining gap is the 8-bit rotate/xor in 16-bit registers.
 - **No general (liveness-based) register allocation** — promotion/SR cover a
   single loop counter and its arrays; other loop-carried values live in RAM.
 - **No branch relaxation** — control flow uses long `LBRA`/`LBcc` (lwasm's
