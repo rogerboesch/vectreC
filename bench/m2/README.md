@@ -59,17 +59,17 @@ first working version, to show the optimisation headroom.
 | collide  |  206 |  203 | **131** |        298 |       237 |
 | fixmul   |  112 |  116 |      89 |         71 |    **54** |
 | rng      |  118 |   93 |  **64** |        135 |       110 |
-| memops   |   58 |   56 |  **41** |        116 |       108 |
-| strupr   |   54 |   49 |  **46** |        140 |       114 |
-| checksum |   90 |  101 |  **59** |        157 |       150 |
-| isort    |  117 |  111 |  **59** |        186 |       156 |
+| memops   |   58 |   56 |  **41** |        116 |       103 |
+| strupr   |   54 |   49 |  **46** |        140 |       112 |
+| checksum |   90 |  101 |  **59** |        157 |       148 |
+| isort    |  117 |  111 |  **59** |        186 |       149 |
 | statem   |  149 |  132 |     132 |        225 |       198 |
-| bcdscore |  159 |  105 |     108 |        273 |       235 |
+| bcdscore |  159 |  105 |     108 |        273 |       228 |
 | clamp    |  122 |  103 |     139 |        193 |       152 |
-| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1684 |
+| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1661 |
 
 Normalised to gcc6809 = 1.00: **cmoc 1.41 · vbcc 1.25 · gcc6809 1.00 ·
-m2vec 1.78** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
+m2vec 1.75** (was 2.46 before optimisation). m2vec wins `fixmul` (54 B). Run it:
 `bench/m2/measure_m2.sh`.
 
 ## Results — speed (dynamic cycle count, lower = better)
@@ -87,12 +87,12 @@ the base build strips it.
 | collide  | 20873 | 12110 |**7644** |      29920 |       24034 |
 | fixmul   | 15096 | 44611 |     n/a |       5956 |    **5423** |
 | rng      |  7360 |  6068 |**3583** |       8321 |        6694 |
-| memops   |  4152 |  2434 |**1726** |       9648 |        8448 |
-| strupr   |  1810 |**1197**|   1444 |       5016 |        3402 |
-| checksum |  9316 |  9090 |**3657** |      17197 |       15853 |
-| isort    | 17329 |  8703 |**6553** |      30176 |       22286 |
+| memops   |  4152 |  2434 |**1726** |       9648 |        7604 |
+| strupr   |  1810 |**1197**|   1444 |       5016 |        3167 |
+| checksum |  9316 |  9090 |**3657** |      17197 |       15167 |
+| isort    | 17329 |  8703 |**6553** |      30176 |       21089 |
 | statem   |   178 |  **88**|    115 |        133 |         103 |
-| bcdscore |   650 |   354 | **342** |        977 |         791 |
+| bcdscore |   650 |   354 | **342** |        977 |         793 |
 | clamp    |  2695 |  1665 |**1473** |       2792 |    **1939** |
 
 Run it: `bench/m2/measure_speed_m2.sh`. (m2vec beats cmoc on `statem` and
@@ -118,6 +118,14 @@ to close the gap — the benchmark drove each one:
    call lives in `Y` (or `U` when nested) instead of RAM: init `TFR`, exit test
    `CMPY`, increment `LEAY`, replacing per-iteration `LDD/ADDD/STD`. Helps every
    FOR kernel (`fixmul` 71→54 B, `clamp` now beats cmoc, etc.).
+6. **WHILE/LOOP counter promotion** — the same idea for `WHILE`/`LOOP`: the most
+   beneficial scalar 16-bit variable is held in `Y`/`U` across the loop (loaded
+   before, spilled after), and `var := var±const` becomes a single `LEA`. Since
+   a register read via `TFR` costs one cycle more than `LDD` on the 6809, the
+   candidate is chosen by a cost model (`benefit ≈ 11·self-increments −
+   references`) so only the loop counter — not a read-only index — is promoted.
+   `isort` 22286→21089, `memops` 8448→7604, `strupr` 3402→3167,
+   `checksum` 15853→15167 cycles; total size 1684→1661 B.
 
 Where m2vec is now competitive or wins:
 
@@ -131,16 +139,18 @@ Where m2vec is now competitive or wins:
 
 ## Remaining gap
 
-m2vec is ~1.78× gcc6809 on size overall. What still separates it:
+m2vec is ~1.75× gcc6809 on size overall. What still separates it:
 
-- **No register allocation in WHILE/LOOP** — the FOR promotion above does not
-  cover them, so the WHILE-based kernels (`isort`, `memops`, `strupr`,
-  `checksum`, `bcdscore`) still reload their loop variables from RAM each use.
-  General (liveness-based) register allocation is the next lever; `isort` is the
-  biggest remaining kernel.
+- **No strength reduction on array indices** — WHILE/LOOP now promote their
+  counter to a register (pass 6), but each `arr[i]` still recomputes
+  `base + i*elem` (scale + `LEAX D,X`) per access. Walking a pointer through the
+  array (`LEAX ±elem,X`) instead is the next lever, especially for the
+  pointer-style kernels (`memops`, `strupr`, `checksum`).
+- **No general (liveness-based) register allocation** — promotion covers a
+  single loop counter; other loop-carried values still live in RAM.
 - **No branch relaxation** — control flow uses long `LBRA`/`LBcc` (lwasm's
   auto-sizing pragma is unusable: it forces *every* conditional branch long).
-- Plus 16-bit `INTEGER` where C uses 8-bit types, and no strength reduction.
+- Plus 16-bit `INTEGER` where C uses 8-bit types.
 
 ## Caveat
 
