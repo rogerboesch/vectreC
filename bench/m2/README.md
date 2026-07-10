@@ -2,7 +2,7 @@
 
 This adds a **fourth column** to the [C compiler comparison](../README.md):
 **m2vec**, a from-scratch Modula-2 → 6809 cross-compiler written in Rust
-(see `~/projects/vecatac/m2vec`). Where the parent benchmark pits three mature
+(see `~/projects/m2vec-dev`). Where the parent benchmark pits three mature
 C compilers (cmoc, vbcc, gcc6809) against each other, this asks a different
 question: **how does a young, hand-written Modula-2 compiler compare on the same
 game kernels?**

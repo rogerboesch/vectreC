@@ -13,7 +13,7 @@
 set -u
 cd "$(dirname "$0")"
 
-M2VEC_DIR=${M2VEC_DIR:-$HOME/projects/vecatac/m2vec}
+M2VEC_DIR=${M2VEC_DIR:-$HOME/projects/m2vec-dev}
 M2VEC=$M2VEC_DIR/target/release/m2vec
 RUNNER=${RUNNER:-$HOME/retro-tools/6809-compilers/sim/runner}
 OUT=/tmp/spd_m2; mkdir -p "$OUT"
