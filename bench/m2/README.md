@@ -56,7 +56,7 @@ first working version, to show the optimisation headroom.
 | kernel   | cmoc | vbcc | gcc6809 | m2vec base | **m2vec** |
 |----------|-----:|-----:|--------:|-----------:|----------:|
 | objmove  |  148 |  119 |  **80** |        533 |       116 |
-| collide  |  206 |  203 | **131** |        298 |       219 |
+| collide  |  206 |  203 | **131** |        298 |       243 |
 | fixmul   |  112 |  116 |      89 |         71 |    **51** |
 | rng      |  118 |   93 |  **64** |        135 |       107 |
 | memops   |   58 |   56 |  **41** |        116 |        83 |
@@ -66,11 +66,13 @@ first working version, to show the optimisation headroom.
 | statem   |  149 |  132 |     132 |        225 |       165 |
 | bcdscore |  159 |  105 |     108 |        273 |       199 |
 | clamp    |  122 |  103 |     139 |        193 |       125 |
-| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1372 |
+| **TOTAL**| 1333 | 1188 | **948** |       2327 |      1396 |
 
 Normalised to gcc6809 = 1.00: **cmoc 1.41 · vbcc 1.25 · gcc6809 1.00 ·
-m2vec 1.45** (was 2.46 before optimisation). m2vec wins `fixmul` (51 B) and
-now undercuts cmoc on `objmove` (116 vs 148 B). Run it: `bench/m2/measure_m2.sh`.
+m2vec 1.47** (was 2.46 before optimisation). m2vec wins `fixmul` (51 B) and
+undercuts cmoc on `objmove` (116 vs 148 B); `collide` is 24 B larger than before
+because pass (15) trades size for speed there (see below). Run it:
+`bench/m2/measure_m2.sh`.
 
 ## Results — speed (dynamic cycle count, lower = better)
 
@@ -84,7 +86,7 @@ the base build strips it.
 | kernel   |  cmoc |  vbcc | gcc6809 | m2vec base |   **m2vec** |
 |----------|------:|------:|--------:|-----------:|------------:|
 | objmove  |  3648 |  4300 |**1509** |      30057 |    **2721** |
-| collide  | 20873 | 12110 |**7644** |      29920 |        22461 |
+| collide  | 20873 | 12110 |**7644** |      29920 |    **19817** |
 | fixmul   | 15096 | 44611 |     n/a |       5956 |    **5356** |
 | rng      |  7360 |  6068 |**3583** |       8321 |        6563 |
 | memops   |  4152 |  2434 |**1726** |       9648 |    **2223** |
@@ -95,10 +97,8 @@ the base build strips it.
 | bcdscore |   650 |   354 | **342** |        977 |        650 |
 | clamp    |  2695 |  1665 |**1473** |       2792 |    **1605** |
 
-Run it: `bench/m2/measure_speed_m2.sh`. (m2vec now beats cmoc on **9 of 11**
-kernels — `objmove`, `fixmul`, `isort`, `memops`, `strupr`, `checksum`, `rng`,
-`statem`, `clamp` — ties a 10th (`bcdscore`), and trails only on `collide`,
-after the optimisations below.)
+Run it: `bench/m2/measure_speed_m2.sh`. (m2vec now beats cmoc on **10 of 11**
+kernels — every one except the `bcdscore` tie — after the optimisations below.)
 
 ## Codegen optimisations applied
 
@@ -190,6 +190,18 @@ to close the gap — the benchmark drove each one:
     stable on all paths survives the `IF`s and is computed once. `objmove`
     4180→2721 (−35%, now beats cmoc) and 158→116 B (undercuts cmoc's 148);
     total size 1414→1372 B. Nothing else changed a byte.
+15. **Loop-invariant code motion (array reads)** — an AST pass hoists each
+    array-element read `arr[idx]` whose array and index are not modified in a
+    loop into a scalar temp assigned once in the loop's preheader, and rewrites
+    the uses. The nested collision scan reads `sx[i]`, `sy[i]`, `sw[i]`, `sh[i]`
+    — all invariant in the inner `j` loop — on every inner iteration; hoisting
+    them to the inner loop's preheader (still inside the outer `i` loop) turns a
+    per-inner-iteration address recomputation into one `LDD _temp`. Only pure
+    reads are moved, and only from loops with no call or pointer deref (an
+    aliasing hazard). `collide` 22461→19817 (−12%, now beats cmoc). This trades
+    size for speed — the preheader is extra code the body no longer amortises in
+    a nested loop — so `collide` grows 219→243 B; total size 1372→1396 B. It is
+    the one pass here that can enlarge a kernel, and only `collide` triggers it.
 
 Where m2vec is now competitive or wins:
 
@@ -197,22 +209,23 @@ Where m2vec is now competitive or wins:
   multiply-and-shift is one `__fixmul16` call (helper body excluded), so the
   kernel is just a tight index loop plus the call; cmoc/vbcc inline slower
   generic 32-bit multiplies (vbcc's is 44611 cycles).
-- **`statem` (86) is the fastest of all four compilers**; `objmove`, `memops`,
-  `strupr`, `checksum`, `isort`, `rng`, `clamp` beat cmoc and `bcdscore` (650)
-  ties it — after passes (5)–(14) m2vec wins 9 of 11 kernels on speed (ties a
-  10th), and undercuts cmoc on `objmove` size too.
+- **`statem` (86) is the fastest of all four compilers**; every other kernel
+  except the `bcdscore` (650) tie also beats cmoc — after passes (5)–(15) m2vec
+  wins 10 of 11 kernels on speed, and undercuts cmoc on `objmove` size too.
 - `objmove` went from a ~8× outlier to *beating* cmoc after (3), (4), (5) and
   finally (14), which removed its per-`IF` element-base recomputation.
+- `collide`, the last speed loss, was closed by (15): loop-invariant hoisting of
+  the outer index's array elements out of the inner loop.
 
 ## Remaining gap
 
-m2vec is ~1.45× gcc6809 on size overall. What still separates it:
+m2vec is ~1.47× gcc6809 on size overall. What still separates it:
 
-- **`collide` is the last speed loss** — its inner loop recomputes the outer
-  index's array elements (`sx[i]`, `sy[i]`, `sw[i]`, `sh[i]`) every iteration
-  though `i` is invariant there; cmoc hoists them. Closing it needs loop-invariant
-  code motion, not the straight-line/merge address CSE of (14) (the recomputation
-  is across inner-loop iterations, past the back-edge, which resets the cache).
+- **Size, not speed, is the remaining axis** — m2vec now wins or ties every
+  kernel on speed but is larger on most (long branches where a scratch reg would
+  do, 16-bit `INTEGER` where C uses 8-bit types, stack-based expression eval).
+  `collide`'s pass-(15) speed win in particular cost size; a size-tuned build
+  would leave loop-invariant hoisting off.
 - **No general (liveness-based) register allocation** — the value cache cuts
   redundant reloads but doesn't hoist a variable into a register for its whole
   live range; on the 6809 (one arithmetic register) the payoff is bounded, but
