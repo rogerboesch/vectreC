@@ -1696,5 +1696,8 @@ main(int argc, char *argv[])
     if (status == EXIT_SUCCESS && params.targetPlatform == DRAGON && params.forcedLWLinkFormat.empty())
         status = convertBinToDragonFormat(executableFilename, params.verbose);
 
+    if (status == EXIT_SUCCESS)
+        cout << "Success! " << executableFilename << " was successfully built." << endl;
+
     return status;
 }
