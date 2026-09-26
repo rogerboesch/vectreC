@@ -20,7 +20,7 @@ cd "$(dirname "$0")"
 
 M2VEC_DIR=${M2VEC_DIR:-$HOME/projects/m2vec-dev}
 M2VEC=$M2VEC_DIR/target/release/m2vec
-LWASM=${LWASM:-$HOME/retro-tools/vectrec/lwasm}
+LWASM=${LWASM:-${RETRO_TOOLS:-$HOME/tools}/vectrec/lwasm}
 OUT=/tmp/bench_m2; mkdir -p "$OUT"
 
 if [ ! -x "$M2VEC" ]; then

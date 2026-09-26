@@ -7,7 +7,7 @@ representative Vectrex game kernels (Motorola 6809).
 
 | Compiler | Version | How it was obtained on this Apple-Silicon Mac |
 |----------|---------|-----------------------------------------------|
-| **cmoc**    | 0.1.67          | Native arm64 build (already installed in `~/retro-tools/vectrec`). |
+| **cmoc**    | 0.1.67          | Native arm64 build (already installed in `~/tools/vectrec`). |
 | **vbcc**    | 0.9g, `vbcchc12` (6809/6309/68HC12 backend), `-O=255` | Built from source: `vbcc.tar.gz` + `vasm6809_std` + `vlink`. |
 | **gcc6809** | GCC 4.3.6 (`gcc6809`/dftools), `-O2` | Prebuilt x86_64 `cc1`, run under **Rosetta 2**. |
 

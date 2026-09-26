@@ -6,11 +6,11 @@
 set -u
 cd "$(dirname "$0")"
 DRV=drv; OUT=/tmp/spd; mkdir -p "$OUT"
-VECTREC=${VECTREC:-/Users/roger/retro-tools/vectrec}
-VB=${VB:-/Users/roger/retro-tools/6809-compilers/vbcc}
-CC1=${CC1:-/Users/roger/retro-tools/6809-compilers/gcc6809/bin/cc1}; AS=/Users/roger/retro-tools/6809-compilers/gcc6809/bin/as6809; LD=/Users/roger/retro-tools/6809-compilers/gcc6809/bin/aslink
-RUNNER=/Users/roger/retro-tools/6809-compilers/sim/runner; MK=/Users/roger/retro-tools/6809-compilers/sim/mkimg.py
-GCCLIB=/Users/roger/retro-tools/6809-compilers/gcc6809/lib; GHELP="$GCCLIB/mulhi3.rel $GCCLIB/ashlhi3.rel $GCCLIB/ashrhi3.rel $GCCLIB/lshrhi3.rel $GCCLIB/divAndMod.rel"
+VECTREC=${VECTREC:-${RETRO_TOOLS:-$HOME/tools}/vectrec}
+VB=${VB:-${RETRO_TOOLS:-$HOME/tools}/6809-compilers/vbcc}
+CC1=${CC1:-${RETRO_TOOLS:-$HOME/tools}/6809-compilers/gcc6809/bin/cc1}; AS=${RETRO_TOOLS:-$HOME/tools}/6809-compilers/gcc6809/bin/as6809; LD=${RETRO_TOOLS:-$HOME/tools}/6809-compilers/gcc6809/bin/aslink
+RUNNER=${RETRO_TOOLS:-$HOME/tools}/6809-compilers/sim/runner; MK=${RETRO_TOOLS:-$HOME/tools}/6809-compilers/sim/mkimg.py
+GCCLIB=${RETRO_TOOLS:-$HOME/tools}/6809-compilers/gcc6809/lib; GHELP="$GCCLIB/mulhi3.rel $GCCLIB/ashlhi3.rel $GCCLIB/ashrhi3.rel $GCCLIB/lshrhi3.rel $GCCLIB/divAndMod.rel"
 
 cat > "$OUT/cmoc.link" <<'EOF'
 section code load 1000

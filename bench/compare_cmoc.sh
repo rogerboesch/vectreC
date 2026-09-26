@@ -5,11 +5,11 @@
 set -u
 cd "$(dirname "$0")"
 ROOT=$(pwd)
-VEC_A=${VEC_A:-/Users/roger/retro-tools/vectrec}          # 0.1.67
+VEC_A=${VEC_A:-${RETRO_TOOLS:-$HOME/tools}/vectrec}          # 0.1.67
 VEC_B=${VEC_B:-/tmp/vec98}                                 # 0.1.98
 OUT=/tmp/cmpcmoc; mkdir -p "$OUT"
-MK=/Users/roger/retro-tools/6809-compilers/sim/mkimg.py
-RUNNER=/Users/roger/retro-tools/6809-compilers/sim/runner
+MK=${RETRO_TOOLS:-$HOME/tools}/6809-compilers/sim/mkimg.py
+RUNNER=${RETRO_TOOLS:-$HOME/tools}/6809-compilers/sim/runner
 BENCHES="objmove collide fixmul rng memops strupr checksum isort statem bcdscore clamp"
 
 cat > "$OUT/cmoc.link" <<'EOF'

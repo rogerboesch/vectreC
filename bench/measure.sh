@@ -8,10 +8,10 @@
 set -u
 cd "$(dirname "$0")/src"
 
-VECTREC=${VECTREC:-/Users/roger/retro-tools/vectrec}
-VB=${VB:-/Users/roger/retro-tools/6809-compilers/vbcc}
-GCC_CC1=${GCC_CC1:-/Users/roger/retro-tools/6809-compilers/gcc6809/bin/cc1}        # VIDE prebuilt gcc6809 cc1 (x86_64/Rosetta)
-VIDE_AS6809=${VIDE_AS6809:-/Users/roger/retro-tools/6809-compilers/gcc6809/bin/as6809}
+VECTREC=${VECTREC:-${RETRO_TOOLS:-$HOME/tools}/vectrec}
+VB=${VB:-${RETRO_TOOLS:-$HOME/tools}/6809-compilers/vbcc}
+GCC_CC1=${GCC_CC1:-${RETRO_TOOLS:-$HOME/tools}/6809-compilers/gcc6809/bin/cc1}        # VIDE prebuilt gcc6809 cc1 (x86_64/Rosetta)
+VIDE_AS6809=${VIDE_AS6809:-${RETRO_TOOLS:-$HOME/tools}/6809-compilers/gcc6809/bin/as6809}
 OUT=/tmp/bench_out; mkdir -p "$OUT"
 
 BENCHES="objmove collide fixmul rng memops strupr checksum isort statem bcdscore clamp"
